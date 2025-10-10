@@ -394,6 +394,20 @@ impl IPerps for BinanceClient {
         "Binance"
     }
 
+    fn parse_symbol(&self, symbol: &str) -> String {
+        let upper_symbol = symbol.to_uppercase();
+        if upper_symbol.contains('-') {
+            // Assumes format "BASE-QUOTE"
+            upper_symbol
+        } else if upper_symbol.ends_with("USDT") {
+            // Assumes format "BASEQUOTE" like "BTCUSDT"
+            normalize_symbol(&upper_symbol)
+        } else {
+            // Assumes format "BASE" like "BTC"
+            format!("{}-USDT", upper_symbol)
+        }
+    }
+
     async fn get_markets(&self) -> anyhow::Result<Vec<Market>> {
         let data: serde_json::Value = self.get("/fapi/v1/exchangeInfo").await?;
 

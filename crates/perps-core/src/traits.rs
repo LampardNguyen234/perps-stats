@@ -10,6 +10,10 @@ pub trait IPerps: Send + Sync {
     /// GetName returns the name of the exchange.
     fn get_name(&self) -> &str;
 
+    /// Parses a global symbol into an exchange-specific symbol.
+    /// For example, on Binance, "BTC" might become "BTCUSDT".
+    fn parse_symbol(&self, symbol: &str) -> String;
+
     /// GetMarkets returns all available perpetual markets on the exchange.
     async fn get_markets(&self) -> anyhow::Result<Vec<Market>>;
 

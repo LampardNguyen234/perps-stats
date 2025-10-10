@@ -41,13 +41,13 @@ pub struct Ticker {
     pub timestamp: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct OrderbookLevel {
     pub price: Decimal,
     pub quantity: Decimal,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Orderbook {
     pub symbol: String,
     pub bids: Vec<OrderbookLevel>,
@@ -113,4 +113,28 @@ pub struct MarketStats {
     pub high_price_24h: Decimal,
     pub low_price_24h: Decimal,
     pub timestamp: DateTime<Utc>,
+}
+
+/// Represents total notional (price × qty) available within fixed spread
+/// thresholds (in basis points) for both bid and ask sides.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct LiquidityDepthStats {
+    pub timestamp: DateTime<Utc>,
+    pub exchange: String,
+    pub symbol: String,
+    pub mid_price: Decimal,
+
+    // Bid notionals
+    pub bid_1bps: Decimal,
+    pub bid_2_5bps: Decimal,
+    pub bid_5bps: Decimal,
+    pub bid_10bps: Decimal,
+    pub bid_20bps: Decimal,
+
+    // Ask notionals
+    pub ask_1bps: Decimal,
+    pub ask_2_5bps: Decimal,
+    pub ask_5bps: Decimal,
+    pub ask_10bps: Decimal,
+    pub ask_20bps: Decimal,
 }

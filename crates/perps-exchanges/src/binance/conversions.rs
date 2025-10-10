@@ -24,11 +24,14 @@ pub fn f64_to_decimal(value: f64) -> Result<Decimal, BinanceError> {
         .map_err(|e| BinanceError::ConversionError(format!("Failed to convert f64: {}", e)))
 }
 
-/// Normalize Binance symbol to our standard format
-/// Example: "BTCUSDT" -> "BTC-USDT"
+/// Normalize Binance symbol to our standard format (e.g., "BTC-USDT").
+/// This function is idempotent.
 pub fn normalize_symbol(binance_symbol: &str) -> String {
-    // For USDT perpetual futures, the symbol is typically already in the format we want
-    // but we may need to add separators
+    // If it already contains a hyphen, assume it's already normalized.
+    if binance_symbol.contains('-') {
+        return binance_symbol.to_string();
+    }
+    // If it ends with USDT, add a hyphen.
     if let Some(base) = binance_symbol.strip_suffix("USDT") {
         format!("{}-USDT", base)
     } else {
@@ -50,6 +53,8 @@ mod tests {
     fn test_normalize_symbol() {
         assert_eq!(normalize_symbol("BTCUSDT"), "BTC-USDT");
         assert_eq!(normalize_symbol("ETHUSDT"), "ETH-USDT");
+        // Test for idempotency
+        assert_eq!(normalize_symbol("BTC-USDT"), "BTC-USDT");
     }
 
     #[test]

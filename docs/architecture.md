@@ -17,6 +17,8 @@ graph TD
             CLI_Fetcher["perps-stats backfill"]
             CLI_Streamer["perps-stats stream"]
             CLI_Server["perps-stats serve"]
+            CLI_Market["perps-stats market"]
+            CLI_Liquidity["perps-stats liquidity"]
         end
 
         subgraph "Core Processes"
@@ -38,6 +40,11 @@ graph TD
     CLI_Fetcher --> P1
     CLI_Streamer --> P2
     CLI_Server --> P3
+
+    %% CLI to Crates (for direct commands)
+    CLI_Market -- Uses --> Crate_Exchanges
+    CLI_Liquidity -- Uses --> Crate_Exchanges
+    CLI_Liquidity -- Uses --> Crate_Aggregator
 
     %% Data Ingestion Flow
     A -- HTTP Requests --> Crate_Exchanges
@@ -64,7 +71,7 @@ perps-stats/
 ├── Cargo.toml                # Workspace definition for all crates
 ├── .env                      # Environment variables
 ├── crates/                   # Shared library crates
-│   ├── perps-core/           # Core domain types (Market, Kline) and the IPerps trait
+│   ├── perps-core/           # Core domain types (Market, Kline, LiquidityDepthStats) and the IPerps trait
 │   ├── perps-exchanges/      # Exchange-specific implementations of the IPerps trait
 │   ├── perps-database/       # Database repository and schema management logic
 │   │   ├── schema.sql        # Contain the all-in-one commands to generate databse
@@ -78,7 +85,9 @@ perps-stats/
 │   │   ├── serve.rs          # Start API service
 │   │   ├── stream.rs         # Stream and store real-time data
 │   │   ├── run.rs            # Start an all-in-one service   
-│   │   └── db.rs             # Perform database operation: initialize, clean, migrate, statistics
+│   │   ├── db.rs             # Perform database operation: initialize, clean, migrate, statistics
+│   │   ├── market.rs         # Retrieve L1 market data
+│   │   └── liquidity.rs      # Retrieve liquidity depth data
 │
 └── migrations/               # SQL migration files (for sqlx-cli)
 ```
@@ -126,33 +135,12 @@ This layer provides a clean abstraction over the database.
 
 ### Aggregator
 The business logic resides in the `perps-aggregator` crate and is defined by an `IAggregator` trait. This package is pure business logic and has no knowledge of databases or APIs.
-```rust
-use chrono::{DateTime, Utc};
-use rust_decimal::Decimal;
-use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DepthLevel {
-    // e.g., 0.005 for 0.5%
-    pub percentage: Decimal,
-    // Cumulative quantity of bids within this percentage
-    pub bid_volume: Decimal,
-    // Cumulative quantity of asks within this percentage
-    pub ask_volume: Decimal,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MarketDepth {
-    pub symbol: String,
-    pub timestamp: DateTime<Utc>,
-    pub levels: Vec<DepthLevel>,
-}
-```
 
 ```rust
+// crates/perps-aggregator/src/aggregator.rs
 use async_trait::async_trait;
 use rust_decimal::Decimal;
-use crate::perps::{Orderbook, OrderSide, Trade};
+use perps_core::{LiquidityDepthStats, Orderbook, OrderSide, Trade};
 
 #[async_trait]
 pub trait IAggregator: Send + Sync {
@@ -180,7 +168,13 @@ pub trait IAggregator: Send + Sync {
         trades: &[Trade],
     ) -> anyhow::Result<Decimal>;
 
-    //... And more
+    /// Analyzes an order book to determine the cumulative notional value
+    /// available at different basis point spreads from the mid-price.
+    async fn calculate_liquidity_depth(
+        &self,
+        book: &Orderbook,
+        exchange: &str,
+    ) -> anyhow::Result<LiquidityDepthStats>;
 }
 ```
 
@@ -208,6 +202,9 @@ use chrono::{DateTime, Utc};
 pub trait IPerps: Send + Sync {
     /// GetName returns the name of the exchange.
     fn get_name(&self) -> &str;
+
+    /// Parses a global symbol into an exchange-specific symbol.
+    fn parse_symbol(&self, symbol: &str) -> String;
 
     /// GetMarkets returns all available perpetual markets on the exchange.
     async fn get_markets(&self) -> anyhow::Result<Vec<Market>>;
@@ -262,7 +259,7 @@ pub trait IPerps: Send + Sync {
     async fn is_supported(&self, symbol: &str) -> anyhow::Result<bool>;
 }
 ```
-- Perps Data Structures (`perps/types.go`)
+- Perps Data Structures (`crates/perps-core/src/types.rs`)
 ```rust
 // crates/perps-core/src/types.rs
 use chrono::{DateTime, Utc};
@@ -386,6 +383,7 @@ pub struct MarketStats {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LiquidityDepthStats {
   pub timestamp: DateTime<Utc>, // Timestamp of the snapshot
+  pub exchange: String,
   pub symbol: String,
   pub mid_price: Decimal,
 
@@ -402,5 +400,29 @@ pub struct LiquidityDepthStats {
   pub ask_5bps: Decimal,
   pub ask_10bps: Decimal,
   pub ask_20bps: Decimal,
+}
+```
+- Aggregator Data Structures (`crates/perps-aggregator/src/types.rs`)
+```rust
+// crates/perps-aggregator/src/types.rs
+use chrono::{DateTime, Utc};
+use rust_decimal::Decimal;
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DepthLevel {
+    // e.g., 0.005 for 0.5%
+    pub percentage: Decimal,
+    // Cumulative quantity of bids within this percentage
+    pub bid_volume: Decimal,
+    // Cumulative quantity of asks within this percentage
+    pub ask_volume: Decimal,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MarketDepth {
+    pub symbol: String,
+    pub timestamp: DateTime<Utc>,
+    pub levels: Vec<DepthLevel>,
 }
 ```

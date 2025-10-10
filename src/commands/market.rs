@@ -1,8 +1,17 @@
 use anyhow::Result;
 use perps_core::IPerps;
 use perps_exchanges::BinanceClient;
+use prettytable::{format, Cell, Row, Table};
 use rust_decimal::Decimal;
 use serde_json;
+
+/// Holds all market data for a single symbol
+struct MarketData {
+    ticker: perps_core::Ticker,
+    funding: perps_core::FundingRate,
+    open_interest: perps_core::OpenInterest,
+    orderbook: Option<perps_core::Orderbook>,
+}
 
 pub async fn execute(
     exchange: String,
@@ -18,12 +27,6 @@ pub async fn execute(
         timeframe
     );
 
-    // Parse symbols
-    let symbol_list: Vec<String> = symbols
-        .split(',')
-        .map(|s| s.trim().to_string())
-        .collect();
-
     // Create exchange client based on exchange name
     let client = match exchange.to_lowercase().as_str() {
         "binance" => BinanceClient::new(),
@@ -32,10 +35,17 @@ pub async fn execute(
         }
     };
 
-    // Fetch data for each symbol
+    // Parse symbols
+    let symbol_list: Vec<String> = symbols
+        .split(',')
+        .map(|s| client.parse_symbol(s.trim()))
+        .collect();
+
+    // Fetch data for all symbols
+    let mut market_data_list = Vec::new();
     for symbol in &symbol_list {
-        match fetch_and_display_market_data(&client, symbol, &format, detailed, &timeframe).await {
-            Ok(_) => {}
+        match fetch_market_data(&client, symbol, detailed, &timeframe).await {
+            Ok(data) => market_data_list.push(data),
             Err(e) => {
                 tracing::error!("Failed to fetch data for {}: {}", symbol, e);
                 eprintln!("Error fetching {}: {}", symbol, e);
@@ -43,16 +53,31 @@ pub async fn execute(
         }
     }
 
+    // Display based on format
+    match format.to_lowercase().as_str() {
+        "json" => display_all_json(&market_data_list, &timeframe)?,
+        "table" => {
+            for data in &market_data_list {
+                display_table(&data.ticker, &data.funding, &data.open_interest, &data.orderbook, &timeframe)?;
+            }
+        }
+        _ => {
+            for data in &market_data_list {
+                display_table(&data.ticker, &data.funding, &data.open_interest, &data.orderbook, &timeframe)?;
+            }
+        }
+    }
+
     Ok(())
 }
 
-async fn fetch_and_display_market_data(
+/// Fetch all market data for a single symbol
+async fn fetch_market_data(
     client: &BinanceClient,
     symbol: &str,
-    format: &str,
     detailed: bool,
     timeframe: &str,
-) -> Result<()> {
+) -> Result<MarketData> {
     // Fetch ticker data (L1) with timeframe support
     let ticker = client.get_ticker_with_timeframe(symbol, timeframe).await?;
 
@@ -69,19 +94,12 @@ async fn fetch_and_display_market_data(
         None
     };
 
-    match format.to_lowercase().as_str() {
-        "json" => {
-            display_json(&ticker, &funding, &open_interest, &orderbook, timeframe)?;
-        }
-        "table" => {
-            display_table(&ticker, &funding, &open_interest, &orderbook, timeframe)?;
-        }
-        _ => {
-            display_table(&ticker, &funding, &open_interest, &orderbook, timeframe)?;
-        }
-    }
-
-    Ok(())
+    Ok(MarketData {
+        ticker,
+        funding,
+        open_interest,
+        orderbook,
+    })
 }
 
 fn display_table(
@@ -91,109 +109,220 @@ fn display_table(
     orderbook: &Option<perps_core::Orderbook>,
     timeframe: &str,
 ) -> Result<()> {
-    println!("\n╔══════════════════════════════════════════════════════════════════╗");
-    println!("║  Market Data: {}                                    ", ticker.symbol);
-    println!("╠══════════════════════════════════════════════════════════════════╣");
+    // Main table for market data
+    let mut table = Table::new();
+    table.set_format(*format::consts::FORMAT_CLEAN);
+
+    table.set_titles(Row::new(vec![Cell::new(&format!(
+        "Market Data: {} ({})",
+        ticker.symbol,
+        timeframe.to_uppercase()
+    ))
+    .with_hspan(2)]));
 
     // Price Information
-    println!("║  PRICE INFORMATION");
-    println!("║  ─────────────────────────────────────────────────────────────");
-    println!("║  Last Price:        {:>20}", ticker.last_price);
-    println!("║  Mark Price:        {:>20}", ticker.mark_price);
-    println!("║  Index Price:       {:>20}", ticker.index_price);
-    println!("║");
+    table.add_row(Row::new(vec![
+        Cell::new("Price Information").with_style(prettytable::Attr::Bold),
+        Cell::new(""),
+    ]));
+    table.add_row(Row::new(vec![
+        Cell::new("  Last Price"),
+        Cell::new_align(&ticker.last_price.to_string(), format::Alignment::RIGHT),
+    ]));
+    table.add_row(Row::new(vec![
+        Cell::new("  Mark Price"),
+        Cell::new_align(&ticker.mark_price.to_string(), format::Alignment::RIGHT),
+    ]));
+    table.add_row(Row::new(vec![
+        Cell::new("  Index Price"),
+        Cell::new_align(&ticker.index_price.to_string(), format::Alignment::RIGHT),
+    ]));
 
-    // Best Bid/Ask (L1)
-    println!("║  LEVEL 1 ORDERBOOK");
-    println!("║  ─────────────────────────────────────────────────────────────");
-    println!("║  Best Bid:          {:>20} @ {}", ticker.best_bid_price, ticker.best_bid_qty);
-    println!("║  Best Ask:          {:>20} @ {}", ticker.best_ask_price, ticker.best_ask_qty);
-
-    // Calculate mid-point price
+    // L1 Orderbook
+    table.add_row(Row::new(vec![
+        Cell::new("Level 1 Orderbook").with_style(prettytable::Attr::Bold),
+        Cell::new(""),
+    ]));
+    table.add_row(Row::new(vec![
+        Cell::new("  Best Bid"),
+        Cell::new_align(
+            &format!("{} @ {}", ticker.best_bid_price, ticker.best_bid_qty),
+            format::Alignment::RIGHT,
+        ),
+    ]));
+    table.add_row(Row::new(vec![
+        Cell::new("  Best Ask"),
+        Cell::new_align(
+            &format!("{} @ {}", ticker.best_ask_price, ticker.best_ask_qty),
+            format::Alignment::RIGHT,
+        ),
+    ]));
     let mid_price = (ticker.best_bid_price + ticker.best_ask_price) / Decimal::new(2, 0);
-    println!("║  Mid Price:         {:>20}", mid_price);
-
+    table.add_row(Row::new(vec![
+        Cell::new("  Mid Price"),
+        Cell::new_align(&mid_price.to_string(), format::Alignment::RIGHT),
+    ]));
     let spread = ticker.best_ask_price - ticker.best_bid_price;
     let spread_pct = if ticker.best_bid_price > Decimal::ZERO {
         (spread / ticker.best_bid_price) * Decimal::new(100, 0)
     } else {
         Decimal::ZERO
     };
-    println!("║  Spread:            {:>20} ({:.4}%)", spread, spread_pct);
-    println!("║");
+    table.add_row(Row::new(vec![
+        Cell::new("  Spread"),
+        Cell::new_align(
+            &format!("{} ({:.4}%)", spread, spread_pct),
+            format::Alignment::RIGHT,
+        ),
+    ]));
 
-    // Statistics for the given timeframe
-    let timeframe_upper = timeframe.to_uppercase();
-    println!("║  {} STATISTICS", timeframe_upper);
-    println!("║  ─────────────────────────────────────────────────────────────");
-    println!("║  Volume:            {:>20}", ticker.volume_24h);
-    println!("║  Turnover:          {:>20}", ticker.turnover_24h);
-    println!("║  Price Change:      {:>20} ({:.2}%)",
-        ticker.price_change_24h,
-        ticker.price_change_pct * Decimal::new(100, 0)
-    );
-    println!("║  High:              {:>20}", ticker.high_price_24h);
-    println!("║  Low:               {:>20}", ticker.low_price_24h);
-    println!("║");
+    // Timeframe Statistics
+    table.add_row(Row::new(vec![
+        Cell::new(&format!("{} Statistics", timeframe.to_uppercase()))
+            .with_style(prettytable::Attr::Bold),
+        Cell::new(""),
+    ]));
+    table.add_row(Row::new(vec![
+        Cell::new("  Volume"),
+        Cell::new_align(&ticker.volume_24h.to_string(), format::Alignment::RIGHT),
+    ]));
+    table.add_row(Row::new(vec![
+        Cell::new("  Turnover"),
+        Cell::new_align(&ticker.turnover_24h.to_string(), format::Alignment::RIGHT),
+    ]));
+    table.add_row(Row::new(vec![
+        Cell::new("  Price Change"),
+        Cell::new_align(
+            &format!(
+                "{} ({:.2}%)",
+                ticker.price_change_24h,
+                ticker.price_change_pct * Decimal::new(100, 0)
+            ),
+            format::Alignment::RIGHT,
+        ),
+    ]));
+    table.add_row(Row::new(vec![
+        Cell::new("  High"),
+        Cell::new_align(&ticker.high_price_24h.to_string(), format::Alignment::RIGHT),
+    ]));
+    table.add_row(Row::new(vec![
+        Cell::new("  Low"),
+        Cell::new_align(&ticker.low_price_24h.to_string(), format::Alignment::RIGHT),
+    ]));
 
     // Funding Rate
-    println!("║  FUNDING RATE");
-    println!("║  ─────────────────────────────────────────────────────────────");
-    println!("║  Current Rate:      {:>20} ({:.4}%)",
-        funding.funding_rate,
-        funding.funding_rate * Decimal::new(100, 0)
-    );
-    println!("║  Next Funding:      {}", funding.next_funding_time.format("%Y-%m-%d %H:%M:%S UTC"));
-    println!("║  Interval:          {} hours", funding.funding_interval);
-    println!("║");
+    table.add_row(Row::new(vec![
+        Cell::new("Funding Rate").with_style(prettytable::Attr::Bold),
+        Cell::new(""),
+    ]));
+    table.add_row(Row::new(vec![
+        Cell::new("  Current Rate"),
+        Cell::new_align(
+            &format!(
+                "{} ({:.4}%)",
+                funding.funding_rate,
+                funding.funding_rate * Decimal::new(100, 0)
+            ),
+            format::Alignment::RIGHT,
+        ),
+    ]));
+    table.add_row(Row::new(vec![
+        Cell::new("  Next Funding"),
+        Cell::new_align(
+            &funding.next_funding_time.format("%Y-%m-%d %H:%M:%S UTC").to_string(),
+            format::Alignment::RIGHT,
+        ),
+    ]));
+    table.add_row(Row::new(vec![
+        Cell::new("  Interval"),
+        Cell::new_align(
+            &format!("{} hours", funding.funding_interval),
+            format::Alignment::RIGHT,
+        ),
+    ]));
 
     // Open Interest
-    println!("║  OPEN INTEREST");
-    println!("║  ─────────────────────────────────────────────────────────────");
-    println!("║  Open Interest:     {:>20}", oi.open_interest);
-    println!("║  Open Value:        {:>20}", oi.open_value);
-    println!("║");
+    table.add_row(Row::new(vec![
+        Cell::new("Open Interest").with_style(prettytable::Attr::Bold),
+        Cell::new(""),
+    ]));
+    table.add_row(Row::new(vec![
+        Cell::new("  Open Interest"),
+        Cell::new_align(&oi.open_interest.to_string(), format::Alignment::RIGHT),
+    ]));
+    table.add_row(Row::new(vec![
+        Cell::new("  Open Value"),
+        Cell::new_align(&oi.open_value.to_string(), format::Alignment::RIGHT),
+    ]));
 
-    // Detailed orderbook if requested
+    // Timestamp
+    table.add_row(Row::new(vec![
+        Cell::new("Timestamp").with_style(prettytable::Attr::Bold),
+        Cell::new_align(
+            &ticker.timestamp.format("%Y-%m-%d %H:%M:%S UTC").to_string(),
+            format::Alignment::RIGHT,
+        ),
+    ]));
+
+    table.printstd();
+
+    // Orderbook table if detailed
     if let Some(book) = orderbook {
-        println!("║  ORDERBOOK DEPTH (Top 10)");
-        println!("║  ─────────────────────────────────────────────────────────────");
-        println!("║       Price          |      Bid Qty      |      Ask Qty     ");
-        println!("║  ─────────────────────────────────────────────────────────────");
+        let mut book_table = Table::new();
+        book_table.set_format(*format::consts::FORMAT_CLEAN);
+        book_table.set_titles(Row::new(vec![Cell::new("Orderbook Depth (Top 10)").with_hspan(4)]));
+        book_table.add_row(Row::new(vec![
+            Cell::new("Bid Price").with_style(prettytable::Attr::Bold),
+            Cell::new("Bid Qty").with_style(prettytable::Attr::Bold),
+            Cell::new("Ask Price").with_style(prettytable::Attr::Bold),
+            Cell::new("Ask Qty").with_style(prettytable::Attr::Bold),
+        ]));
 
         let max_len = book.bids.len().max(book.asks.len()).min(10);
         for i in 0..max_len {
-            let bid_str = if i < book.bids.len() {
-                format!("{:>20} | {:>17}", book.bids[i].price, book.bids[i].quantity)
-            } else {
-                format!("{:>20} | {:>17}", "-", "-")
-            };
+            let bid_price = book.bids.get(i).map_or("-".to_string(), |l| l.price.to_string());
+            let bid_qty = book.bids.get(i).map_or("-".to_string(), |l| l.quantity.to_string());
+            let ask_price = book.asks.get(i).map_or("-".to_string(), |l| l.price.to_string());
+            let ask_qty = book.asks.get(i).map_or("-".to_string(), |l| l.quantity.to_string());
 
-            let ask_str = if i < book.asks.len() {
-                format!("{:>20} | {:>17}", book.asks[i].price, book.asks[i].quantity)
-            } else {
-                format!("{:>20} | {:>17}", "-", "-")
-            };
-
-            println!("║  {} | {}", bid_str, ask_str);
+            book_table.add_row(Row::new(vec![
+                Cell::new_align(&bid_price, format::Alignment::RIGHT),
+                Cell::new_align(&bid_qty, format::Alignment::RIGHT),
+                Cell::new_align(&ask_price, format::Alignment::RIGHT),
+                Cell::new_align(&ask_qty, format::Alignment::RIGHT),
+            ]));
         }
-        println!("║");
+        println!();
+        book_table.printstd();
     }
-
-    println!("║  Timestamp: {}", ticker.timestamp.format("%Y-%m-%d %H:%M:%S UTC"));
-    println!("╚══════════════════════════════════════════════════════════════════╝\n");
 
     Ok(())
 }
 
-fn display_json(
+/// Display all market data as a single JSON array
+fn display_all_json(market_data_list: &[MarketData], timeframe: &str) -> Result<()> {
+    let json_array: Vec<serde_json::Value> = market_data_list
+        .iter()
+        .map(|data| build_json_object(&data.ticker, &data.funding, &data.open_interest, &data.orderbook, timeframe))
+        .collect();
+
+    println!("{}", serde_json::to_string_pretty(&json_array)?);
+    Ok(())
+}
+
+/// Build a JSON object for a single symbol's market data
+fn build_json_object(
     ticker: &perps_core::Ticker,
     funding: &perps_core::FundingRate,
     oi: &perps_core::OpenInterest,
     orderbook: &Option<perps_core::Orderbook>,
     timeframe: &str,
-) -> Result<()> {
+) -> serde_json::Value {
     let stats_key = format!("statistics_{}", timeframe);
+
+    // Calculate mid-point price
+    let mid_price = (ticker.best_bid_price + ticker.best_ask_price) / Decimal::new(2, 0);
+
     let mut data = serde_json::json!({
         "symbol": ticker.symbol,
         "timeframe": timeframe,
@@ -205,6 +334,7 @@ fn display_json(
             "best_bid_qty": ticker.best_bid_qty,
             "best_ask": ticker.best_ask_price,
             "best_ask_qty": ticker.best_ask_qty,
+            "mid": mid_price,
         },
     });
 
@@ -249,6 +379,5 @@ fn display_json(
         });
     }
 
-    println!("{}", serde_json::to_string_pretty(&data)?);
-    Ok(())
+    data
 }

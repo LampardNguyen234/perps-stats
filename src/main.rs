@@ -56,6 +56,17 @@ async fn main() -> Result<()> {
         } => {
             commands::market::execute(exchange, symbols, format, detailed, timeframe).await?;
         }
+        Commands::Liquidity {
+            exchange,
+            symbols,
+            format,
+            output,
+            output_dir,
+            interval,
+            max_snapshots,
+        } => {
+            commands::liquidity::execute(exchange, symbols, format, output, output_dir, interval, max_snapshots).await?;
+        }
     }
 
     Ok(())

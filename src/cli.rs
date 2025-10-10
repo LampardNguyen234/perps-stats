@@ -91,6 +91,37 @@ pub enum Commands {
         #[arg(short, long, default_value = "24h")]
         timeframe: String,
     },
+
+    /// Retrieve liquidity depth for contracts
+    Liquidity {
+        /// Exchange name (e.g., binance)
+        #[arg(short, long, default_value = "binance")]
+        exchange: String,
+
+        /// Comma-separated list of symbols (e.g., BTC-USDT,ETH-USDT)
+        #[arg(short, long)]
+        symbols: String,
+
+        /// Output format (table, json, csv)
+        #[arg(short, long, default_value = "table")]
+        format: String,
+
+        /// Output file path for CSV format (e.g., liquidity_data.csv)
+        #[arg(short, long)]
+        output: Option<String>,
+
+        /// Output directory for CSV files (default: current directory)
+        #[arg(short = 'd', long)]
+        output_dir: Option<String>,
+
+        /// Fetch interval in seconds (for periodic fetching)
+        #[arg(short, long)]
+        interval: Option<u64>,
+
+        /// Maximum number of snapshots to collect (0 = unlimited)
+        #[arg(short = 'n', long, default_value = "0")]
+        max_snapshots: usize,
+    },
 }
 
 #[derive(Subcommand)]

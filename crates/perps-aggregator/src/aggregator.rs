@@ -1,5 +1,6 @@
 use async_trait::async_trait;
-use perps_core::{OrderSide, Orderbook, Trade};
+use chrono::Utc;
+use perps_core::{LiquidityDepthStats, OrderSide, Orderbook, Trade};
 use rust_decimal::Decimal;
 
 use crate::types::MarketDepth;
@@ -24,6 +25,14 @@ pub trait IAggregator: Send + Sync {
 
     /// Computes the average price of an asset over a series of trades, weighted by volume.
     async fn calculate_vwap(&self, trades: &[Trade]) -> anyhow::Result<Decimal>;
+
+    /// Analyzes an order book to determine the cumulative notional value
+    /// available at different basis point spreads from the mid-price.
+    async fn calculate_liquidity_depth(
+        &self,
+        book: &Orderbook,
+        exchange: &str,
+    ) -> anyhow::Result<LiquidityDepthStats>;
 }
 
 /// Default implementation of the IAggregator trait
@@ -80,13 +89,88 @@ impl IAggregator for Aggregator {
 
         Ok(weighted_sum / total_volume)
     }
+
+    async fn calculate_liquidity_depth(
+        &self,
+        book: &Orderbook,
+        exchange: &str,
+    ) -> anyhow::Result<LiquidityDepthStats> {
+        if book.bids.is_empty() || book.asks.is_empty() {
+            anyhow::bail!("Orderbook is empty or one-sided, cannot calculate liquidity depth.");
+        }
+
+        let mid_price = (book.bids[0].price + book.asks[0].price) / Decimal::new(2, 0);
+        if mid_price.is_zero() {
+            anyhow::bail!("Mid price is zero, cannot calculate percentage-based depth.");
+        }
+
+        let bps_levels = [
+            Decimal::new(1, 4),   // 1 bps = 0.0001
+            Decimal::new(25, 5),  // 2.5 bps = 0.00025
+            Decimal::new(5, 4),   // 5 bps = 0.0005
+            Decimal::new(10, 4),  // 10 bps = 0.001
+            Decimal::new(20, 4),  // 20 bps = 0.002
+        ];
+
+        let mut bid_notionals = vec![Decimal::ZERO; bps_levels.len()];
+        let mut ask_notionals = vec![Decimal::ZERO; bps_levels.len()];
+
+        // Calculate cumulative bid notionals
+        for level in &book.bids {
+            let price_delta = mid_price - level.price;
+            if price_delta < Decimal::ZERO {
+                continue;
+            } // Should not happen for sorted bids
+            let spread_pct = price_delta / mid_price;
+            let notional = level.price * level.quantity;
+
+            for (i, &bps) in bps_levels.iter().enumerate() {
+                if spread_pct <= bps {
+                    bid_notionals[i] += notional;
+                }
+            }
+        }
+
+        // Calculate cumulative ask notionals
+        for level in &book.asks {
+            let price_delta = level.price - mid_price;
+            if price_delta < Decimal::ZERO {
+                continue;
+            } // Should not happen for sorted asks
+            let spread_pct = price_delta / mid_price;
+            let notional = level.price * level.quantity;
+
+            for (i, &bps) in bps_levels.iter().enumerate() {
+                if spread_pct <= bps {
+                    ask_notionals[i] += notional;
+                }
+            }
+        }
+
+        Ok(LiquidityDepthStats {
+            timestamp: Utc::now(),
+            exchange: exchange.to_string(),
+            symbol: book.symbol.clone(),
+            mid_price,
+            bid_1bps: bid_notionals[0],
+            bid_2_5bps: bid_notionals[1],
+            bid_5bps: bid_notionals[2],
+            bid_10bps: bid_notionals[3],
+            bid_20bps: bid_notionals[4],
+            ask_1bps: ask_notionals[0],
+            ask_2_5bps: ask_notionals[1],
+            ask_5bps: ask_notionals[2],
+            ask_10bps: ask_notionals[3],
+            ask_20bps: ask_notionals[4],
+        })
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use chrono::Utc;
-    use perps_core::Trade;
+    use perps_core::{OrderbookLevel, Trade};
     use rust_decimal_macros::dec;
 
     #[tokio::test]
@@ -126,5 +210,48 @@ mod tests {
 
         let result = aggregator.calculate_vwap(&trades).await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_calculate_liquidity_depth() {
+        let aggregator = Aggregator::new();
+        let book = Orderbook {
+            symbol: "BTC-USDT-PERP".to_string(),
+            timestamp: Utc::now(),
+            bids: vec![
+                OrderbookLevel { price: dec!(99.99), quantity: dec!(10) }, // 1 bps
+                OrderbookLevel { price: dec!(99.95), quantity: dec!(10) }, // 5 bps
+                OrderbookLevel { price: dec!(99.80), quantity: dec!(10) }, // 20 bps
+            ],
+            asks: vec![
+                OrderbookLevel { price: dec!(100.01), quantity: dec!(10) }, // 1 bps
+                OrderbookLevel { price: dec!(100.05), quantity: dec!(10) }, // 5 bps
+                OrderbookLevel { price: dec!(100.20), quantity: dec!(10) }, // 20 bps
+            ],
+        };
+
+        let stats = aggregator.calculate_liquidity_depth(&book, "binance").await.unwrap();
+
+        // Mid-price = (99.99 + 100.01) / 2 = 100
+        assert_eq!(stats.mid_price, dec!(100));
+        assert_eq!(stats.exchange, "binance");
+
+        // 1 bps bids: 99.99 * 10 = 999.9
+        assert_eq!(stats.bid_1bps, dec!(999.9));
+
+        // 5 bps bids: (99.99 * 10) + (99.95 * 10) = 999.9 + 999.5 = 1999.4
+        assert_eq!(stats.bid_5bps, dec!(1999.4));
+
+        // 20 bps bids: (99.99 * 10) + (99.95 * 10) + (99.80 * 10) = 1999.4 + 998.0 = 2997.4
+        assert_eq!(stats.bid_20bps, dec!(2997.4));
+
+        // 1 bps asks: 100.01 * 10 = 1000.1
+        assert_eq!(stats.ask_1bps, dec!(1000.1));
+
+        // 5 bps asks: (100.01 * 10) + (100.05 * 10) = 1000.1 + 1000.5 = 2000.6
+        assert_eq!(stats.ask_5bps, dec!(2000.6));
+
+        // 20 bps asks: (100.01 * 10) + (100.05 * 10) + (100.20 * 10) = 2000.6 + 1002.0 = 3002.6
+        assert_eq!(stats.ask_20bps, dec!(3002.6));
     }
 }
