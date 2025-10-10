@@ -1,0 +1,20 @@
+[package]
+name = "perps-database"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Workspace crates
+perps-core = { path = "../perps-core" }
+
+# Database
+sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "postgres", "chrono", "rust_decimal"] }
+
+# Async trait support
+async-trait = "0.1"
+
+# Error handling
+anyhow = "1.0"
+
+# Logging
+tracing = "0.1"

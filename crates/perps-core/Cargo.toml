@@ -1,0 +1,20 @@
+[package]
+name = "perps-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Date and time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Decimal precision for financial data
+rust_decimal = { version = "1.37", features = ["serde-float"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+
+# Async trait support
+async-trait = "0.1"
+
+# Error handling
+anyhow = "1.0"
