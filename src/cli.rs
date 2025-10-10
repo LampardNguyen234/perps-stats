@@ -122,6 +122,37 @@ pub enum Commands {
         #[arg(short = 'n', long, default_value = "0")]
         max_snapshots: usize,
     },
+
+    /// Retrieve ticker data for contracts
+    Ticker {
+        /// Exchange name (e.g., binance)
+        #[arg(short, long, default_value = "binance")]
+        exchange: String,
+
+        /// Comma-separated list of symbols (e.g., BTC-USDT,ETH-USDT)
+        #[arg(short, long)]
+        symbols: String,
+
+        /// Output format (table, json, csv, excel)
+        #[arg(short, long, default_value = "table")]
+        format: String,
+
+        /// Output file path for CSV/Excel format (e.g., ticker_data.csv or ticker_data.xlsx)
+        #[arg(short, long)]
+        output: Option<String>,
+
+        /// Output directory for files (default: current directory)
+        #[arg(short = 'd', long)]
+        output_dir: Option<String>,
+
+        /// Fetch interval in seconds (for periodic fetching)
+        #[arg(short, long)]
+        interval: Option<u64>,
+
+        /// Maximum number of snapshots to collect (0 = unlimited)
+        #[arg(short = 'n', long, default_value = "0")]
+        max_snapshots: usize,
+    },
 }
 
 #[derive(Subcommand)]

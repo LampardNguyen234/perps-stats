@@ -1,6 +1,6 @@
 use anyhow::Result;
 use perps_core::IPerps;
-use perps_exchanges::BinanceClient;
+use perps_exchanges::{BinanceClient, LighterClient};
 use prettytable::{format, Cell, Row, Table};
 use rust_decimal::Decimal;
 use serde_json;
@@ -28,23 +28,31 @@ pub async fn execute(
     );
 
     // Create exchange client based on exchange name
-    let client = match exchange.to_lowercase().as_str() {
-        "binance" => BinanceClient::new(),
+    let client: Box<dyn IPerps> = match exchange.to_lowercase().as_str() {
+        "binance" => Box::new(BinanceClient::new()),
+        "lighter" => Box::new(LighterClient::new()),
         _ => {
-            anyhow::bail!("Unsupported exchange: {}. Currently supported: binance", exchange);
+            anyhow::bail!("Unsupported exchange: {}. Currently supported: binance, lighter", exchange);
         }
     };
 
     // Parse symbols
-    let symbol_list: Vec<String> = symbols
+    let requested_symbols: Vec<String> = symbols
         .split(',')
         .map(|s| client.parse_symbol(s.trim()))
         .collect();
 
+    // Validate symbols - filter out unsupported ones
+    let symbol_list = validate_symbols(client.as_ref(), &requested_symbols).await?;
+
+    if symbol_list.is_empty() {
+        anyhow::bail!("No valid symbols found for exchange {}", exchange);
+    }
+
     // Fetch data for all symbols
     let mut market_data_list = Vec::new();
     for symbol in &symbol_list {
-        match fetch_market_data(&client, symbol, detailed, &timeframe).await {
+        match fetch_market_data(client.as_ref(), symbol, detailed, &timeframe).await {
             Ok(data) => market_data_list.push(data),
             Err(e) => {
                 tracing::error!("Failed to fetch data for {}: {}", symbol, e);
@@ -73,13 +81,14 @@ pub async fn execute(
 
 /// Fetch all market data for a single symbol
 async fn fetch_market_data(
-    client: &BinanceClient,
+    client: &dyn IPerps,
     symbol: &str,
     detailed: bool,
-    timeframe: &str,
+    _timeframe: &str,
 ) -> Result<MarketData> {
-    // Fetch ticker data (L1) with timeframe support
-    let ticker = client.get_ticker_with_timeframe(symbol, timeframe).await?;
+    // Fetch ticker data (L1)
+    // Note: Timeframe support is Binance-specific, using regular ticker for all exchanges
+    let ticker = client.get_ticker(symbol).await?;
 
     // Fetch funding rate
     let funding = client.get_funding_rate(symbol).await?;
@@ -380,4 +389,48 @@ fn build_json_object(
     }
 
     data
+}
+
+/// Validate symbols against the exchange - filter out unsupported symbols
+async fn validate_symbols(client: &dyn IPerps, symbols: &[String]) -> Result<Vec<String>> {
+    let mut valid_symbols = Vec::new();
+    let mut invalid_symbols = Vec::new();
+
+    for symbol in symbols {
+        match client.is_supported(symbol).await {
+            Ok(true) => {
+                tracing::debug!("✓ Symbol {} is supported on {}", symbol, client.get_name());
+                valid_symbols.push(symbol.clone());
+            }
+            Ok(false) => {
+                tracing::warn!("✗ Symbol {} is not supported on {} - skipping", symbol, client.get_name());
+                invalid_symbols.push(symbol.clone());
+            }
+            Err(e) => {
+                tracing::error!("Failed to check if symbol {} is supported: {} - skipping", symbol, e);
+                invalid_symbols.push(symbol.clone());
+            }
+        }
+    }
+
+    // Log summary
+    if !invalid_symbols.is_empty() {
+        eprintln!(
+            "Warning: {} symbol(s) not supported on {}: {}",
+            invalid_symbols.len(),
+            client.get_name(),
+            invalid_symbols.join(", ")
+        );
+    }
+
+    if !valid_symbols.is_empty() {
+        tracing::info!(
+            "Validated {} symbol(s) on {}: {}",
+            valid_symbols.len(),
+            client.get_name(),
+            valid_symbols.join(", ")
+        );
+    }
+
+    Ok(valid_symbols)
 }

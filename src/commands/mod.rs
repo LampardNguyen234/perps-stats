@@ -5,3 +5,4 @@ pub mod market;
 pub mod run;
 pub mod serve;
 pub mod stream;
+pub mod ticker;

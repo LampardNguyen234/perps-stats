@@ -3,7 +3,7 @@ use chrono::Utc;
 use csv::Writer;
 use perps_aggregator::{Aggregator, IAggregator};
 use perps_core::{IPerps, LiquidityDepthStats};
-use perps_exchanges::BinanceClient;
+use perps_exchanges::{BinanceClient, LighterClient};
 use prettytable::{format, Cell, Row, Table};
 use rust_xlsxwriter::{Format, Workbook};
 use serde_json;
@@ -27,18 +27,26 @@ pub async fn execute(
     interval: Option<u64>,
     max_snapshots: usize,
 ) -> Result<()> {
-    let client = match exchange.to_lowercase().as_str() {
-        "binance" => BinanceClient::new(),
+    let client: Box<dyn IPerps> = match exchange.to_lowercase().as_str() {
+        "binance" => Box::new(BinanceClient::new()),
+        "lighter" => Box::new(LighterClient::new()),
         _ => {
-            anyhow::bail!("Unsupported exchange: {}. Currently supported: binance", exchange);
+            anyhow::bail!("Unsupported exchange: {}. Currently supported: binance, lighter", exchange);
         }
     };
 
     // Parse symbols
-    let symbol_list: Vec<String> = symbols
+    let requested_symbols: Vec<String> = symbols
         .split(',')
         .map(|s| client.parse_symbol(s.trim()))
         .collect();
+
+    // Validate symbols - filter out unsupported ones
+    let symbol_list = validate_symbols(client.as_ref(), &requested_symbols).await?;
+
+    if symbol_list.is_empty() {
+        anyhow::bail!("No valid symbols found for exchange {}", exchange);
+    }
 
     let aggregator = Aggregator::new();
 
@@ -67,7 +75,7 @@ pub async fn execute(
         };
 
         run_periodic_fetcher(
-            &client,
+            client.as_ref(),
             &aggregator,
             &symbol_list,
             &exchange,
@@ -85,7 +93,7 @@ pub async fn execute(
         );
 
         for symbol in &symbol_list {
-            match fetch_and_display_liquidity_data(&client, &aggregator, symbol, &format, &exchange)
+            match fetch_and_display_liquidity_data(client.as_ref(), &aggregator, symbol, &format, &exchange)
                 .await
             {
                 Ok(_) => {}
@@ -102,8 +110,8 @@ pub async fn execute(
 
 /// Run periodic liquidity fetcher and write to file
 async fn run_periodic_fetcher(
-    client: &impl IPerps,
-    aggregator: &impl IAggregator,
+    client: &dyn IPerps,
+    aggregator: &dyn IAggregator,
     symbols: &[String],
     exchange: &str,
     interval_secs: u64,
@@ -182,8 +190,8 @@ async fn run_periodic_fetcher(
 
 /// Fetch liquidity data for a single symbol (without displaying)
 async fn fetch_liquidity_data(
-    client: &impl IPerps,
-    aggregator: &impl IAggregator,
+    client: &dyn IPerps,
+    aggregator: &dyn IAggregator,
     symbol: &str,
     exchange: &str,
 ) -> Result<LiquidityDepthStats> {
@@ -371,8 +379,8 @@ fn write_to_excel(
 }
 
 async fn fetch_and_display_liquidity_data(
-    client: &impl IPerps,
-    aggregator: &impl IAggregator,
+    client: &dyn IPerps,
+    aggregator: &dyn IAggregator,
     symbol: &str,
     format: &str,
     exchange: &str,
@@ -452,4 +460,48 @@ fn display_table(stats: &LiquidityDepthStats) -> Result<()> {
 fn display_json(stats: &LiquidityDepthStats) -> Result<()> {
     println!("{}", serde_json::to_string_pretty(stats)?);
     Ok(())
+}
+
+/// Validate symbols against the exchange - filter out unsupported symbols
+async fn validate_symbols(client: &dyn IPerps, symbols: &[String]) -> Result<Vec<String>> {
+    let mut valid_symbols = Vec::new();
+    let mut invalid_symbols = Vec::new();
+
+    for symbol in symbols {
+        match client.is_supported(symbol).await {
+            Ok(true) => {
+                tracing::debug!("✓ Symbol {} is supported on {}", symbol, client.get_name());
+                valid_symbols.push(symbol.clone());
+            }
+            Ok(false) => {
+                tracing::warn!("✗ Symbol {} is not supported on {} - skipping", symbol, client.get_name());
+                invalid_symbols.push(symbol.clone());
+            }
+            Err(e) => {
+                tracing::error!("Failed to check if symbol {} is supported: {} - skipping", symbol, e);
+                invalid_symbols.push(symbol.clone());
+            }
+        }
+    }
+
+    // Log summary
+    if !invalid_symbols.is_empty() {
+        eprintln!(
+            "Warning: {} symbol(s) not supported on {}: {}",
+            invalid_symbols.len(),
+            client.get_name(),
+            invalid_symbols.join(", ")
+        );
+    }
+
+    if !valid_symbols.is_empty() {
+        tracing::info!(
+            "Validated {} symbol(s) on {}: {}",
+            valid_symbols.len(),
+            client.get_name(),
+            valid_symbols.join(", ")
+        );
+    }
+
+    Ok(valid_symbols)
 }

@@ -67,6 +67,17 @@ async fn main() -> Result<()> {
         } => {
             commands::liquidity::execute(exchange, symbols, format, output, output_dir, interval, max_snapshots).await?;
         }
+        Commands::Ticker {
+            exchange,
+            symbols,
+            format,
+            output,
+            output_dir,
+            interval,
+            max_snapshots,
+        } => {
+            commands::ticker::execute(exchange, symbols, format, output, output_dir, interval, max_snapshots).await?;
+        }
     }
 
     Ok(())
