@@ -95,8 +95,8 @@ pub enum Commands {
     /// Retrieve liquidity depth for contracts
     Liquidity {
         /// Exchange name (e.g., binance)
-        #[arg(short, long, default_value = "binance")]
-        exchange: String,
+        #[arg(short, long)]
+        exchange: Option<String>,
 
         /// Comma-separated list of symbols (e.g., BTC-USDT,ETH-USDT)
         #[arg(short, long)]

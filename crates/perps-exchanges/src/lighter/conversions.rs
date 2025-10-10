@@ -26,6 +26,18 @@ pub fn to_ticker(detail: &OrderBookDetail) -> Result<Ticker> {
     let last_price = Decimal::from_f64_retain(detail.last_trade_price)
         .unwrap_or_else(|| Decimal::from(0));
 
+    let price_change_pct_raw = Decimal::from_f64_retain(detail.daily_price_change)
+        .unwrap_or_else(|| Decimal::from(0));
+
+    // Convert percentage to decimal to match other exchanges (e.g., -1.19% -> -0.0119)
+    let price_change_pct = price_change_pct_raw / Decimal::from(100);
+
+    let price_change_24h = if last_price > Decimal::ZERO {
+        price_change_pct * last_price
+    } else {
+        Decimal::ZERO
+    };
+
     Ok(Ticker {
         symbol: detail.symbol.clone(),
         last_price,
@@ -39,10 +51,8 @@ pub fn to_ticker(detail: &OrderBookDetail) -> Result<Ticker> {
             .unwrap_or_else(|| Decimal::from(0)),
         turnover_24h: Decimal::from_f64_retain(detail.daily_quote_token_volume)
             .unwrap_or_else(|| Decimal::from(0)),
-        price_change_24h: Decimal::from_f64_retain(detail.daily_price_change)
-            .unwrap_or_else(|| Decimal::from(0)),
-        price_change_pct: Decimal::from_f64_retain(detail.daily_price_change / 100.0)
-            .unwrap_or_else(|| Decimal::from(0)),
+        price_change_24h,
+        price_change_pct,
         high_price_24h: Decimal::from_f64_retain(detail.daily_price_high)
             .unwrap_or_else(|| Decimal::from(0)),
         low_price_24h: Decimal::from_f64_retain(detail.daily_price_low)

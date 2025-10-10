@@ -1,4 +1,4 @@
-# Introduction
+'''# Introduction
 This document outlines the recommended project structure, database schema, API design, and core component logic for a Rust implementation of the `perps-stats` service.
 
 # System Architecture
@@ -73,6 +73,10 @@ perps-stats/
 ├── crates/                   # Shared library crates
 │   ├── perps-core/           # Core domain types (Market, Kline, LiquidityDepthStats) and the IPerps trait
 │   ├── perps-exchanges/      # Exchange-specific implementations of the IPerps trait
+│   │   ├── binance/
+│   │   ├── lighter/
+│   │   ├── paradex/
+│   │   └── factory.rs        # Factory for creating exchange clients
 │   ├── perps-database/       # Database repository and schema management logic
 │   │   ├── schema.sql        # Contain the all-in-one commands to generate databse
 │   └── perps-aggregator/     # Business logic for calculated metrics
@@ -140,33 +144,11 @@ The business logic resides in the `perps-aggregator` crate and is defined by an 
 // crates/perps-aggregator/src/aggregator.rs
 use async_trait::async_trait;
 use rust_decimal::Decimal;
-use perps_core::{LiquidityDepthStats, Orderbook, OrderSide, Trade};
+use perps_core::{IPerps, LiquidityDepthStats, Orderbook, OrderSide, Trade};
 
 #[async_trait]
 pub trait IAggregator: Send + Sync {
-    /// Computes the percentage price change that would occur
-    /// if a trade of a given size were to be executed against the provided order book.
-    /// It returns the slippage as a decimal (e.g., 0.01 for 1%).
-    async fn calculate_slippage(
-        &self,
-        book: &Orderbook,
-        trade_size: Decimal,
-        side: OrderSide,
-    ) -> anyhow::Result<Decimal>;
-
-    /// Analyzes an order book to determine the cumulative volume
-    /// available at different percentage-based price points away from the mid-price.
-    /// This is useful for understanding market liquidity.
-    async fn calculate_market_depth(
-        &self,
-        book: &Orderbook,
-    ) -> anyhow::Result<MarketDepth>;
-
-    /// Computes the average price of an asset over a series of trades, weighted by volume.
-    async fn calculate_vwap(
-        &self,
-        trades: &[Trade],
-    ) -> anyhow::Result<Decimal>;
+    // ... other methods
 
     /// Analyzes an order book to determine the cumulative notional value
     /// available at different basis point spreads from the mid-price.
@@ -175,6 +157,13 @@ pub trait IAggregator: Send + Sync {
         book: &Orderbook,
         exchange: &str,
     ) -> anyhow::Result<LiquidityDepthStats>;
+
+    /// Calculates liquidity depth for a given symbol across multiple exchanges concurrently.
+    async fn calculate_liquidity_depth_all(
+        &self,
+        exchanges: &[Box<dyn IPerps + Send + Sync>],
+        symbol: &str,
+    ) -> anyhow::Result<Vec<LiquidityDepthStats>>;
 }
 ```
 
@@ -426,3 +415,4 @@ pub struct MarketDepth {
     pub levels: Vec<DepthLevel>,
 }
 ```
+'''

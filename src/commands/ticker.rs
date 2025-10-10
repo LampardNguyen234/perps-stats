@@ -2,7 +2,7 @@ use anyhow::Result;
 use chrono::Utc;
 use csv::Writer;
 use perps_core::{IPerps, Ticker};
-use perps_exchanges::{BinanceClient, LighterClient};
+use perps_exchanges::get_exchange;
 use prettytable::{format, Cell, Row, Table};
 use rust_xlsxwriter::{Format, Workbook};
 use serde_json;
@@ -26,13 +26,8 @@ pub async fn execute(
     interval: Option<u64>,
     max_snapshots: usize,
 ) -> Result<()> {
-    let client: Box<dyn IPerps> = match exchange.to_lowercase().as_str() {
-        "binance" => Box::new(BinanceClient::new()),
-        "lighter" => Box::new(LighterClient::new()),
-        _ => {
-            anyhow::bail!("Unsupported exchange: {}. Currently supported: binance, lighter", exchange);
-        }
-    };
+    // Create exchange client using factory
+    let client = get_exchange(&exchange)?;
 
     // Parse symbols
     let requested_symbols: Vec<String> = symbols
@@ -244,6 +239,10 @@ fn write_to_csv(
 
         // Write data rows in reverse order (latest first)
         for ticker in snapshots.iter().rev() {
+            // Calculate notional values
+            let bid_notional = ticker.best_bid_price * ticker.best_bid_qty;
+            let ask_notional = ticker.best_ask_price * ticker.best_ask_qty;
+
             wtr.write_record(&[
                 ticker.timestamp.format("%Y-%m-%d %H:%M:%S UTC").to_string(),
                 exchange.to_string(),
@@ -253,8 +252,10 @@ fn write_to_csv(
                 ticker.index_price.to_string(),
                 ticker.best_bid_price.to_string(),
                 ticker.best_bid_qty.to_string(),
+                bid_notional.to_string(),
                 ticker.best_ask_price.to_string(),
                 ticker.best_ask_qty.to_string(),
+                ask_notional.to_string(),
                 ticker.volume_24h.to_string(),
                 ticker.turnover_24h.to_string(),
                 ticker.price_change_24h.to_string(),
@@ -313,8 +314,10 @@ fn write_to_excel(
             "Index Price",
             "Best Bid Price",
             "Best Bid Qty",
+            "Best Bid Notional",
             "Best Ask Price",
             "Best Ask Qty",
+            "Best Ask Notional",
             "Volume 24h",
             "Turnover 24h",
             "Price Change 24h",
@@ -331,6 +334,10 @@ fn write_to_excel(
         for (row_idx, ticker) in snapshots.iter().rev().enumerate() {
             let row = (row_idx + 1) as u32; // +1 to skip header row
 
+            // Calculate notional values
+            let bid_notional = ticker.best_bid_price * ticker.best_bid_qty;
+            let ask_notional = ticker.best_ask_price * ticker.best_ask_qty;
+
             worksheet.write_string_with_format(
                 row,
                 0,
@@ -344,21 +351,23 @@ fn write_to_excel(
             worksheet.write_number(row, 5, ticker.index_price.to_string().parse::<f64>().unwrap_or(0.0))?;
             worksheet.write_number(row, 6, ticker.best_bid_price.to_string().parse::<f64>().unwrap_or(0.0))?;
             worksheet.write_number(row, 7, ticker.best_bid_qty.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 8, ticker.best_ask_price.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 9, ticker.best_ask_qty.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 10, ticker.volume_24h.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 11, ticker.turnover_24h.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 12, ticker.price_change_24h.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 13, ticker.price_change_pct.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 14, ticker.high_price_24h.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 15, ticker.low_price_24h.to_string().parse::<f64>().unwrap_or(0.0))?;
+            worksheet.write_number(row, 8, bid_notional.to_string().parse::<f64>().unwrap_or(0.0))?;
+            worksheet.write_number(row, 9, ticker.best_ask_price.to_string().parse::<f64>().unwrap_or(0.0))?;
+            worksheet.write_number(row, 10, ticker.best_ask_qty.to_string().parse::<f64>().unwrap_or(0.0))?;
+            worksheet.write_number(row, 11, ask_notional.to_string().parse::<f64>().unwrap_or(0.0))?;
+            worksheet.write_number(row, 12, ticker.volume_24h.to_string().parse::<f64>().unwrap_or(0.0))?;
+            worksheet.write_number(row, 13, ticker.turnover_24h.to_string().parse::<f64>().unwrap_or(0.0))?;
+            worksheet.write_number(row, 14, ticker.price_change_24h.to_string().parse::<f64>().unwrap_or(0.0))?;
+            worksheet.write_number(row, 15, ticker.price_change_pct.to_string().parse::<f64>().unwrap_or(0.0))?;
+            worksheet.write_number(row, 16, ticker.high_price_24h.to_string().parse::<f64>().unwrap_or(0.0))?;
+            worksheet.write_number(row, 17, ticker.low_price_24h.to_string().parse::<f64>().unwrap_or(0.0))?;
         }
 
         // Auto-fit columns for better readability
         worksheet.set_column_width(0, 25)?; // Timestamp
         worksheet.set_column_width(1, 12)?; // Exchange
         worksheet.set_column_width(2, 15)?; // Symbol
-        for col in 3..16 {
+        for col in 3..18 {
             worksheet.set_column_width(col, 15)?; // Numeric columns
         }
     }
@@ -426,13 +435,17 @@ fn display_table(ticker: &Ticker, exchange: &str) -> Result<()> {
         Cell::new("Best Bid/Ask").with_style(prettytable::Attr::Bold),
         Cell::new(""),
     ]));
+
+    let bid_notional = ticker.best_bid_price * ticker.best_bid_qty;
+    let ask_notional = ticker.best_ask_price * ticker.best_ask_qty;
+
     table.add_row(Row::new(vec![
         Cell::new("  Bid"),
-        Cell::new_align(&format!("${:.2} @ {}", ticker.best_bid_price, ticker.best_bid_qty), format::Alignment::RIGHT),
+        Cell::new_align(&format!("${:.2} @ {} (${:.2})", ticker.best_bid_price, ticker.best_bid_qty, bid_notional), format::Alignment::RIGHT),
     ]));
     table.add_row(Row::new(vec![
         Cell::new("  Ask"),
-        Cell::new_align(&format!("${:.2} @ {}", ticker.best_ask_price, ticker.best_ask_qty), format::Alignment::RIGHT),
+        Cell::new_align(&format!("${:.2} @ {} (${:.2})", ticker.best_ask_price, ticker.best_ask_qty, ask_notional), format::Alignment::RIGHT),
     ]));
 
     // 24H Statistics
@@ -474,6 +487,9 @@ fn display_table(ticker: &Ticker, exchange: &str) -> Result<()> {
 }
 
 fn display_json(ticker: &Ticker, exchange: &str) -> Result<()> {
+    let bid_notional = ticker.best_bid_price * ticker.best_bid_qty;
+    let ask_notional = ticker.best_ask_price * ticker.best_ask_qty;
+
     let output = serde_json::json!({
         "exchange": exchange,
         "symbol": ticker.symbol,
@@ -486,10 +502,12 @@ fn display_json(ticker: &Ticker, exchange: &str) -> Result<()> {
         "best_bid": {
             "price": ticker.best_bid_price,
             "quantity": ticker.best_bid_qty,
+            "notional": bid_notional,
         },
         "best_ask": {
             "price": ticker.best_ask_price,
             "quantity": ticker.best_ask_qty,
+            "notional": ask_notional,
         },
         "statistics_24h": {
             "volume": ticker.volume_24h,

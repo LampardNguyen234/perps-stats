@@ -53,3 +53,6 @@ perps-aggregator = { path = "crates/perps-aggregator" }
 
 # Force older version of base64ct to avoid edition2024 requirement
 base64ct = "=1.6.0"
+
+[dev-dependencies]
+tempfile = "3.10"

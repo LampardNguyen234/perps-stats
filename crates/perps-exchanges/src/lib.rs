@@ -1,12 +1,15 @@
-// This crate contains exchange-specific implementations of the IPerps trait.
-// Each exchange has its own module.
-
 pub mod binance;
+pub mod bybit;
+pub mod factory;
+pub mod kucoin;
 pub mod lighter;
+pub mod paradex;
 
-// Re-export the core trait
-pub use perps_core::IPerps;
-
-// Re-export exchange clients
 pub use binance::BinanceClient;
+pub use bybit::BybitClient;
+pub use factory::{all_exchanges, get_exchange};
+pub use kucoin::KucoinClient;
 pub use lighter::LighterClient;
+pub use paradex::ParadexClient;
+
+pub use perps_core::IPerps;

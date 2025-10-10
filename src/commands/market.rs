@@ -1,6 +1,6 @@
 use anyhow::Result;
 use perps_core::IPerps;
-use perps_exchanges::{BinanceClient, LighterClient};
+use perps_exchanges::get_exchange;
 use prettytable::{format, Cell, Row, Table};
 use rust_decimal::Decimal;
 use serde_json;
@@ -27,14 +27,8 @@ pub async fn execute(
         timeframe
     );
 
-    // Create exchange client based on exchange name
-    let client: Box<dyn IPerps> = match exchange.to_lowercase().as_str() {
-        "binance" => Box::new(BinanceClient::new()),
-        "lighter" => Box::new(LighterClient::new()),
-        _ => {
-            anyhow::bail!("Unsupported exchange: {}. Currently supported: binance, lighter", exchange);
-        }
-    };
+    // Create exchange client using factory
+    let client = get_exchange(&exchange)?;
 
     // Parse symbols
     let requested_symbols: Vec<String> = symbols

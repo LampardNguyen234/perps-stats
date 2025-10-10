@@ -307,14 +307,28 @@ impl IPerps for LighterClient {
 
         let detail = self.fetch_orderbook_detail(symbol).await?;
 
+        let last_price = rust_decimal::Decimal::from_f64_retain(detail.last_trade_price)
+            .unwrap_or_else(|| rust_decimal::Decimal::from(0));
+
+        // Lighter API returns daily_price_change as a percentage (e.g., -1.19 for -1.19%)
+        let price_change_pct_raw = rust_decimal::Decimal::from_f64_retain(detail.daily_price_change)
+            .unwrap_or_else(|| rust_decimal::Decimal::from(0));
+
+        // Convert to decimal to match other exchanges (e.g., -1.19% -> -0.0119)
+        let price_change_pct = price_change_pct_raw / rust_decimal::Decimal::from(100);
+
+        // Calculate absolute price change: (percentage decimal) * current_price
+        let price_change_24h = if last_price > rust_decimal::Decimal::ZERO {
+            price_change_pct * last_price
+        } else {
+            rust_decimal::Decimal::ZERO
+        };
+
         Ok(MarketStats {
             symbol: symbol.to_string(),
-            last_price: rust_decimal::Decimal::from_f64_retain(detail.last_trade_price)
-                .unwrap_or_else(|| rust_decimal::Decimal::from(0)),
-            mark_price: rust_decimal::Decimal::from_f64_retain(detail.last_trade_price)
-                .unwrap_or_else(|| rust_decimal::Decimal::from(0)),
-            index_price: rust_decimal::Decimal::from_f64_retain(detail.last_trade_price)
-                .unwrap_or_else(|| rust_decimal::Decimal::from(0)),
+            last_price,
+            mark_price: last_price,
+            index_price: last_price,
             volume_24h: rust_decimal::Decimal::from_f64_retain(detail.daily_base_token_volume)
                 .unwrap_or_else(|| rust_decimal::Decimal::from(0)),
             turnover_24h: rust_decimal::Decimal::from_f64_retain(detail.daily_quote_token_volume)
@@ -323,10 +337,8 @@ impl IPerps for LighterClient {
                 .unwrap_or_else(|| rust_decimal::Decimal::from(0)),
             low_price_24h: rust_decimal::Decimal::from_f64_retain(detail.daily_price_low)
                 .unwrap_or_else(|| rust_decimal::Decimal::from(0)),
-            price_change_24h: rust_decimal::Decimal::from_f64_retain(detail.daily_price_change)
-                .unwrap_or_else(|| rust_decimal::Decimal::from(0)),
-            price_change_pct: rust_decimal::Decimal::from_f64_retain(detail.daily_price_change)
-                .unwrap_or_else(|| rust_decimal::Decimal::from(0)),
+            price_change_24h,
+            price_change_pct,
             open_interest: rust_decimal::Decimal::from_f64_retain(detail.open_interest)
                 .unwrap_or_else(|| rust_decimal::Decimal::from(0)),
             funding_rate: rust_decimal::Decimal::ZERO,
@@ -354,30 +366,41 @@ impl IPerps for LighterClient {
             .data
             .order_book_details
             .iter()
-            .map(|detail| MarketStats {
-                symbol: detail.symbol.clone(),
-                last_price: rust_decimal::Decimal::from_f64_retain(detail.last_trade_price)
-                    .unwrap_or_else(|| rust_decimal::Decimal::from(0)),
-                mark_price: rust_decimal::Decimal::from_f64_retain(detail.last_trade_price)
-                    .unwrap_or_else(|| rust_decimal::Decimal::from(0)),
-                index_price: rust_decimal::Decimal::from_f64_retain(detail.last_trade_price)
-                    .unwrap_or_else(|| rust_decimal::Decimal::from(0)),
-                volume_24h: rust_decimal::Decimal::from_f64_retain(detail.daily_base_token_volume)
-                    .unwrap_or_else(|| rust_decimal::Decimal::from(0)),
-                turnover_24h: rust_decimal::Decimal::from_f64_retain(detail.daily_quote_token_volume)
-                    .unwrap_or_else(|| rust_decimal::Decimal::from(0)),
-                high_price_24h: rust_decimal::Decimal::from_f64_retain(detail.daily_price_high)
-                    .unwrap_or_else(|| rust_decimal::Decimal::from(0)),
-                low_price_24h: rust_decimal::Decimal::from_f64_retain(detail.daily_price_low)
-                    .unwrap_or_else(|| rust_decimal::Decimal::from(0)),
-                price_change_24h: rust_decimal::Decimal::from_f64_retain(detail.daily_price_change)
-                    .unwrap_or_else(|| rust_decimal::Decimal::from(0)),
-                price_change_pct: rust_decimal::Decimal::from_f64_retain(detail.daily_price_change)
-                    .unwrap_or_else(|| rust_decimal::Decimal::from(0)),
-                open_interest: rust_decimal::Decimal::from_f64_retain(detail.open_interest)
-                    .unwrap_or_else(|| rust_decimal::Decimal::from(0)),
-                funding_rate: rust_decimal::Decimal::ZERO,
-                timestamp: Utc::now(),
+            .map(|detail| {
+                let last_price = rust_decimal::Decimal::from_f64_retain(detail.last_trade_price)
+                    .unwrap_or_else(|| rust_decimal::Decimal::from(0));
+
+                // Lighter API returns daily_price_change as a percentage
+                let price_change_pct = rust_decimal::Decimal::from_f64_retain(detail.daily_price_change)
+                    .unwrap_or_else(|| rust_decimal::Decimal::from(0));
+
+                // Calculate absolute price change
+                let price_change_24h = if last_price > rust_decimal::Decimal::ZERO {
+                    (price_change_pct / rust_decimal::Decimal::from(100)) * last_price
+                } else {
+                    rust_decimal::Decimal::ZERO
+                };
+
+                MarketStats {
+                    symbol: detail.symbol.clone(),
+                    last_price,
+                    mark_price: last_price,
+                    index_price: last_price,
+                    volume_24h: rust_decimal::Decimal::from_f64_retain(detail.daily_base_token_volume)
+                        .unwrap_or_else(|| rust_decimal::Decimal::from(0)),
+                    turnover_24h: rust_decimal::Decimal::from_f64_retain(detail.daily_quote_token_volume)
+                        .unwrap_or_else(|| rust_decimal::Decimal::from(0)),
+                    high_price_24h: rust_decimal::Decimal::from_f64_retain(detail.daily_price_high)
+                        .unwrap_or_else(|| rust_decimal::Decimal::from(0)),
+                    low_price_24h: rust_decimal::Decimal::from_f64_retain(detail.daily_price_low)
+                        .unwrap_or_else(|| rust_decimal::Decimal::from(0)),
+                    price_change_24h,
+                    price_change_pct,
+                    open_interest: rust_decimal::Decimal::from_f64_retain(detail.open_interest)
+                        .unwrap_or_else(|| rust_decimal::Decimal::from(0)),
+                    funding_rate: rust_decimal::Decimal::ZERO,
+                    timestamp: Utc::now(),
+                }
             })
             .collect();
 

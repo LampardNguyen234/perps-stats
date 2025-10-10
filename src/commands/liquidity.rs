@@ -3,7 +3,7 @@ use chrono::Utc;
 use csv::Writer;
 use perps_aggregator::{Aggregator, IAggregator};
 use perps_core::{IPerps, LiquidityDepthStats};
-use perps_exchanges::{BinanceClient, LighterClient};
+use perps_exchanges::{all_exchanges, get_exchange};
 use prettytable::{format, Cell, Row, Table};
 use rust_xlsxwriter::{Format, Workbook};
 use serde_json;
@@ -19,7 +19,7 @@ struct OutputConfig {
 }
 
 pub async fn execute(
-    exchange: String,
+    exchange: Option<String>,
     symbols: String,
     format: String,
     output: Option<String>,
@@ -27,92 +27,227 @@ pub async fn execute(
     interval: Option<u64>,
     max_snapshots: usize,
 ) -> Result<()> {
-    let client: Box<dyn IPerps> = match exchange.to_lowercase().as_str() {
-        "binance" => Box::new(BinanceClient::new()),
-        "lighter" => Box::new(LighterClient::new()),
-        _ => {
-            anyhow::bail!("Unsupported exchange: {}. Currently supported: binance, lighter", exchange);
+    let aggregator = Aggregator::new();
+    let requested_symbols: Vec<String> = symbols.split(',').map(|s| s.trim().to_string()).collect();
+
+    if let Some(exchange_name) = exchange {
+        execute_single_exchange(
+            &aggregator,
+            exchange_name,
+            requested_symbols,
+            format,
+            output,
+            output_dir,
+            interval,
+            max_snapshots,
+        )
+        .await
+    } else {
+        execute_all_exchanges(
+            &aggregator,
+            requested_symbols,
+            format,
+            output,
+            output_dir,
+            interval,
+            max_snapshots,
+        )
+        .await
+    }
+}
+
+async fn execute_all_exchanges(
+    aggregator: &dyn IAggregator,
+    symbols: Vec<String>,
+    format: String,
+    output: Option<String>,
+    output_dir: Option<String>,
+    interval: Option<u64>,
+    max_snapshots: usize,
+) -> Result<()> {
+    let exchanges = all_exchanges();
+    let exchange_clients: Vec<Box<dyn IPerps + Send + Sync>> = exchanges.into_iter().map(|(_, client)| client).collect();
+
+    if let Some(interval_secs) = interval {
+        let format_lower = format.to_lowercase();
+        if format_lower != "csv" && format_lower != "excel" {
+            anyhow::bail!("Periodic fetching (--interval) for all exchanges requires --format csv or --format excel");
         }
-    };
+        let output_file = output.ok_or_else(|| anyhow::anyhow!("Periodic fetching (--interval) requires --output <file>"))?;
 
-    // Parse symbols
-    let requested_symbols: Vec<String> = symbols
-        .split(',')
-        .map(|s| client.parse_symbol(s.trim()))
-        .collect();
+        if let Some(ref dir) = output_dir {
+            std::fs::create_dir_all(dir)?;
+        }
 
-    // Validate symbols - filter out unsupported ones
-    let symbol_list = validate_symbols(client.as_ref(), &requested_symbols).await?;
+        let output_config = OutputConfig {
+            output_file,
+            output_dir,
+            format: format_lower,
+        };
 
-    if symbol_list.is_empty() {
+        run_periodic_fetcher_all(
+            aggregator,
+            &exchange_clients,
+            &symbols,
+            interval_secs,
+            max_snapshots,
+            output_config,
+        ).await
+
+    } else {
+        let mut all_stats = Vec::new();
+        for symbol in symbols {
+            match aggregator.calculate_liquidity_depth_all(&exchange_clients, &symbol).await {
+                Ok(stats) => all_stats.extend(stats),
+                Err(e) => tracing::error!("Failed to calculate aggregated liquidity for {}: {}", symbol, e),
+            }
+        }
+
+        match format.as_str() {
+            "json" => println!("{}", serde_json::to_string_pretty(&all_stats)?),
+            "table" => display_aggregated_table(&all_stats)?,
+            "csv" => {
+                let output_file = output.ok_or_else(|| anyhow::anyhow!("CSV output requires --output <file>"))?;
+                write_to_csv_all(&all_stats, &output_file, &output_dir)?;
+            }
+            "excel" => {
+                let output_file = output.ok_or_else(|| anyhow::anyhow!("Excel output requires --output <file>"))?;
+                write_to_excel_all(&all_stats, &output_file, &output_dir)?;
+            }
+            _ => display_aggregated_table(&all_stats)?,
+        }
+        Ok(())
+    }
+}
+
+
+async fn execute_single_exchange(
+    aggregator: &dyn IAggregator,
+    exchange: String,
+    symbols: Vec<String>,
+    format: String,
+    output: Option<String>,
+    output_dir: Option<String>,
+    interval: Option<u64>,
+    max_snapshots: usize,
+) -> Result<()> {
+    let client = get_exchange(&exchange)?;
+    let parsed_symbols: Vec<String> = symbols.iter().map(|s| client.parse_symbol(s)).collect();
+    let valid_symbols = validate_symbols(client.as_ref(), &parsed_symbols).await?;
+
+    if valid_symbols.is_empty() {
         anyhow::bail!("No valid symbols found for exchange {}", exchange);
     }
+    
+    let symbol_map: HashMap<String, String> = parsed_symbols.into_iter().zip(symbols.into_iter()).collect();
 
-    let aggregator = Aggregator::new();
-
-    // Check if periodic fetching is enabled
     if let Some(interval_secs) = interval {
-        // Validate format and output file
         let format_lower = format.to_lowercase();
         if format_lower != "csv" && format_lower != "excel" {
             anyhow::bail!("Periodic fetching (--interval) requires --format csv or --format excel");
         }
-        if output.is_none() {
-            anyhow::bail!("Periodic fetching (--interval) requires --output <file>");
-        }
+        let output_file = output.ok_or_else(|| anyhow::anyhow!("Periodic fetching (--interval) requires --output <file>"))?;
 
-        // Create output directory if specified
         if let Some(ref dir) = output_dir {
             std::fs::create_dir_all(dir)?;
-            tracing::info!("Created output directory: {}", dir);
         }
 
-        // Run periodic fetcher
         let output_config = OutputConfig {
-            output_file: output.unwrap(),
+            output_file,
             output_dir,
             format: format_lower,
         };
 
         run_periodic_fetcher(
             client.as_ref(),
-            &aggregator,
-            &symbol_list,
+            aggregator,
+            &valid_symbols,
+            &symbol_map,
             &exchange,
             interval_secs,
             max_snapshots,
             output_config,
-        )
-        .await?;
+        ).await
     } else {
-        // Single fetch mode (original behavior)
-        tracing::info!(
-            "Retrieving liquidity depth for {} from exchange {}",
-            symbols,
-            &exchange,
-        );
-
-        for symbol in &symbol_list {
-            match fetch_and_display_liquidity_data(client.as_ref(), &aggregator, symbol, &format, &exchange)
-                .await
-            {
-                Ok(_) => {}
-                Err(e) => {
-                    tracing::error!("Failed to fetch liquidity for {}: {}", symbol, e);
-                    eprintln!("Error fetching liquidity for {}: {}", symbol, e);
-                }
+        for symbol in &valid_symbols {
+            let global_symbol = symbol_map.get(symbol).unwrap();
+            match fetch_and_display_liquidity_data(client.as_ref(), aggregator, symbol, global_symbol, &format, &exchange).await {
+                Ok(_) => (),
+                Err(e) => tracing::error!("Failed to fetch liquidity for {}: {}", symbol, e),
             }
         }
+        Ok(())
+    }
+}
+
+async fn run_periodic_fetcher_all(
+    aggregator: &dyn IAggregator,
+    clients: &[Box<dyn IPerps + Send + Sync>],
+    symbols: &[String],
+    interval_secs: u64,
+    max_snapshots: usize,
+    config: OutputConfig,
+) -> Result<()> {
+    tracing::info!(
+        "Starting periodic liquidity fetcher for all exchanges (interval: {}s, max_snapshots: {}, format: {}, output: {}{})",
+        interval_secs,
+        if max_snapshots == 0 { "unlimited".to_string() } else { max_snapshots.to_string() },
+        config.format,
+        config.output_dir.as_ref().map(|d| format!("{}/", d)).unwrap_or_default(),
+        config.output_file
+    );
+
+    let mut all_snapshots: Vec<LiquidityDepthStats> = Vec::new();
+    let mut snapshot_count = 0;
+    let unlimited = max_snapshots == 0;
+
+    loop {
+        let now = Utc::now();
+        tracing::info!("[Snapshot #{}] Fetching liquidity at {}", snapshot_count + 1, now.format("%Y-%m-%d %H:%M:%S UTC"));
+
+        let mut current_snapshot = Vec::new();
+        for symbol in symbols {
+            match aggregator.calculate_liquidity_depth_all(clients, symbol).await {
+                Ok(stats) => current_snapshot.extend(stats),
+                Err(e) => tracing::error!("Failed to calculate aggregated liquidity for {}: {}", symbol, e),
+            }
+        }
+        all_snapshots.extend(current_snapshot);
+
+        snapshot_count += 1;
+
+        match config.format.as_str() {
+            "csv" => write_to_csv_all(&all_snapshots, &config.output_file, &config.output_dir)?,
+            "excel" => write_to_excel_all(&all_snapshots, &config.output_file, &config.output_dir)?,
+            _ => unreachable!("Format already validated"),
+        }
+
+        tracing::info!("✓ Written snapshot #{} to {}{}",
+            snapshot_count,
+            config.output_dir.as_ref().map(|d| format!("{}/", d)).unwrap_or_default(),
+            config.output_file
+        );
+
+        if !unlimited && snapshot_count >= max_snapshots {
+            tracing::info!("Reached maximum snapshots ({}). Stopping.", max_snapshots);
+            break;
+        }
+
+        tracing::debug!("Waiting {} seconds until next snapshot...", interval_secs);
+        sleep(Duration::from_secs(interval_secs)).await;
     }
 
+    tracing::info!("✓ Periodic fetcher completed. Total snapshots: {}", snapshot_count);
     Ok(())
 }
+
 
 /// Run periodic liquidity fetcher and write to file
 async fn run_periodic_fetcher(
     client: &dyn IPerps,
     aggregator: &dyn IAggregator,
     symbols: &[String],
+    symbol_map: &HashMap<String, String>,
     exchange: &str,
     interval_secs: u64,
     max_snapshots: usize,
@@ -127,10 +262,9 @@ async fn run_periodic_fetcher(
         config.output_file
     );
 
-    // Storage for all snapshots: symbol -> Vec<LiquidityDepthStats>
     let mut data_by_symbol: HashMap<String, Vec<LiquidityDepthStats>> = HashMap::new();
-    for symbol in symbols {
-        data_by_symbol.insert(symbol.clone(), Vec::new());
+    for global_symbol in symbol_map.values() {
+        data_by_symbol.insert(global_symbol.clone(), Vec::new());
     }
 
     let mut snapshot_count = 0;
@@ -140,9 +274,9 @@ async fn run_periodic_fetcher(
         let now = Utc::now();
         tracing::info!("[Snapshot #{}] Fetching liquidity at {}", snapshot_count + 1, now.format("%Y-%m-%d %H:%M:%S UTC"));
 
-        // Fetch data for all symbols
         for symbol in symbols {
-            match fetch_liquidity_data(client, aggregator, symbol, exchange).await {
+            let global_symbol = symbol_map.get(symbol).unwrap();
+            match fetch_liquidity_data(client, aggregator, symbol, global_symbol, exchange).await {
                 Ok(stats) => {
                     tracing::debug!("✓ {} - Mid: ${:.2}, Bid(10bps): ${:.2}, Ask(10bps): ${:.2}",
                         stats.symbol,
@@ -150,7 +284,7 @@ async fn run_periodic_fetcher(
                         stats.bid_10bps,
                         stats.ask_10bps
                     );
-                    data_by_symbol.get_mut(symbol).unwrap().push(stats);
+                    data_by_symbol.get_mut(global_symbol).unwrap().push(stats);
                 }
                 Err(e) => {
                     tracing::error!("Failed to fetch liquidity for {}: {}", symbol, e);
@@ -160,7 +294,6 @@ async fn run_periodic_fetcher(
 
         snapshot_count += 1;
 
-        // Write to file after each snapshot
         match config.format.as_str() {
             "csv" => write_to_csv(&data_by_symbol, &config.output_file, &config.output_dir)?,
             "excel" => write_to_excel(&data_by_symbol, &config.output_file, &config.output_dir)?,
@@ -173,13 +306,11 @@ async fn run_periodic_fetcher(
             config.output_file
         );
 
-        // Check if we've reached the max snapshots
         if !unlimited && snapshot_count >= max_snapshots {
             tracing::info!("Reached maximum snapshots ({}). Stopping.", max_snapshots);
             break;
         }
 
-        // Wait for next interval
         tracing::debug!("Waiting {} seconds until next snapshot...", interval_secs);
         sleep(Duration::from_secs(interval_secs)).await;
     }
@@ -193,16 +324,40 @@ async fn fetch_liquidity_data(
     client: &dyn IPerps,
     aggregator: &dyn IAggregator,
     symbol: &str,
+    global_symbol: &str,
     exchange: &str,
 ) -> Result<LiquidityDepthStats> {
     let orderbook = client.get_orderbook(symbol, 500).await?;
-    let stats = aggregator.calculate_liquidity_depth(&orderbook, exchange).await?;
+    let stats = aggregator.calculate_liquidity_depth(&orderbook, exchange, global_symbol).await?;
     Ok(stats)
 }
 
+fn write_to_csv_all(
+    data: &[LiquidityDepthStats],
+    base_filename: &str,
+    output_dir: &Option<String>,
+) -> Result<()> {
+    let mut data_by_symbol: HashMap<String, Vec<LiquidityDepthStats>> = HashMap::new();
+    for stat in data {
+        data_by_symbol.entry(stat.symbol.clone()).or_default().push(stat.clone());
+    }
+    write_to_csv(&data_by_symbol, base_filename, output_dir)
+}
+
+fn write_to_excel_all(
+    data: &[LiquidityDepthStats],
+    base_filename: &str,
+    output_dir: &Option<String>,
+) -> Result<()> {
+    let mut data_by_symbol: HashMap<String, Vec<LiquidityDepthStats>> = HashMap::new();
+    for stat in data {
+        data_by_symbol.entry(stat.symbol.clone()).or_default().push(stat.clone());
+    }
+    write_to_excel(&data_by_symbol, base_filename, output_dir)
+}
+
+
 /// Write liquidity data to CSV file with separate files per symbol
-/// Format: symbol_exchange.csv (e.g., BTC_binance.csv, ETH_lighter.csv)
-/// Column order: All bids first, then all asks
 fn write_to_csv(
     data_by_symbol: &HashMap<String, Vec<LiquidityDepthStats>>,
     _base_filename: &str,
@@ -213,24 +368,17 @@ fn write_to_csv(
             continue;
         }
 
-        // Get exchange from first snapshot (all snapshots should have same exchange)
-        let exchange = &snapshots[0].exchange;
+        let file_name = format!("{}.csv", symbol.replace("-", "_"));
 
-        // Create filename: symbol_exchange.csv (e.g., BTC-USDT_binance.csv)
-        let csv_filename = format!("{}_{}.csv", symbol.replace("-", "_"), exchange);
-
-        // Prepend output directory if specified
         let full_path = if let Some(dir) = output_dir {
-            format!("{}/{}", dir, csv_filename)
+            format!("{}/{}", dir, file_name)
         } else {
-            csv_filename
+            file_name
         };
 
-        // Create CSV writer
         let file = File::create(&full_path)?;
         let mut wtr = Writer::from_writer(file);
 
-        // Write header row with all bids first, then all asks
         wtr.write_record([
             "Timestamp",
             "Exchange",
@@ -248,20 +396,17 @@ fn write_to_csv(
             "Ask 20bps",
         ])?;
 
-        // Write data rows in reverse order (latest first)
         for stats in snapshots.iter().rev() {
             wtr.write_record(&[
                 stats.timestamp.format("%Y-%m-%d %H:%M:%S UTC").to_string(),
                 stats.exchange.clone(),
                 stats.symbol.clone(),
                 stats.mid_price.to_string(),
-                // All bids first
                 stats.bid_1bps.to_string(),
                 stats.bid_2_5bps.to_string(),
                 stats.bid_5bps.to_string(),
                 stats.bid_10bps.to_string(),
                 stats.bid_20bps.to_string(),
-                // Then all asks
                 stats.ask_1bps.to_string(),
                 stats.ask_2_5bps.to_string(),
                 stats.ask_5bps.to_string(),
@@ -277,42 +422,31 @@ fn write_to_csv(
 }
 
 /// Write liquidity data to Excel file with separate sheets per symbol
-/// Format: Single workbook with multiple sheets
-/// Column order: All bids first, then all asks (matching CSV format)
 fn write_to_excel(
     data_by_symbol: &HashMap<String, Vec<LiquidityDepthStats>>,
     base_filename: &str,
     output_dir: &Option<String>,
 ) -> Result<()> {
-    // Determine the full path for the Excel file
     let full_path = if let Some(dir) = output_dir {
         format!("{}/{}", dir, base_filename)
     } else {
         base_filename.to_string()
     };
 
-    // Create a new workbook
     let mut workbook = Workbook::new();
-
-    // Create formats
     let header_format = Format::new().set_bold();
     let timestamp_format = Format::new();
 
-    // Create a sheet for each symbol
     for (symbol, snapshots) in data_by_symbol {
         if snapshots.is_empty() {
             continue;
         }
 
-        // Get exchange from first snapshot
-        let exchange = &snapshots[0].exchange;
+        let sheet_name = symbol.replace("-", "_");
 
-        // Create sheet name: symbol_exchange (e.g., BTC_USDT_binance)
-        let sheet_name = format!("{}_{}", symbol.replace("-", "_"), exchange);
         let worksheet = workbook.add_worksheet();
         worksheet.set_name(&sheet_name)?;
 
-        // Write header row
         let headers = [
             "Timestamp",
             "Exchange",
@@ -334,28 +468,17 @@ fn write_to_excel(
             worksheet.write_string_with_format(0, col as u16, *header, &header_format)?;
         }
 
-        // Write data rows in reverse order (latest first, matching CSV behavior)
         for (row_idx, stats) in snapshots.iter().rev().enumerate() {
-            let row = (row_idx + 1) as u32; // +1 to skip header row
-
-            worksheet.write_string_with_format(
-                row,
-                0,
-                stats.timestamp.format("%Y-%m-%d %H:%M:%S UTC").to_string(),
-                &timestamp_format,
-            )?;
+            let row = (row_idx + 1) as u32;
+            worksheet.write_string_with_format(row, 0, &stats.timestamp.format("%Y-%m-%d %H:%M:%S UTC").to_string(), &timestamp_format)?;
             worksheet.write_string(row, 1, &stats.exchange)?;
             worksheet.write_string(row, 2, &stats.symbol)?;
             worksheet.write_number(row, 3, stats.mid_price.to_string().parse::<f64>().unwrap_or(0.0))?;
-
-            // All bids first
             worksheet.write_number(row, 4, stats.bid_1bps.to_string().parse::<f64>().unwrap_or(0.0))?;
             worksheet.write_number(row, 5, stats.bid_2_5bps.to_string().parse::<f64>().unwrap_or(0.0))?;
             worksheet.write_number(row, 6, stats.bid_5bps.to_string().parse::<f64>().unwrap_or(0.0))?;
             worksheet.write_number(row, 7, stats.bid_10bps.to_string().parse::<f64>().unwrap_or(0.0))?;
             worksheet.write_number(row, 8, stats.bid_20bps.to_string().parse::<f64>().unwrap_or(0.0))?;
-
-            // Then all asks
             worksheet.write_number(row, 9, stats.ask_1bps.to_string().parse::<f64>().unwrap_or(0.0))?;
             worksheet.write_number(row, 10, stats.ask_2_5bps.to_string().parse::<f64>().unwrap_or(0.0))?;
             worksheet.write_number(row, 11, stats.ask_5bps.to_string().parse::<f64>().unwrap_or(0.0))?;
@@ -363,16 +486,14 @@ fn write_to_excel(
             worksheet.write_number(row, 13, stats.ask_20bps.to_string().parse::<f64>().unwrap_or(0.0))?;
         }
 
-        // Auto-fit columns for better readability
-        worksheet.set_column_width(0, 25)?; // Timestamp
-        worksheet.set_column_width(1, 12)?; // Exchange
-        worksheet.set_column_width(2, 15)?; // Symbol
+        worksheet.set_column_width(0, 25)?;
+        worksheet.set_column_width(1, 12)?;
+        worksheet.set_column_width(2, 15)?;
         for col in 3..14 {
-            worksheet.set_column_width(col, 15)?; // Prices and liquidity values
+            worksheet.set_column_width(col, 15)?;
         }
     }
 
-    // Save the workbook
     workbook.save(&full_path)?;
 
     Ok(())
@@ -382,25 +503,17 @@ async fn fetch_and_display_liquidity_data(
     client: &dyn IPerps,
     aggregator: &dyn IAggregator,
     symbol: &str,
+    global_symbol: &str,
     format: &str,
     exchange: &str,
 ) -> Result<()> {
-    // Fetch a deep orderbook to ensure we have enough data for 20bps
     let orderbook = client.get_orderbook(symbol, 1000).await?;
-
-    // Calculate liquidity depth stats
-    let stats = aggregator.calculate_liquidity_depth(&orderbook, exchange).await?;
+    let stats = aggregator.calculate_liquidity_depth(&orderbook, exchange, global_symbol).await?;
 
     match format.to_lowercase().as_str() {
-        "json" => {
-            display_json(&stats)?;
-        }
-        "table" => {
-            display_table(&stats)?;
-        }
-        _ => {
-            display_table(&stats)?;
-        }
+        "json" => display_json(&stats)?,
+        "table" => display_table(&stats)?,
+        _ => display_table(&stats)?,
     }
 
     Ok(())
@@ -457,6 +570,65 @@ fn display_table(stats: &LiquidityDepthStats) -> Result<()> {
     Ok(())
 }
 
+fn display_aggregated_table(stats: &[LiquidityDepthStats]) -> Result<()> {
+    if stats.is_empty() {
+        println!("No liquidity data found.");
+        return Ok(());
+    }
+
+    let mut table = Table::new();
+    table.set_format(*format::consts::FORMAT_NO_LINESEP_WITH_TITLE);
+
+    table.set_titles(Row::new(vec![Cell::new(&format!(
+        "Aggregated Liquidity Depth for {}",
+        stats[0].symbol
+    ))
+    .with_hspan(7)]));
+
+    table.add_row(Row::new(vec![
+        Cell::new("Exchange").with_style(prettytable::Attr::Bold),
+        Cell::new("Mid Price").with_style(prettytable::Attr::Bold),
+        Cell::new("1 bps").with_style(prettytable::Attr::Bold),
+        Cell::new("2.5 bps").with_style(prettytable::Attr::Bold),
+        Cell::new("5 bps").with_style(prettytable::Attr::Bold),
+        Cell::new("10 bps").with_style(prettytable::Attr::Bold),
+        Cell::new("20 bps").with_style(prettytable::Attr::Bold),
+    ]));
+
+    for stat in stats {
+        table.add_row(Row::new(vec![
+            Cell::new(&stat.exchange.to_uppercase()),
+            Cell::new_align(&format!("${:.2}", stat.mid_price), format::Alignment::RIGHT),
+            Cell::new_align(
+                &format!("${:.2}", stat.bid_1bps + stat.ask_1bps),
+                format::Alignment::RIGHT,
+            ),
+            Cell::new_align(
+                &format!("${:.2}", stat.bid_2_5bps + stat.ask_2_5bps),
+                format::Alignment::RIGHT,
+            ),
+            Cell::new_align(
+                &format!("${:.2}", stat.bid_5bps + stat.ask_5bps),
+                format::Alignment::RIGHT,
+            ),
+            Cell::new_align(
+                &format!("${:.2}", stat.bid_10bps + stat.ask_10bps),
+                format::Alignment::RIGHT,
+            ),
+            Cell::new_align(
+                &format!("${:.2}", stat.bid_20bps + stat.ask_20bps),
+                format::Alignment::RIGHT,
+            ),
+        ]));
+    }
+
+    println!();
+    table.printstd();
+    println!();
+
+    Ok(())
+}
+
 fn display_json(stats: &LiquidityDepthStats) -> Result<()> {
     println!("{}", serde_json::to_string_pretty(stats)?);
     Ok(())
@@ -504,4 +676,82 @@ async fn validate_symbols(client: &dyn IPerps, symbols: &[String]) -> Result<Vec
     }
 
     Ok(valid_symbols)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use perps_core::LiquidityDepthStats;
+    use rust_decimal_macros::dec;
+    use std::collections::HashMap;
+    use tempfile::tempdir;
+
+    fn create_mock_stats(exchange: &str, symbol: &str) -> LiquidityDepthStats {
+        LiquidityDepthStats {
+            timestamp: Utc::now(),
+            exchange: exchange.to_string(),
+            symbol: symbol.to_string(),
+            mid_price: dec!(50000),
+            bid_1bps: dec!(1000),
+            bid_2_5bps: dec!(2000),
+            bid_5bps: dec!(3000),
+            bid_10bps: dec!(4000),
+            bid_20bps: dec!(5000),
+            ask_1bps: dec!(1000),
+            ask_2_5bps: dec!(2000),
+            ask_5bps: dec!(3000),
+            ask_10bps: dec!(4000),
+            ask_20bps: dec!(5000),
+        }
+    }
+
+    #[test]
+    fn test_write_to_csv_naming() -> Result<()> {
+        let dir = tempdir()?;
+        let output_dir = Some(dir.path().to_str().unwrap().to_string());
+
+        // Test that data for a symbol, even from multiple exchanges, goes into one file named after the symbol.
+        let mut multi_exchange_data = HashMap::new();
+        multi_exchange_data.insert(
+            "BTC-USDT".to_string(),
+            vec![
+                create_mock_stats("binance", "BTC-USDT"),
+                create_mock_stats("lighter", "BTC-USDT"),
+            ],
+        );
+        write_to_csv(&multi_exchange_data, "ignored.csv", &output_dir)?;
+        
+        let expected_file = dir.path().join("BTC-USDT.csv");
+        assert!(expected_file.exists());
+
+        dir.close()?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_write_to_excel_naming() -> Result<()> {
+        let dir = tempdir()?;
+        let output_dir = Some(dir.path().to_str().unwrap().to_string());
+        let filename = "test.xlsx";
+
+        // Test that data for a symbol, even from multiple exchanges, goes into one sheet named after the symbol.
+        let mut multi_exchange_data = HashMap::new();
+        multi_exchange_data.insert(
+            "BTC-USDT".to_string(),
+            vec![
+                create_mock_stats("binance", "BTC-USDT"),
+                create_mock_stats("lighter", "BTC-USDT"),
+            ],
+        );
+        write_to_excel(&multi_exchange_data, filename, &output_dir)?;
+        
+        let full_path = dir.path().join(filename);
+        assert!(full_path.exists());
+
+        // We can't easily check the sheet name here, but the implementation is changed to use the symbol name.
+        // This test now primarily ensures the file is created with the simplified logic.
+
+        dir.close()?;
+        Ok(())
+    }
 }

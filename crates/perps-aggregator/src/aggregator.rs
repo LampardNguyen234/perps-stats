@@ -1,7 +1,9 @@
 use async_trait::async_trait;
 use chrono::Utc;
-use perps_core::{LiquidityDepthStats, OrderSide, Orderbook, Trade};
+use futures::future::join_all;
+use perps_core::{IPerps, LiquidityDepthStats, OrderSide, Orderbook, Trade};
 use rust_decimal::Decimal;
+use std::time::Instant;
 
 use crate::types::MarketDepth;
 
@@ -32,7 +34,15 @@ pub trait IAggregator: Send + Sync {
         &self,
         book: &Orderbook,
         exchange: &str,
+        global_symbol: &str,
     ) -> anyhow::Result<LiquidityDepthStats>;
+
+    /// Calculates liquidity depth for a given symbol across multiple exchanges concurrently.
+    async fn calculate_liquidity_depth_all(
+        &self,
+        exchanges: &[Box<dyn IPerps + Send + Sync>],
+        symbol: &str,
+    ) -> anyhow::Result<Vec<LiquidityDepthStats>>;
 }
 
 /// Default implementation of the IAggregator trait
@@ -94,7 +104,9 @@ impl IAggregator for Aggregator {
         &self,
         book: &Orderbook,
         exchange: &str,
+        global_symbol: &str,
     ) -> anyhow::Result<LiquidityDepthStats> {
+        let start = Instant::now();
         if book.bids.is_empty() || book.asks.is_empty() {
             anyhow::bail!("Orderbook is empty or one-sided, cannot calculate liquidity depth.");
         }
@@ -147,10 +159,18 @@ impl IAggregator for Aggregator {
             }
         }
 
+        let duration = start.elapsed();
+        tracing::debug!(
+            "Calculated liquidity for {} on {} in {:.2?}",
+            global_symbol,
+            exchange,
+            duration
+        );
+
         Ok(LiquidityDepthStats {
             timestamp: Utc::now(),
             exchange: exchange.to_string(),
-            symbol: book.symbol.clone(),
+            symbol: global_symbol.to_string(),
             mid_price,
             bid_1bps: bid_notionals[0],
             bid_2_5bps: bid_notionals[1],
@@ -163,6 +183,50 @@ impl IAggregator for Aggregator {
             ask_10bps: ask_notionals[3],
             ask_20bps: ask_notionals[4],
         })
+    }
+
+    async fn calculate_liquidity_depth_all(
+        &self,
+        exchanges: &[Box<dyn IPerps + Send + Sync>],
+        symbol: &str,
+    ) -> anyhow::Result<Vec<LiquidityDepthStats>> {
+        let futures = exchanges
+            .iter()
+            .map(|client| {
+                let symbol = symbol.to_string();
+                async move {
+                    let start = Instant::now();
+                    let exchange_name = client.get_name();
+                    let parsed_symbol = client.parse_symbol(&symbol);
+                    let result = match client.get_orderbook(&parsed_symbol, 1000).await {
+                        Ok(orderbook) => self.calculate_liquidity_depth(&orderbook, exchange_name, &symbol).await,
+                        Err(e) => {
+                            tracing::warn!(
+                                "Failed to fetch orderbook for {} on {}: {}",
+                                symbol,
+                                exchange_name,
+                                e
+                            );
+                            Err(e)
+                        }
+                    };
+                    let duration = start.elapsed();
+                    tracing::debug!(
+                        "Fetched and processed liquidity for {} on {} in {:.2?}",
+                        symbol,
+                        exchange_name,
+                        duration
+                    );
+                    result
+                }
+            })
+            .collect::<Vec<_>>();
+
+        let results = join_all(futures).await;
+
+        let stats: Vec<LiquidityDepthStats> = results.into_iter().filter_map(Result::ok).collect();
+
+        Ok(stats)
     }
 }
 
@@ -230,9 +294,9 @@ mod tests {
             ],
         };
 
-        let stats = aggregator.calculate_liquidity_depth(&book, "binance").await.unwrap();
+        let stats = aggregator.calculate_liquidity_depth(&book, "binance", "BTC").await.unwrap();
 
-        // Mid-price = (99.99 + 100.01) / 2 = 100
+        assert_eq!(stats.symbol, "BTC");
         assert_eq!(stats.mid_price, dec!(100));
         assert_eq!(stats.exchange, "binance");
 
