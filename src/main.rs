@@ -64,8 +64,9 @@ async fn main() -> Result<()> {
             output_dir,
             interval,
             max_snapshots,
+            database_url,
         } => {
-            commands::liquidity::execute(exchange, symbols, format, output, output_dir, interval, max_snapshots).await?;
+            commands::liquidity::execute(exchange, symbols, format, output, output_dir, interval, max_snapshots, database_url).await?;
         }
         Commands::Ticker {
             exchange,
@@ -75,8 +76,9 @@ async fn main() -> Result<()> {
             output_dir,
             interval,
             max_snapshots,
+            database_url,
         } => {
-            commands::ticker::execute(exchange, symbols, format, output, output_dir, interval, max_snapshots).await?;
+            commands::ticker::execute(exchange, symbols, format, output, output_dir, interval, max_snapshots, database_url).await?;
         }
     }
 

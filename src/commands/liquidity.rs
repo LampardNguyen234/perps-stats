@@ -3,6 +3,7 @@ use chrono::Utc;
 use csv::Writer;
 use perps_aggregator::{Aggregator, IAggregator};
 use perps_core::{IPerps, LiquidityDepthStats};
+use perps_database::{PgPool, PostgresRepository, Repository};
 use perps_exchanges::{all_exchanges, get_exchange};
 use prettytable::{format, Cell, Row, Table};
 use rust_xlsxwriter::{Format, Workbook};
@@ -12,10 +13,15 @@ use std::fs::File;
 use tokio::time::{sleep, Duration};
 
 /// Configuration for periodic fetcher output
-struct OutputConfig {
-    output_file: String,
-    output_dir: Option<String>,
-    format: String,
+enum OutputConfig {
+    File {
+        output_file: String,
+        output_dir: Option<String>,
+        format: String,
+    },
+    Database {
+        repository: PostgresRepository,
+    },
 }
 
 pub async fn execute(
@@ -26,6 +32,7 @@ pub async fn execute(
     output_dir: Option<String>,
     interval: Option<u64>,
     max_snapshots: usize,
+    database_url: Option<String>,
 ) -> Result<()> {
     let aggregator = Aggregator::new();
     let requested_symbols: Vec<String> = symbols.split(',').map(|s| s.trim().to_string()).collect();
@@ -40,6 +47,7 @@ pub async fn execute(
             output_dir,
             interval,
             max_snapshots,
+            database_url,
         )
         .await
     } else {
@@ -51,6 +59,7 @@ pub async fn execute(
             output_dir,
             interval,
             max_snapshots,
+            database_url,
         )
         .await
     }
@@ -64,25 +73,36 @@ async fn execute_all_exchanges(
     output_dir: Option<String>,
     interval: Option<u64>,
     max_snapshots: usize,
+    database_url: Option<String>,
 ) -> Result<()> {
     let exchanges = all_exchanges();
     let exchange_clients: Vec<Box<dyn IPerps + Send + Sync>> = exchanges.into_iter().map(|(_, client)| client).collect();
 
     if let Some(interval_secs) = interval {
         let format_lower = format.to_lowercase();
-        if format_lower != "csv" && format_lower != "excel" {
-            anyhow::bail!("Periodic fetching (--interval) for all exchanges requires --format csv or --format excel");
-        }
-        let output_file = output.ok_or_else(|| anyhow::anyhow!("Periodic fetching (--interval) requires --output <file>"))?;
 
-        if let Some(ref dir) = output_dir {
-            std::fs::create_dir_all(dir)?;
-        }
-
-        let output_config = OutputConfig {
-            output_file,
-            output_dir,
-            format: format_lower,
+        // Determine output configuration
+        let output_config = if format_lower == "table" {
+            // When format is table (default) and interval is set, use database
+            if let Some(db_url) = database_url {
+                let pool = PgPool::connect(&db_url).await?;
+                let repository = PostgresRepository::new(pool);
+                OutputConfig::Database { repository }
+            } else {
+                anyhow::bail!("Periodic fetching (--interval) without explicit format requires --database-url or DATABASE_URL environment variable");
+            }
+        } else if format_lower == "csv" || format_lower == "excel" {
+            let output_file = output.ok_or_else(|| anyhow::anyhow!("Periodic fetching (--interval) with --format csv/excel requires --output <file>"))?;
+            if let Some(ref dir) = output_dir {
+                std::fs::create_dir_all(dir)?;
+            }
+            OutputConfig::File {
+                output_file,
+                output_dir,
+                format: format_lower,
+            }
+        } else {
+            anyhow::bail!("Periodic fetching (--interval) requires --format csv, --format excel, or database storage (no format specified)");
         };
 
         run_periodic_fetcher_all(
@@ -130,6 +150,7 @@ async fn execute_single_exchange(
     output_dir: Option<String>,
     interval: Option<u64>,
     max_snapshots: usize,
+    database_url: Option<String>,
 ) -> Result<()> {
     let client = get_exchange(&exchange)?;
     let parsed_symbols: Vec<String> = symbols.iter().map(|s| client.parse_symbol(s)).collect();
@@ -138,24 +159,34 @@ async fn execute_single_exchange(
     if valid_symbols.is_empty() {
         anyhow::bail!("No valid symbols found for exchange {}", exchange);
     }
-    
+
     let symbol_map: HashMap<String, String> = parsed_symbols.into_iter().zip(symbols.into_iter()).collect();
 
     if let Some(interval_secs) = interval {
         let format_lower = format.to_lowercase();
-        if format_lower != "csv" && format_lower != "excel" {
-            anyhow::bail!("Periodic fetching (--interval) requires --format csv or --format excel");
-        }
-        let output_file = output.ok_or_else(|| anyhow::anyhow!("Periodic fetching (--interval) requires --output <file>"))?;
 
-        if let Some(ref dir) = output_dir {
-            std::fs::create_dir_all(dir)?;
-        }
-
-        let output_config = OutputConfig {
-            output_file,
-            output_dir,
-            format: format_lower,
+        // Determine output configuration
+        let output_config = if format_lower == "table" {
+            // When format is table (default) and interval is set, use database
+            if let Some(db_url) = database_url {
+                let pool = PgPool::connect(&db_url).await?;
+                let repository = PostgresRepository::new(pool);
+                OutputConfig::Database { repository }
+            } else {
+                anyhow::bail!("Periodic fetching (--interval) without explicit format requires --database-url or DATABASE_URL environment variable");
+            }
+        } else if format_lower == "csv" || format_lower == "excel" {
+            let output_file = output.ok_or_else(|| anyhow::anyhow!("Periodic fetching (--interval) with --format csv/excel requires --output <file>"))?;
+            if let Some(ref dir) = output_dir {
+                std::fs::create_dir_all(dir)?;
+            }
+            OutputConfig::File {
+                output_file,
+                output_dir,
+                format: format_lower,
+            }
+        } else {
+            anyhow::bail!("Periodic fetching (--interval) requires --format csv, --format excel, or database storage (no format specified)");
         };
 
         run_periodic_fetcher(
@@ -188,13 +219,21 @@ async fn run_periodic_fetcher_all(
     max_snapshots: usize,
     config: OutputConfig,
 ) -> Result<()> {
+    let output_desc = match &config {
+        OutputConfig::File { format, output_file, output_dir } => {
+            format!("format: {}, output: {}{}",
+                format,
+                output_dir.as_ref().map(|d| format!("{}/", d)).unwrap_or_default(),
+                output_file)
+        }
+        OutputConfig::Database { .. } => "database".to_string(),
+    };
+
     tracing::info!(
-        "Starting periodic liquidity fetcher for all exchanges (interval: {}s, max_snapshots: {}, format: {}, output: {}{})",
+        "Starting periodic liquidity fetcher for all exchanges (interval: {}s, max_snapshots: {}, {})",
         interval_secs,
         if max_snapshots == 0 { "unlimited".to_string() } else { max_snapshots.to_string() },
-        config.format,
-        config.output_dir.as_ref().map(|d| format!("{}/", d)).unwrap_or_default(),
-        config.output_file
+        output_desc
     );
 
     let mut all_snapshots: Vec<LiquidityDepthStats> = Vec::new();
@@ -212,21 +251,28 @@ async fn run_periodic_fetcher_all(
                 Err(e) => tracing::error!("Failed to calculate aggregated liquidity for {}: {}", symbol, e),
             }
         }
-        all_snapshots.extend(current_snapshot);
 
         snapshot_count += 1;
 
-        match config.format.as_str() {
-            "csv" => write_to_csv_all(&all_snapshots, &config.output_file, &config.output_dir)?,
-            "excel" => write_to_excel_all(&all_snapshots, &config.output_file, &config.output_dir)?,
-            _ => unreachable!("Format already validated"),
+        match &config {
+            OutputConfig::File { format, output_file, output_dir } => {
+                all_snapshots.extend(current_snapshot);
+                match format.as_str() {
+                    "csv" => write_to_csv_all(&all_snapshots, output_file, output_dir)?,
+                    "excel" => write_to_excel_all(&all_snapshots, output_file, output_dir)?,
+                    _ => unreachable!("Format already validated"),
+                }
+                tracing::info!("✓ Written snapshot #{} to {}{}",
+                    snapshot_count,
+                    output_dir.as_ref().map(|d| format!("{}/", d)).unwrap_or_default(),
+                    output_file
+                );
+            }
+            OutputConfig::Database { repository } => {
+                repository.store_liquidity_depth(&current_snapshot).await?;
+                tracing::info!("✓ Stored snapshot #{} to database ({} records)", snapshot_count, current_snapshot.len());
+            }
         }
-
-        tracing::info!("✓ Written snapshot #{} to {}{}",
-            snapshot_count,
-            config.output_dir.as_ref().map(|d| format!("{}/", d)).unwrap_or_default(),
-            config.output_file
-        );
 
         if !unlimited && snapshot_count >= max_snapshots {
             tracing::info!("Reached maximum snapshots ({}). Stopping.", max_snapshots);
@@ -242,7 +288,7 @@ async fn run_periodic_fetcher_all(
 }
 
 
-/// Run periodic liquidity fetcher and write to file
+/// Run periodic liquidity fetcher and write to file or database
 async fn run_periodic_fetcher(
     client: &dyn IPerps,
     aggregator: &dyn IAggregator,
@@ -253,13 +299,21 @@ async fn run_periodic_fetcher(
     max_snapshots: usize,
     config: OutputConfig,
 ) -> Result<()> {
+    let output_desc = match &config {
+        OutputConfig::File { format, output_file, output_dir } => {
+            format!("format: {}, output: {}{}",
+                format,
+                output_dir.as_ref().map(|d| format!("{}/", d)).unwrap_or_default(),
+                output_file)
+        }
+        OutputConfig::Database { .. } => "database".to_string(),
+    };
+
     tracing::info!(
-        "Starting periodic liquidity fetcher (interval: {}s, max_snapshots: {}, format: {}, output: {}{})",
+        "Starting periodic liquidity fetcher (interval: {}s, max_snapshots: {}, {})",
         interval_secs,
         if max_snapshots == 0 { "unlimited".to_string() } else { max_snapshots.to_string() },
-        config.format,
-        config.output_dir.as_ref().map(|d| format!("{}/", d)).unwrap_or_default(),
-        config.output_file
+        output_desc
     );
 
     let mut data_by_symbol: HashMap<String, Vec<LiquidityDepthStats>> = HashMap::new();
@@ -274,6 +328,7 @@ async fn run_periodic_fetcher(
         let now = Utc::now();
         tracing::info!("[Snapshot #{}] Fetching liquidity at {}", snapshot_count + 1, now.format("%Y-%m-%d %H:%M:%S UTC"));
 
+        let mut current_snapshot = Vec::new();
         for symbol in symbols {
             let global_symbol = symbol_map.get(symbol).unwrap();
             match fetch_liquidity_data(client, aggregator, symbol, global_symbol, exchange).await {
@@ -284,7 +339,8 @@ async fn run_periodic_fetcher(
                         stats.bid_10bps,
                         stats.ask_10bps
                     );
-                    data_by_symbol.get_mut(global_symbol).unwrap().push(stats);
+                    data_by_symbol.get_mut(global_symbol).unwrap().push(stats.clone());
+                    current_snapshot.push(stats);
                 }
                 Err(e) => {
                     tracing::error!("Failed to fetch liquidity for {}: {}", symbol, e);
@@ -294,17 +350,24 @@ async fn run_periodic_fetcher(
 
         snapshot_count += 1;
 
-        match config.format.as_str() {
-            "csv" => write_to_csv(&data_by_symbol, &config.output_file, &config.output_dir)?,
-            "excel" => write_to_excel(&data_by_symbol, &config.output_file, &config.output_dir)?,
-            _ => unreachable!("Format already validated"),
+        match &config {
+            OutputConfig::File { format, output_file, output_dir } => {
+                match format.as_str() {
+                    "csv" => write_to_csv(&data_by_symbol, output_file, output_dir)?,
+                    "excel" => write_to_excel(&data_by_symbol, output_file, output_dir)?,
+                    _ => unreachable!("Format already validated"),
+                }
+                tracing::info!("✓ Written snapshot #{} to {}{}",
+                    snapshot_count,
+                    output_dir.as_ref().map(|d| format!("{}/", d)).unwrap_or_default(),
+                    output_file
+                );
+            }
+            OutputConfig::Database { repository } => {
+                repository.store_liquidity_depth(&current_snapshot).await?;
+                tracing::info!("✓ Stored snapshot #{} to database ({} records)", snapshot_count, current_snapshot.len());
+            }
         }
-
-        tracing::info!("✓ Written snapshot #{} to {}{}",
-            snapshot_count,
-            config.output_dir.as_ref().map(|d| format!("{}/", d)).unwrap_or_default(),
-            config.output_file
-        );
 
         if !unlimited && snapshot_count >= max_snapshots {
             tracing::info!("Reached maximum snapshots ({}). Stopping.", max_snapshots);

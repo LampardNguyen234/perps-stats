@@ -2,6 +2,7 @@ use anyhow::Result;
 use chrono::Utc;
 use csv::Writer;
 use perps_core::{IPerps, Ticker};
+use perps_database::{PgPool, PostgresRepository, Repository};
 use perps_exchanges::get_exchange;
 use prettytable::{format, Cell, Row, Table};
 use rust_xlsxwriter::{Format, Workbook};
@@ -11,10 +12,15 @@ use std::fs::File;
 use tokio::time::{sleep, Duration};
 
 /// Configuration for periodic fetcher output
-struct OutputConfig {
-    output_file: String,
-    output_dir: Option<String>,
-    format: String,
+enum OutputConfig {
+    File {
+        output_file: String,
+        output_dir: Option<String>,
+        format: String,
+    },
+    Database {
+        repository: PostgresRepository,
+    },
 }
 
 pub async fn execute(
@@ -25,6 +31,7 @@ pub async fn execute(
     output_dir: Option<String>,
     interval: Option<u64>,
     max_snapshots: usize,
+    _database_url: Option<String>,
 ) -> Result<()> {
     // Create exchange client using factory
     let client = get_exchange(&exchange)?;
@@ -44,26 +51,37 @@ pub async fn execute(
 
     // Check if periodic fetching is enabled
     if let Some(interval_secs) = interval {
-        // Validate format and output file
+        // Validate format and output configuration
         let format_lower = format.to_lowercase();
-        if format_lower != "csv" && format_lower != "excel" {
-            anyhow::bail!("Periodic fetching (--interval) requires --format csv or --format excel");
-        }
-        if output.is_none() {
-            anyhow::bail!("Periodic fetching (--interval) requires --output <file>");
-        }
 
-        // Create output directory if specified
-        if let Some(ref dir) = output_dir {
-            std::fs::create_dir_all(dir)?;
-            tracing::info!("Created output directory: {}", dir);
-        }
+        let output_config = if format_lower == "table" {
+            // If format is "table" (default), use database storage
+            if let Some(db_url) = _database_url {
+                let pool = PgPool::connect(&db_url).await?;
+                let repository = PostgresRepository::new(pool);
+                OutputConfig::Database { repository }
+            } else {
+                anyhow::bail!("Periodic fetching (--interval) without explicit format requires --database-url or DATABASE_URL environment variable");
+            }
+        } else if format_lower == "csv" || format_lower == "excel" {
+            // CSV or Excel format - write to files
+            if output.is_none() {
+                anyhow::bail!("Periodic fetching (--interval) with --format {} requires --output <file>", format_lower);
+            }
 
-        // Run periodic fetcher
-        let output_config = OutputConfig {
-            output_file: output.unwrap(),
-            output_dir,
-            format: format_lower,
+            // Create output directory if specified
+            if let Some(ref dir) = output_dir {
+                std::fs::create_dir_all(dir)?;
+                tracing::info!("Created output directory: {}", dir);
+            }
+
+            OutputConfig::File {
+                output_file: output.unwrap(),
+                output_dir,
+                format: format_lower,
+            }
+        } else {
+            anyhow::bail!("Periodic fetching (--interval) requires --format csv, --format excel, or database storage (default with --database-url)");
         };
 
         run_periodic_fetcher(
@@ -99,7 +117,7 @@ pub async fn execute(
     Ok(())
 }
 
-/// Run periodic ticker fetcher and write to file
+/// Run periodic ticker fetcher and write to file or database
 async fn run_periodic_fetcher(
     client: &dyn IPerps,
     symbols: &[String],
@@ -108,19 +126,30 @@ async fn run_periodic_fetcher(
     max_snapshots: usize,
     config: OutputConfig,
 ) -> Result<()> {
+    let output_desc = match &config {
+        OutputConfig::File { output_file, output_dir, format } => {
+            format!("format: {}, output: {}{}",
+                format,
+                output_dir.as_ref().map(|d| format!("{}/", d)).unwrap_or_default(),
+                output_file
+            )
+        }
+        OutputConfig::Database { .. } => "format: database".to_string(),
+    };
+
     tracing::info!(
-        "Starting periodic ticker fetcher (interval: {}s, max_snapshots: {}, format: {}, output: {}{})",
+        "Starting periodic ticker fetcher (interval: {}s, max_snapshots: {}, {})",
         interval_secs,
         if max_snapshots == 0 { "unlimited".to_string() } else { max_snapshots.to_string() },
-        config.format,
-        config.output_dir.as_ref().map(|d| format!("{}/", d)).unwrap_or_default(),
-        config.output_file
+        output_desc
     );
 
-    // Storage for all snapshots: symbol -> Vec<Ticker>
+    // Storage for file-based outputs: symbol -> Vec<Ticker>
     let mut data_by_symbol: HashMap<String, Vec<Ticker>> = HashMap::new();
-    for symbol in symbols {
-        data_by_symbol.insert(symbol.clone(), Vec::new());
+    if matches!(&config, OutputConfig::File { .. }) {
+        for symbol in symbols {
+            data_by_symbol.insert(symbol.clone(), Vec::new());
+        }
     }
 
     let mut snapshot_count = 0;
@@ -131,6 +160,7 @@ async fn run_periodic_fetcher(
         tracing::info!("[Snapshot #{}] Fetching tickers at {}", snapshot_count + 1, now.format("%Y-%m-%d %H:%M:%S UTC"));
 
         // Fetch data for all symbols
+        let mut batch_tickers = Vec::new();
         for symbol in symbols {
             match fetch_ticker_data(client, symbol).await {
                 Ok(ticker) => {
@@ -141,7 +171,15 @@ async fn run_periodic_fetcher(
                         ticker.best_bid_qty,
                         ticker.best_ask_qty
                     );
-                    data_by_symbol.get_mut(symbol).unwrap().push(ticker);
+
+                    match &config {
+                        OutputConfig::File { .. } => {
+                            data_by_symbol.get_mut(symbol).unwrap().push(ticker);
+                        }
+                        OutputConfig::Database { .. } => {
+                            batch_tickers.push(ticker);
+                        }
+                    }
                 }
                 Err(e) => {
                     tracing::error!("Failed to fetch ticker for {}: {}", symbol, e);
@@ -151,18 +189,26 @@ async fn run_periodic_fetcher(
 
         snapshot_count += 1;
 
-        // Write to file after each snapshot
-        match config.format.as_str() {
-            "csv" => write_to_csv(&data_by_symbol, &config.output_file, &config.output_dir, exchange)?,
-            "excel" => write_to_excel(&data_by_symbol, &config.output_file, &config.output_dir, exchange)?,
-            _ => unreachable!("Format already validated"),
+        // Write to output
+        match &config {
+            OutputConfig::File { output_file, output_dir, format } => {
+                match format.as_str() {
+                    "csv" => write_to_csv(&data_by_symbol, output_file, output_dir, exchange)?,
+                    "excel" => write_to_excel(&data_by_symbol, output_file, output_dir, exchange)?,
+                    _ => unreachable!("Format already validated"),
+                }
+                tracing::info!("✓ Written snapshot #{} to {}{}",
+                    snapshot_count,
+                    output_dir.as_ref().map(|d| format!("{}/", d)).unwrap_or_default(),
+                    output_file
+                );
+            }
+            OutputConfig::Database { repository } => {
+                if !batch_tickers.is_empty() {
+                    repository.store_tickers_with_exchange(exchange, &batch_tickers).await?;
+                }
+            }
         }
-
-        tracing::info!("✓ Written snapshot #{} to {}{}",
-            snapshot_count,
-            config.output_dir.as_ref().map(|d| format!("{}/", d)).unwrap_or_default(),
-            config.output_file
-        );
 
         // Check if we've reached the max snapshots
         if !unlimited && snapshot_count >= max_snapshots {

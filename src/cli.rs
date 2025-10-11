@@ -102,7 +102,7 @@ pub enum Commands {
         #[arg(short, long)]
         symbols: String,
 
-        /// Output format (table, json, csv)
+        /// Output format (table, json, csv, excel). When interval is set and format is not specified, data is saved to database.
         #[arg(short, long, default_value = "table")]
         format: String,
 
@@ -121,6 +121,10 @@ pub enum Commands {
         /// Maximum number of snapshots to collect (0 = unlimited)
         #[arg(short = 'n', long, default_value = "0")]
         max_snapshots: usize,
+
+        /// Database URL for storing data (required when using --interval without --format)
+        #[arg(long, env = "DATABASE_URL")]
+        database_url: Option<String>,
     },
 
     /// Retrieve ticker data for contracts
@@ -133,7 +137,7 @@ pub enum Commands {
         #[arg(short, long)]
         symbols: String,
 
-        /// Output format (table, json, csv, excel)
+        /// Output format (table, json, csv, excel). When interval is set and format is not specified, data is saved to database.
         #[arg(short, long, default_value = "table")]
         format: String,
 
@@ -152,6 +156,10 @@ pub enum Commands {
         /// Maximum number of snapshots to collect (0 = unlimited)
         #[arg(short = 'n', long, default_value = "0")]
         max_snapshots: usize,
+
+        /// Database URL for storing data (required when using --interval without --format)
+        #[arg(long, env = "DATABASE_URL")]
+        database_url: Option<String>,
     },
 }
 
