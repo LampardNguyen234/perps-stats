@@ -1,3 +1,4 @@
+use crate::cache::SymbolsCache;
 use crate::paradex::types::*;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
@@ -13,13 +14,26 @@ const BASE_URL: &str = "https://api.prod.paradex.trade/v1";
 #[derive(Clone)]
 pub struct ParadexClient {
     http: reqwest::Client,
+    /// Cached set of supported symbols
+    symbols_cache: SymbolsCache,
 }
 
 impl ParadexClient {
     pub fn new() -> Self {
         Self {
             http: reqwest::Client::new(),
+            symbols_cache: SymbolsCache::new(),
         }
+    }
+
+    /// Ensure the symbols cache is initialized
+    async fn ensure_cache_initialized(&self) -> Result<()> {
+        self.symbols_cache
+            .get_or_init(|| async {
+                let markets = self.get_markets().await?;
+                Ok(markets.into_iter().map(|m| m.symbol).collect())
+            })
+            .await
     }
 
     async fn get<T: serde::de::DeserializeOwned>(&self, endpoint: &str) -> Result<T> {
@@ -187,32 +201,65 @@ impl IPerps for ParadexClient {
     }
 
     async fn is_supported(&self, symbol: &str) -> Result<bool> {
-        let markets = self.get_markets().await?;
-        Ok(markets.iter().any(|m| m.symbol == symbol))
+        self.ensure_cache_initialized().await?;
+        Ok(self.symbols_cache.contains(symbol).await)
     }
 
     // --- Partial Implementations using BBO ---
 
     async fn get_ticker(&self, symbol: &str) -> Result<Ticker> {
-        // Use BBO endpoint to construct a simplified ticker
-        let response: BboResponse = self.get(&format!("/bbo/{}", symbol)).await?;
+        // Fetch market summary for 24h statistics
+        let summary_response: MarketSummaryResponse = self.get(&format!("/markets/summary?market={}", symbol)).await?;
+        let summary = summary_response.results.first().ok_or_else(|| anyhow!("No summary data found for {}", symbol))?;
+
+        // Fetch BBO for best bid/ask with quantities
+        let bbo: BboResponse = self.get(&format!("/bbo/{}", symbol)).await?;
+
+        // Parse prices
+        let last_price = Decimal::from_str(&summary.last_traded_price)?;
+        let mark_price = Decimal::from_str(&summary.mark_price)?;
+        let index_price = Decimal::from_str(&summary.underlying_price)?;
+
+        // Calculate 24h price change
+        let price_change_rate = Decimal::from_str(&summary.price_change_rate_24h)?;
+        // price_change_rate is already a percentage (e.g., -0.074055 means -7.4055%)
+        // Calculate absolute price change: last_price * price_change_rate / (1 + price_change_rate)
+        let price_change_24h = if price_change_rate != Decimal::ZERO {
+            last_price * price_change_rate / (Decimal::ONE + price_change_rate)
+        } else {
+            Decimal::ZERO
+        };
+
+        // Convert volume to turnover (volume * average price approximation)
+        let volume_24h = Decimal::from_str(&summary.volume_24h)?;
+        let turnover_24h = volume_24h; // Paradex volume_24h is already in USD notional
+
+        // Estimate 24h high/low from current price and price change
+        // This is an approximation since Paradex doesn't provide high/low directly
+        let price_change_abs = price_change_24h.abs();
+        let high_price_24h = last_price + price_change_abs;
+        let low_price_24h = if last_price > price_change_abs {
+            last_price - price_change_abs
+        } else {
+            Decimal::ZERO
+        };
+
         Ok(Ticker {
-            symbol: response.market.clone(),
-            last_price: Decimal::from_str(&response.bid)?,
-            mark_price: Decimal::from_str(&response.bid)?,
-            index_price: Decimal::ZERO,
-            best_bid_price: Decimal::from_str(&response.bid)?,
-            best_bid_qty: Decimal::from_str(&response.bid_size)?,
-            best_ask_price: Decimal::from_str(&response.ask)?,
-            best_ask_qty: Decimal::from_str(&response.ask_size)?,
-            timestamp: Utc.timestamp_millis_opt(response.last_updated_at as i64).unwrap(),
-            // Fields not available from BBO
-            volume_24h: Decimal::ZERO,
-            turnover_24h: Decimal::ZERO,
-            price_change_24h: Decimal::ZERO,
-            price_change_pct: Decimal::ZERO,
-            high_price_24h: Decimal::ZERO,
-            low_price_24h: Decimal::ZERO,
+            symbol: summary.symbol.clone(),
+            last_price,
+            mark_price,
+            index_price,
+            best_bid_price: Decimal::from_str(&bbo.bid)?,
+            best_bid_qty: Decimal::from_str(&bbo.bid_size)?,
+            best_ask_price: Decimal::from_str(&bbo.ask)?,
+            best_ask_qty: Decimal::from_str(&bbo.ask_size)?,
+            volume_24h: Decimal::ZERO, // Paradex provides notional volume, not base volume
+            turnover_24h,
+            price_change_24h,
+            price_change_pct: price_change_rate,
+            high_price_24h,
+            low_price_24h,
+            timestamp: Utc.timestamp_millis_opt(summary.created_at as i64).unwrap(),
         })
     }
 
@@ -244,10 +291,10 @@ impl IPerps for ParadexClient {
     }
 
     async fn get_market_stats(&self, _symbol: &str) -> Result<MarketStats> {
-        unimplemented!("get_market_stats is not available from a public Paradex endpoint.")
+        unimplemented!("get_market_stats is not available from a public Hyperliquid endpoint.")
     }
 
     async fn get_all_market_stats(&self) -> Result<Vec<MarketStats>> {
-        unimplemented!("get_all_market_stats is not available from a public Paradex endpoint.")
+        unimplemented!("get_all_market_stats is not available from a public Hyperliquid endpoint.")
     }
 }

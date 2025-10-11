@@ -38,8 +38,21 @@ async fn main() -> Result<()> {
         Commands::Serve { host, port } => {
             commands::serve::execute(host, port).await?;
         }
-        Commands::Run { port } => {
-            commands::run::execute(port).await?;
+        Commands::Run {
+            symbols_file,
+            exchange,
+            interval,
+            output_dir,
+            max_snapshots,
+        } => {
+            commands::run::execute(
+                symbols_file,
+                exchange,
+                interval,
+                output_dir,
+                max_snapshots,
+            )
+            .await?;
         }
         Commands::Db { command } => match command {
             DbCommands::Init => commands::db::init().await?,

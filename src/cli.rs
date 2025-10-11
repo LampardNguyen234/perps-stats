@@ -56,11 +56,27 @@ pub enum Commands {
         host: String,
     },
 
-    /// Run all services (backfill, stream, and serve)
+    /// Run periodic data collection service
     Run {
-        /// Port for the API server
-        #[arg(short, long, default_value = "8080")]
-        port: u16,
+        /// Path to symbols file (one symbol per line or comma-separated)
+        #[arg(short, long, default_value = "symbols.txt")]
+        symbols_file: String,
+
+        /// Exchange name (e.g., binance). If not specified, fetches from all supported exchanges in parallel.
+        #[arg(short, long)]
+        exchange: Option<String>,
+
+        /// Fetch interval in seconds
+        #[arg(short, long, default_value = "300")]
+        interval: u64,
+
+        /// Output directory for Excel files
+        #[arg(short, long, default_value = "./data")]
+        output_dir: String,
+
+        /// Maximum number of snapshots to collect (0 = unlimited)
+        #[arg(short = 'n', long, default_value = "0")]
+        max_snapshots: usize,
     },
 
     /// Database operations

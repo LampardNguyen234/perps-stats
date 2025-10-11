@@ -1,3 +1,4 @@
 pub mod repository;
 
-pub use repository::Repository;
+pub use repository::{PostgresRepository, Repository};
+pub use sqlx::PgPool;

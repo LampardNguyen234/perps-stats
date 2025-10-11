@@ -1613,6 +1613,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
+ "once_cell",
  "perps-core",
  "reqwest",
  "rust_decimal",
@@ -1620,6 +1621,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 1.0.69",
+ "tokio",
  "tokio-tungstenite",
  "tracing",
 ]
@@ -1633,6 +1635,7 @@ dependencies = [
  "chrono",
  "clap",
  "csv",
+ "futures",
  "perps-aggregator",
  "perps-core",
  "perps-database",

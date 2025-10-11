@@ -2,6 +2,7 @@ use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use perps_core::{FundingRate, IPerps, Kline, Market, MarketStats, OpenInterest, Orderbook, Ticker, Trade};
+use crate::cache::SymbolsCache;
 use reqwest::Client;
 use std::collections::HashMap;
 use tracing;
@@ -16,14 +17,28 @@ pub struct LighterClient {
     base_url: String,
     // Cache for market_id lookups
     symbol_to_market_id: HashMap<String, u64>,
+    /// Cached set of supported symbols
+    symbols_cache: SymbolsCache,
 }
 
 impl LighterClient {
+
+    /// Ensure the symbols cache is initialized
+    async fn ensure_cache_initialized(&self) -> Result<()> {
+        self.symbols_cache
+            .get_or_init(|| async {
+                let markets = self.get_markets().await?;
+                Ok(markets.into_iter().map(|m| m.symbol).collect())
+            })
+            .await
+    }
+
     pub fn new() -> Self {
         Self {
             client: Client::new(),
             base_url: BASE_URL.to_string(),
             symbol_to_market_id: HashMap::new(),
+            symbols_cache: SymbolsCache::new(),
         }
     }
 
@@ -408,10 +423,8 @@ impl IPerps for LighterClient {
     }
 
     async fn is_supported(&self, symbol: &str) -> Result<bool> {
-        match self.clone().get_market_id(symbol).await {
-            Ok(_) => Ok(true),
-            Err(_) => Ok(false),
-        }
+        self.ensure_cache_initialized().await?;
+        Ok(self.symbols_cache.contains(symbol).await)
     }
 }
 
@@ -422,6 +435,7 @@ impl Clone for LighterClient {
             client: self.client.clone(),
             base_url: self.base_url.clone(),
             symbol_to_market_id: self.symbol_to_market_id.clone(),
+            symbols_cache: self.symbols_cache.clone(),
         }
     }
 }

@@ -1,4 +1,5 @@
 use crate::bybit::types::*;
+use crate::cache::SymbolsCache;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use chrono::{TimeZone, Utc};
@@ -13,13 +14,26 @@ const BASE_URL: &str = "https://api.bybit.com";
 #[derive(Clone)]
 pub struct BybitClient {
     http: reqwest::Client,
+    /// Cached set of supported symbols
+    symbols_cache: SymbolsCache,
 }
 
 impl BybitClient {
     pub fn new() -> Self {
         Self {
             http: reqwest::Client::new(),
+            symbols_cache: SymbolsCache::new(),
         }
+    }
+
+    /// Ensure the symbols cache is initialized
+    async fn ensure_cache_initialized(&self) -> Result<()> {
+        self.symbols_cache
+            .get_or_init(|| async {
+                let markets = self.get_markets().await?;
+                Ok(markets.into_iter().map(|m| m.symbol).collect())
+            })
+            .await
     }
 
     async fn get<T: serde::de::DeserializeOwned>(&self, endpoint: &str) -> Result<T> {
@@ -301,8 +315,8 @@ impl IPerps for BybitClient {
     }
 
     async fn is_supported(&self, symbol: &str) -> Result<bool> {
-        let markets = self.get_markets().await?;
-        Ok(markets.iter().any(|m| m.symbol == symbol))
+        self.ensure_cache_initialized().await?;
+        Ok(self.symbols_cache.contains(symbol).await)
     }
 
     async fn get_ticker(&self, symbol: &str) -> Result<Ticker> {

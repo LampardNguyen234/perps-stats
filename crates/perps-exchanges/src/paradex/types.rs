@@ -73,3 +73,35 @@ pub struct BboResponse {
     pub bid_size: String,
     pub last_updated_at: u64,
 }
+
+// For /v1/markets/summary
+#[derive(Debug, Deserialize, Clone)]
+pub struct MarketSummaryResponse {
+    pub results: Vec<ParadexMarketSummary>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct ParadexMarketSummary {
+    pub symbol: String,
+    #[serde(rename = "mark_price")]
+    pub mark_price: String,
+    #[serde(rename = "last_traded_price")]
+    pub last_traded_price: String,
+    pub bid: String,
+    pub ask: String,
+    #[serde(rename = "volume_24h")]
+    pub volume_24h: String,
+    #[serde(rename = "price_change_rate_24h")]
+    pub price_change_rate_24h: String,
+    #[serde(rename = "open_interest")]
+    pub open_interest: String,
+    #[serde(rename = "funding_rate")]
+    pub funding_rate: String,
+    #[serde(rename = "underlying_price")]
+    pub underlying_price: String,
+    #[serde(rename = "created_at")]
+    pub created_at: u64,
+    // All other fields are optional and ignored
+    #[serde(flatten)]
+    pub extra: Option<serde_json::Value>,
+}

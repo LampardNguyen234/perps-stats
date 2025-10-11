@@ -4,6 +4,7 @@ use perps_core::*;
 use rust_decimal::Decimal;
 use tracing::{debug, warn};
 
+use crate::cache::SymbolsCache;
 use super::conversions::*;
 use super::error::BinanceError;
 use super::ticker_calculator::{calculate_ticker_from_klines, parse_timeframe};
@@ -20,6 +21,8 @@ pub struct BinanceClient {
     base_url: String,
     /// HTTP client
     client: reqwest::Client,
+    /// Cached set of supported symbols (normalized format)
+    symbols_cache: SymbolsCache,
 }
 
 impl BinanceClient {
@@ -30,6 +33,7 @@ impl BinanceClient {
             secret_key: None,
             base_url: "https://fapi.binance.com".to_string(),
             client: reqwest::Client::new(),
+            symbols_cache: SymbolsCache::new(),
         }
     }
 
@@ -40,6 +44,7 @@ impl BinanceClient {
             secret_key: Some(secret_key),
             base_url: "https://fapi.binance.com".to_string(),
             client: reqwest::Client::new(),
+            symbols_cache: SymbolsCache::new(),
         }
     }
 
@@ -50,7 +55,18 @@ impl BinanceClient {
             secret_key: None,
             base_url,
             client: reqwest::Client::new(),
+            symbols_cache: SymbolsCache::new(),
         }
+    }
+
+    /// Ensure the symbols cache is initialized
+    async fn ensure_cache_initialized(&self) -> anyhow::Result<()> {
+        self.symbols_cache
+            .get_or_init(|| async {
+                let markets = self.get_markets().await?;
+                Ok(markets.into_iter().map(|m| m.symbol).collect())
+            })
+            .await
     }
 
     /// Helper to make GET requests to Binance API
@@ -704,9 +720,7 @@ impl IPerps for BinanceClient {
     }
 
     async fn is_supported(&self, symbol: &str) -> anyhow::Result<bool> {
-        match self.get_market(symbol).await {
-            Ok(_) => Ok(true),
-            Err(_) => Ok(false),
-        }
+        self.ensure_cache_initialized().await?;
+        Ok(self.symbols_cache.contains(symbol).await)
     }
 }

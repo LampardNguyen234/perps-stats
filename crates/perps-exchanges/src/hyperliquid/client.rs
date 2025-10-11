@@ -1,3 +1,4 @@
+use crate::cache::SymbolsCache;
 use crate::hyperliquid::types::*;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
@@ -14,13 +15,26 @@ const INFO_URL: &str = "https://api.hyperliquid.xyz/info";
 #[derive(Clone)]
 pub struct HyperliquidClient {
     http: reqwest::Client,
+    /// Cached set of supported symbols
+    symbols_cache: SymbolsCache,
 }
 
 impl HyperliquidClient {
     pub fn new() -> Self {
         Self {
             http: reqwest::Client::new(),
+            symbols_cache: SymbolsCache::new(),
         }
+    }
+
+    /// Ensure the symbols cache is initialized
+    async fn ensure_cache_initialized(&self) -> Result<()> {
+        self.symbols_cache
+            .get_or_init(|| async {
+                let markets = self.get_markets().await?;
+                Ok(markets.into_iter().map(|m| m.symbol).collect())
+            })
+            .await
     }
 
     async fn post<T: serde::de::DeserializeOwned>(&self, body: Value) -> Result<T> {
@@ -52,6 +66,49 @@ impl HyperliquidClient {
             universe: meta.universe,
             asset_ctxs,
         })
+    }
+
+    /// Helper method to fetch 24h high/low prices from 1-hour candles
+    async fn get_24h_high_low(&self, symbol: &str) -> Result<(Decimal, Decimal)> {
+        // Fetch last 24 1-hour candles to calculate high/low
+        let start_time = Utc::now() - chrono::Duration::hours(24);
+        let body = serde_json::json!({
+            "type": "candleSnapshot",
+            "req": {
+                "coin": symbol,
+                "interval": "1h",
+                "startTime": start_time.timestamp_millis()
+            }
+        });
+
+        let candles: Vec<CandleSnapshot> = self.post(body).await?;
+
+        if candles.is_empty() {
+            return Ok((Decimal::ZERO, Decimal::ZERO));
+        }
+
+        // Calculate high/low from all candles
+        let mut high = Decimal::ZERO;
+        let mut low = Decimal::MAX;
+
+        for candle in candles {
+            let candle_high = Decimal::from_str(&candle.h)?;
+            let candle_low = Decimal::from_str(&candle.l)?;
+
+            if candle_high > high {
+                high = candle_high;
+            }
+            if candle_low < low {
+                low = candle_low;
+            }
+        }
+
+        // If low is still MAX, no valid data found
+        if low == Decimal::MAX {
+            low = Decimal::ZERO;
+        }
+
+        Ok((high, low))
     }
 }
 
@@ -116,10 +173,18 @@ impl IPerps for HyperliquidClient {
             .get(index)
             .ok_or_else(|| anyhow!("Asset context not found for {}", symbol))?;
 
-        // Get orderbook for best bid/ask
+        // Get orderbook for best bid/ask with quantities
         let orderbook = self.get_orderbook(symbol, 1).await?;
-        let best_bid = orderbook.bids.first().map(|l| l.price).unwrap_or(Decimal::ZERO);
-        let best_ask = orderbook.asks.first().map(|l| l.price).unwrap_or(Decimal::ZERO);
+        let (best_bid_price, best_bid_qty) = orderbook
+            .bids
+            .first()
+            .map(|l| (l.price, l.quantity))
+            .unwrap_or((Decimal::ZERO, Decimal::ZERO));
+        let (best_ask_price, best_ask_qty) = orderbook
+            .asks
+            .first()
+            .map(|l| (l.price, l.quantity))
+            .unwrap_or((Decimal::ZERO, Decimal::ZERO));
 
         let last_price = Decimal::from_str(&asset_ctx.mid_px.clone().unwrap_or_else(|| "0".to_string()))?;
         let prev_day_px = Decimal::from_str(&asset_ctx.prev_day_px)?;
@@ -130,21 +195,24 @@ impl IPerps for HyperliquidClient {
             Decimal::ZERO
         };
 
+        // Fetch 24h high/low from 1-day candle
+        let (high_price_24h, low_price_24h) = self.get_24h_high_low(symbol).await?;
+
         Ok(Ticker {
             symbol: symbol.to_string(),
             last_price,
             mark_price: Decimal::from_str(&asset_ctx.mark_px)?,
             index_price: Decimal::from_str(&asset_ctx.oracle_px)?,
-            best_bid_price: best_bid,
-            best_bid_qty: Decimal::ZERO, // Not available from API
-            best_ask_price: best_ask,
-            best_ask_qty: Decimal::ZERO, // Not available from API
+            best_bid_price,
+            best_bid_qty,
+            best_ask_price,
+            best_ask_qty,
             volume_24h: Decimal::from_str(&asset_ctx.day_base_vlm)?,
             turnover_24h: Decimal::from_str(&asset_ctx.day_ntl_vlm)?,
             price_change_24h: price_change,
             price_change_pct: price_change_percent,
-            high_price_24h: Decimal::ZERO, // Not available
-            low_price_24h: Decimal::ZERO,  // Not available
+            high_price_24h,
+            low_price_24h,
             timestamp: Utc::now(),
         })
     }
@@ -389,8 +457,8 @@ impl IPerps for HyperliquidClient {
     }
 
     async fn is_supported(&self, symbol: &str) -> Result<bool> {
-        let markets = self.get_markets().await?;
-        Ok(markets.iter().any(|m| m.symbol == symbol))
+        self.ensure_cache_initialized().await?;
+        Ok(self.symbols_cache.contains(symbol).await)
     }
 }
 
