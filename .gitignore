@@ -25,3 +25,8 @@ target
 
 /target
 /data
+
+# Environment variables (may contain secrets)
+.env
+.env.local
+.env.*.local

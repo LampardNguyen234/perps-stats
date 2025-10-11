@@ -3,7 +3,7 @@ use chrono::Utc;
 use csv::Writer;
 use perps_aggregator::{Aggregator, IAggregator};
 use perps_core::{IPerps, LiquidityDepthStats};
-use perps_database::{PgPool, PostgresRepository, Repository};
+use perps_database::Repository;
 use perps_exchanges::{all_exchanges, get_exchange};
 use prettytable::{format, Cell, Row, Table};
 use rust_xlsxwriter::{Format, Workbook};
@@ -12,28 +12,31 @@ use std::collections::HashMap;
 use std::fs::File;
 use tokio::time::{sleep, Duration};
 
-/// Configuration for periodic fetcher output
-enum OutputConfig {
-    File {
-        output_file: String,
-        output_dir: Option<String>,
-        format: String,
-    },
-    Database {
-        repository: PostgresRepository,
-    },
+use super::common::{determine_output_config, format_output_description, validate_symbols, OutputConfig};
+
+/// Arguments for the liquidity command
+pub struct LiquidityArgs {
+    pub exchange: Option<String>,
+    pub symbols: String,
+    pub format: String,
+    pub output: Option<String>,
+    pub output_dir: Option<String>,
+    pub interval: Option<u64>,
+    pub max_snapshots: usize,
+    pub database_url: Option<String>,
 }
 
-pub async fn execute(
-    exchange: Option<String>,
-    symbols: String,
-    format: String,
-    output: Option<String>,
-    output_dir: Option<String>,
-    interval: Option<u64>,
-    max_snapshots: usize,
-    database_url: Option<String>,
-) -> Result<()> {
+pub async fn execute(args: LiquidityArgs) -> Result<()> {
+    let LiquidityArgs {
+        exchange,
+        symbols,
+        format,
+        output,
+        output_dir,
+        interval,
+        max_snapshots,
+        database_url,
+    } = args;
     let aggregator = Aggregator::new();
     let requested_symbols: Vec<String> = symbols.split(',').map(|s| s.trim().to_string()).collect();
 
@@ -79,31 +82,7 @@ async fn execute_all_exchanges(
     let exchange_clients: Vec<Box<dyn IPerps + Send + Sync>> = exchanges.into_iter().map(|(_, client)| client).collect();
 
     if let Some(interval_secs) = interval {
-        let format_lower = format.to_lowercase();
-
-        // Determine output configuration
-        let output_config = if format_lower == "table" {
-            // When format is table (default) and interval is set, use database
-            if let Some(db_url) = database_url {
-                let pool = PgPool::connect(&db_url).await?;
-                let repository = PostgresRepository::new(pool);
-                OutputConfig::Database { repository }
-            } else {
-                anyhow::bail!("Periodic fetching (--interval) without explicit format requires --database-url or DATABASE_URL environment variable");
-            }
-        } else if format_lower == "csv" || format_lower == "excel" {
-            let output_file = output.ok_or_else(|| anyhow::anyhow!("Periodic fetching (--interval) with --format csv/excel requires --output <file>"))?;
-            if let Some(ref dir) = output_dir {
-                std::fs::create_dir_all(dir)?;
-            }
-            OutputConfig::File {
-                output_file,
-                output_dir,
-                format: format_lower,
-            }
-        } else {
-            anyhow::bail!("Periodic fetching (--interval) requires --format csv, --format excel, or database storage (no format specified)");
-        };
+        let output_config = determine_output_config(&format, output, &output_dir, database_url).await?;
 
         run_periodic_fetcher_all(
             aggregator,
@@ -163,31 +142,7 @@ async fn execute_single_exchange(
     let symbol_map: HashMap<String, String> = parsed_symbols.into_iter().zip(symbols.into_iter()).collect();
 
     if let Some(interval_secs) = interval {
-        let format_lower = format.to_lowercase();
-
-        // Determine output configuration
-        let output_config = if format_lower == "table" {
-            // When format is table (default) and interval is set, use database
-            if let Some(db_url) = database_url {
-                let pool = PgPool::connect(&db_url).await?;
-                let repository = PostgresRepository::new(pool);
-                OutputConfig::Database { repository }
-            } else {
-                anyhow::bail!("Periodic fetching (--interval) without explicit format requires --database-url or DATABASE_URL environment variable");
-            }
-        } else if format_lower == "csv" || format_lower == "excel" {
-            let output_file = output.ok_or_else(|| anyhow::anyhow!("Periodic fetching (--interval) with --format csv/excel requires --output <file>"))?;
-            if let Some(ref dir) = output_dir {
-                std::fs::create_dir_all(dir)?;
-            }
-            OutputConfig::File {
-                output_file,
-                output_dir,
-                format: format_lower,
-            }
-        } else {
-            anyhow::bail!("Periodic fetching (--interval) requires --format csv, --format excel, or database storage (no format specified)");
-        };
+        let output_config = determine_output_config(&format, output, &output_dir, database_url).await?;
 
         run_periodic_fetcher(
             client.as_ref(),
@@ -219,15 +174,7 @@ async fn run_periodic_fetcher_all(
     max_snapshots: usize,
     config: OutputConfig,
 ) -> Result<()> {
-    let output_desc = match &config {
-        OutputConfig::File { format, output_file, output_dir } => {
-            format!("format: {}, output: {}{}",
-                format,
-                output_dir.as_ref().map(|d| format!("{}/", d)).unwrap_or_default(),
-                output_file)
-        }
-        OutputConfig::Database { .. } => "database".to_string(),
-    };
+    let output_desc = format_output_description(&config);
 
     tracing::info!(
         "Starting periodic liquidity fetcher for all exchanges (interval: {}s, max_snapshots: {}, {})",
@@ -299,15 +246,7 @@ async fn run_periodic_fetcher(
     max_snapshots: usize,
     config: OutputConfig,
 ) -> Result<()> {
-    let output_desc = match &config {
-        OutputConfig::File { format, output_file, output_dir } => {
-            format!("format: {}, output: {}{}",
-                format,
-                output_dir.as_ref().map(|d| format!("{}/", d)).unwrap_or_default(),
-                output_file)
-        }
-        OutputConfig::Database { .. } => "database".to_string(),
-    };
+    let output_desc = format_output_description(&config);
 
     tracing::info!(
         "Starting periodic liquidity fetcher (interval: {}s, max_snapshots: {}, {})",
@@ -533,7 +472,7 @@ fn write_to_excel(
 
         for (row_idx, stats) in snapshots.iter().rev().enumerate() {
             let row = (row_idx + 1) as u32;
-            worksheet.write_string_with_format(row, 0, &stats.timestamp.format("%Y-%m-%d %H:%M:%S UTC").to_string(), &timestamp_format)?;
+            worksheet.write_string_with_format(row, 0, stats.timestamp.format("%Y-%m-%d %H:%M:%S UTC").to_string(), &timestamp_format)?;
             worksheet.write_string(row, 1, &stats.exchange)?;
             worksheet.write_string(row, 2, &stats.symbol)?;
             worksheet.write_number(row, 3, stats.mid_price.to_string().parse::<f64>().unwrap_or(0.0))?;
@@ -695,50 +634,6 @@ fn display_aggregated_table(stats: &[LiquidityDepthStats]) -> Result<()> {
 fn display_json(stats: &LiquidityDepthStats) -> Result<()> {
     println!("{}", serde_json::to_string_pretty(stats)?);
     Ok(())
-}
-
-/// Validate symbols against the exchange - filter out unsupported symbols
-async fn validate_symbols(client: &dyn IPerps, symbols: &[String]) -> Result<Vec<String>> {
-    let mut valid_symbols = Vec::new();
-    let mut invalid_symbols = Vec::new();
-
-    for symbol in symbols {
-        match client.is_supported(symbol).await {
-            Ok(true) => {
-                tracing::debug!("✓ Symbol {} is supported on {}", symbol, client.get_name());
-                valid_symbols.push(symbol.clone());
-            }
-            Ok(false) => {
-                tracing::warn!("✗ Symbol {} is not supported on {} - skipping", symbol, client.get_name());
-                invalid_symbols.push(symbol.clone());
-            }
-            Err(e) => {
-                tracing::error!("Failed to check if symbol {} is supported: {} - skipping", symbol, e);
-                invalid_symbols.push(symbol.clone());
-            }
-        }
-    }
-
-    // Log summary
-    if !invalid_symbols.is_empty() {
-        eprintln!(
-            "Warning: {} symbol(s) not supported on {}: {}",
-            invalid_symbols.len(),
-            client.get_name(),
-            invalid_symbols.join(", ")
-        );
-    }
-
-    if !valid_symbols.is_empty() {
-        tracing::info!(
-            "Validated {} symbol(s) on {}: {}",
-            valid_symbols.len(),
-            client.get_name(),
-            valid_symbols.join(", ")
-        );
-    }
-
-    Ok(valid_symbols)
 }
 
 #[cfg(test)]

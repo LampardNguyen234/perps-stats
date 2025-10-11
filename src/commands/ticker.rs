@@ -2,7 +2,7 @@ use anyhow::Result;
 use chrono::Utc;
 use csv::Writer;
 use perps_core::{IPerps, Ticker};
-use perps_database::{PgPool, PostgresRepository, Repository};
+use perps_database::Repository;
 use perps_exchanges::get_exchange;
 use prettytable::{format, Cell, Row, Table};
 use rust_xlsxwriter::{Format, Workbook};
@@ -11,28 +11,31 @@ use std::collections::HashMap;
 use std::fs::File;
 use tokio::time::{sleep, Duration};
 
-/// Configuration for periodic fetcher output
-enum OutputConfig {
-    File {
-        output_file: String,
-        output_dir: Option<String>,
-        format: String,
-    },
-    Database {
-        repository: PostgresRepository,
-    },
+use super::common::{determine_output_config, format_output_description, validate_symbols, OutputConfig};
+
+/// Arguments for the ticker command
+pub struct TickerArgs {
+    pub exchange: String,
+    pub symbols: String,
+    pub format: String,
+    pub output: Option<String>,
+    pub output_dir: Option<String>,
+    pub interval: Option<u64>,
+    pub max_snapshots: usize,
+    pub database_url: Option<String>,
 }
 
-pub async fn execute(
-    exchange: String,
-    symbols: String,
-    format: String,
-    output: Option<String>,
-    output_dir: Option<String>,
-    interval: Option<u64>,
-    max_snapshots: usize,
-    _database_url: Option<String>,
-) -> Result<()> {
+pub async fn execute(args: TickerArgs) -> Result<()> {
+    let TickerArgs {
+        exchange,
+        symbols,
+        format,
+        output,
+        output_dir,
+        interval,
+        max_snapshots,
+        database_url,
+    } = args;
     // Create exchange client using factory
     let client = get_exchange(&exchange)?;
 
@@ -51,38 +54,7 @@ pub async fn execute(
 
     // Check if periodic fetching is enabled
     if let Some(interval_secs) = interval {
-        // Validate format and output configuration
-        let format_lower = format.to_lowercase();
-
-        let output_config = if format_lower == "table" {
-            // If format is "table" (default), use database storage
-            if let Some(db_url) = _database_url {
-                let pool = PgPool::connect(&db_url).await?;
-                let repository = PostgresRepository::new(pool);
-                OutputConfig::Database { repository }
-            } else {
-                anyhow::bail!("Periodic fetching (--interval) without explicit format requires --database-url or DATABASE_URL environment variable");
-            }
-        } else if format_lower == "csv" || format_lower == "excel" {
-            // CSV or Excel format - write to files
-            if output.is_none() {
-                anyhow::bail!("Periodic fetching (--interval) with --format {} requires --output <file>", format_lower);
-            }
-
-            // Create output directory if specified
-            if let Some(ref dir) = output_dir {
-                std::fs::create_dir_all(dir)?;
-                tracing::info!("Created output directory: {}", dir);
-            }
-
-            OutputConfig::File {
-                output_file: output.unwrap(),
-                output_dir,
-                format: format_lower,
-            }
-        } else {
-            anyhow::bail!("Periodic fetching (--interval) requires --format csv, --format excel, or database storage (default with --database-url)");
-        };
+        let output_config = determine_output_config(&format, output, &output_dir, database_url).await?;
 
         run_periodic_fetcher(
             client.as_ref(),
@@ -126,16 +98,7 @@ async fn run_periodic_fetcher(
     max_snapshots: usize,
     config: OutputConfig,
 ) -> Result<()> {
-    let output_desc = match &config {
-        OutputConfig::File { output_file, output_dir, format } => {
-            format!("format: {}, output: {}{}",
-                format,
-                output_dir.as_ref().map(|d| format!("{}/", d)).unwrap_or_default(),
-                output_file
-            )
-        }
-        OutputConfig::Database { .. } => "format: database".to_string(),
-    };
+    let output_desc = format_output_description(&config);
 
     tracing::info!(
         "Starting periodic ticker fetcher (interval: {}s, max_snapshots: {}, {})",
@@ -568,46 +531,3 @@ fn display_json(ticker: &Ticker, exchange: &str) -> Result<()> {
     Ok(())
 }
 
-/// Validate symbols against the exchange - filter out unsupported symbols
-async fn validate_symbols(client: &dyn IPerps, symbols: &[String]) -> Result<Vec<String>> {
-    let mut valid_symbols = Vec::new();
-    let mut invalid_symbols = Vec::new();
-
-    for symbol in symbols {
-        match client.is_supported(symbol).await {
-            Ok(true) => {
-                tracing::debug!("✓ Symbol {} is supported on {}", symbol, client.get_name());
-                valid_symbols.push(symbol.clone());
-            }
-            Ok(false) => {
-                tracing::warn!("✗ Symbol {} is not supported on {} - skipping", symbol, client.get_name());
-                invalid_symbols.push(symbol.clone());
-            }
-            Err(e) => {
-                tracing::error!("Failed to check if symbol {} is supported: {} - skipping", symbol, e);
-                invalid_symbols.push(symbol.clone());
-            }
-        }
-    }
-
-    // Log summary
-    if !invalid_symbols.is_empty() {
-        eprintln!(
-            "Warning: {} symbol(s) not supported on {}: {}",
-            invalid_symbols.len(),
-            client.get_name(),
-            invalid_symbols.join(", ")
-        );
-    }
-
-    if !valid_symbols.is_empty() {
-        tracing::info!(
-            "Validated {} symbol(s) on {}: {}",
-            valid_symbols.len(),
-            client.get_name(),
-            valid_symbols.join(", ")
-        );
-    }
-
-    Ok(valid_symbols)
-}

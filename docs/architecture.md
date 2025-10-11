@@ -1,6 +1,100 @@
 '''# Introduction
 This document outlines the recommended project structure, database schema, API design, and core component logic for a Rust implementation of the `perps-stats` service.
 
+# Implementation Status
+
+## Current Implementation Progress
+
+### ✅ Fully Implemented
+
+#### CLI Commands
+- **`market`** - Retrieves real-time L1 market data for contracts
+- **`liquidity`** - Retrieves liquidity depth data across exchanges
+- **`ticker`** - Retrieves comprehensive ticker data with periodic collection support
+- **`stream`** - Real-time WebSocket streaming with database storage (Binance only)
+- **`run`** - Periodic data collection with CSV/Excel export (combines ticker and liquidity)
+- **`db init`** - Database initialization with migrations and partitions
+- **`db migrate`** - Run database migrations
+- **`db stats`** - Show database statistics
+- **`db clean`** - Clean old data or truncate tables
+
+#### Exchange Support (All with Symbol Caching)
+- **Binance** - Full `IPerps` implementation + `IPerpsStream` WebSocket streaming
+- **Bybit** - Full `IPerps` implementation
+- **Hyperliquid** - Full `IPerps` implementation
+- **KuCoin** - Comprehensive implementation (klines not available from public API)
+- **Lighter** - Full `IPerps` implementation
+- **Paradex** - Partial implementation (limited public API endpoints)
+
+#### Core Features
+- **Symbol Caching** - Thread-safe caching for all exchanges using `OnceCell` and `RwLock`
+- **Multi-Exchange Support** - Concurrent data fetching from multiple exchanges
+- **Real-time Streaming** - WebSocket streaming with batch database writes (Binance)
+- **Excel/CSV Export** - Periodic data collection with multiple output formats
+- **Database Schema** - PostgreSQL with daily partitioning for time-series tables
+- **Repository Pattern** - Async database operations with `sqlx`
+- **Liquidity Depth Calculation** - Cumulative notional at various basis point spreads
+- **Factory Pattern** - Exchange client creation via factory module
+
+#### Database Tables
+- `exchanges` - Exchange metadata
+- `markets` - Market/symbol information
+- `tickers` - Ticker snapshots (partitioned)
+- `orderbooks` - Liquidity snapshots (partitioned)
+- `trades` - Trade records (partitioned)
+- `funding_rates` - Funding rate history (partitioned)
+- `liquidity_depth` - Liquidity depth statistics (partitioned)
+- `open_interest` - Open interest data (partitioned)
+- `klines` - OHLCV candlestick data (partitioned, migration created)
+- `ingest_events` - Audit table for ingestion tracking
+
+#### Repository Methods (with Exchange Context)
+- `store_tickers_with_exchange()`
+- `store_trades_with_exchange()`
+- `store_orderbooks_with_exchange()`
+- `store_funding_rates_with_exchange()`
+- `store_open_interest_with_exchange()`
+- `store_liquidity_depth()`
+
+### ⚠️ Stub Implementations
+
+#### Repository Methods (Require Exchange Context)
+- `store_markets()` - Requires exchange_id, needs specialized implementation
+- `store_klines()` - Requires exchange_id, needs specialized implementation
+- `store_tickers()` - Use `store_tickers_with_exchange()` instead
+- `store_trades()` - Use `store_trades_with_exchange()` instead
+- `store_orderbooks()` - Use `store_orderbooks_with_exchange()` instead
+- `store_funding_rates()` - Use `store_funding_rates_with_exchange()` instead
+- `store_open_interest()` - Use `store_open_interest_with_exchange()` instead
+
+### ❌ Not Yet Implemented
+
+#### CLI Commands
+- `backfill` - Historical data backfilling
+- `serve` - REST API server
+
+#### Core Components
+- Historical Fetcher process
+- REST API Server (Actix/Axum)
+
+#### Aggregator Functions
+- `calculate_slippage()` - Price impact calculation
+- `calculate_market_depth()` - Liquidity analysis at percentage levels
+- `calculate_vwap()` - Volume-weighted average price
+
+#### Repository Query Methods
+- `get_klines()` - Retrieve historical klines
+- `get_tickers()` - Retrieve historical tickers
+- `get_trades()` - Retrieve historical trades
+- Other query methods for data retrieval
+
+## Next Steps
+1. Implement historical backfill command with specialized `store_*_with_exchange()` methods
+2. Extend real-time WebSocket streaming to support additional exchanges (currently Binance only)
+3. Build REST API server with aggregation endpoints
+4. Add query methods to repository for data retrieval
+5. Implement remaining aggregator calculations (VWAP, slippage, market depth)
+
 # System Architecture
 This diagram illustrates the high-level architecture of the perps-stats system. It shows the main components, their interactions, and the flow of data from external exchanges to the end-user via the API.
 
@@ -14,58 +108,67 @@ graph TD
 
     subgraph "Perps Stats System"
         subgraph "CLI (Clap)"
-            CLI_Fetcher["perps-stats backfill"]
-            CLI_Streamer["perps-stats stream"]
-            CLI_Server["perps-stats serve"]
-            CLI_Market["perps-stats market"]
-            CLI_Liquidity["perps-stats liquidity"]
+            CLI_Market["✅ perps-stats market"]
+            CLI_Liquidity["✅ perps-stats liquidity"]
+            CLI_Ticker["✅ perps-stats ticker"]
+            CLI_Run["✅ perps-stats run"]
+            CLI_DB["✅ perps-stats db"]
+            CLI_Fetcher["❌ perps-stats backfill"]
+            CLI_Streamer["✅ perps-stats stream"]
+            CLI_Server["❌ perps-stats serve"]
         end
 
         subgraph "Core Processes"
-            P1[Historical Fetcher]
-            P2[Real-time Streamer]
-            P3["REST API Server (Actix/Axum)"]
+            P1["❌ Historical Fetcher"]
+            P2["✅ Real-time Streamer (Binance)"]
+            P3["❌ REST API Server (Actix/Axum)"]
         end
 
         subgraph "Internal Crates (crates/)"
-            Crate_Exchanges["perps-exchanges (IPerps Impl)"]
-            Crate_DB["perps-database (Repository)"]
-            Crate_Aggregator["perps-aggregator (Calculations)"]
+            Crate_Core["✅ perps-core (Types + IPerps + IPerpsStream)"]
+            Crate_Exchanges["✅ perps-exchanges (IPerps + IPerpsStream Impl)"]
+            Crate_DB["✅ perps-database (Repository)"]
+            Crate_Aggregator["⚠️ perps-aggregator (Liquidity Depth)"]
         end
 
-        DB[(PostgreSQL + TimescaleDB)]
+        DB[(✅ PostgreSQL with Partitioning)]
     end
 
     %% CLI to Processes
-    CLI_Fetcher --> P1
-    CLI_Streamer --> P2
-    CLI_Server --> P3
+    CLI_Fetcher -.-> P1
+    CLI_Streamer -- Launches --> P2
+    CLI_Server -.-> P3
 
-    %% CLI to Crates (for direct commands)
+    %% CLI to Crates (Implemented)
     CLI_Market -- Uses --> Crate_Exchanges
     CLI_Liquidity -- Uses --> Crate_Exchanges
     CLI_Liquidity -- Uses --> Crate_Aggregator
+    CLI_Ticker -- Uses --> Crate_Exchanges
+    CLI_Run -- Uses --> Crate_Exchanges
+    CLI_Run -- Uses --> Crate_Aggregator
+    CLI_Run -- Stores --> Crate_DB
+    CLI_DB -- Manages --> DB
 
     %% Data Ingestion Flow
     A -- HTTP Requests --> Crate_Exchanges
-    B -- WebSocket Connection --> Crate_Exchanges
-    P1 -- Uses --> Crate_Exchanges
+    B -- WebSocket (Binance) --> Crate_Exchanges
+    P1 -.-> Crate_Exchanges
     P2 -- Uses --> Crate_Exchanges
-    P1 -- Stores Historical Data --> Crate_DB
-    P2 -- Stores Real-time Data --> Crate_DB
+    P1 -.-> Crate_DB
+    P2 -- Stores --> Crate_DB
 
-    %% Data Serving Flow
-    P3 -- Reads Data --> Crate_DB
-    P3 -- Uses --> Crate_Aggregator
-    Crate_Aggregator -- Reads Data --> Crate_DB
-    C -- HTTP Requests --> P3
+    %% Data Serving Flow (Not Yet Implemented)
+    P3 -.-> Crate_DB
+    P3 -.-> Crate_Aggregator
+    Crate_Aggregator -.-> Crate_DB
+    C -.HTTP Requests.-> P3
 
     %% Database Interaction
     Crate_DB -- Manages --> DB
 ```
 
 ## Codebase Structure
-The proposed structure separates concerns into distinct crates and applications, promoting modularity and maintainability.
+The implemented structure separates concerns into distinct crates and applications, promoting modularity and maintainability.
 ```
 perps-stats/
 ├── Cargo.toml                # Workspace definition for all crates
@@ -73,27 +176,44 @@ perps-stats/
 ├── crates/                   # Shared library crates
 │   ├── perps-core/           # Core domain types (Market, Kline, LiquidityDepthStats) and the IPerps trait
 │   ├── perps-exchanges/      # Exchange-specific implementations of the IPerps trait
-│   │   ├── binance/
-│   │   ├── lighter/
-│   │   ├── paradex/
-│   │   └── factory.rs        # Factory for creating exchange clients
+│   │   ├── binance/          # ✅ Fully implemented
+│   │   ├── bybit/            # ✅ Fully implemented
+│   │   ├── hyperliquid/      # ✅ Fully implemented
+│   │   ├── kucoin/           # ✅ Fully implemented
+│   │   ├── lighter/          # ✅ Fully implemented
+│   │   ├── paradex/          # ⚠️ Partial implementation
+│   │   ├── cache.rs          # ✅ Shared symbol caching module
+│   │   └── factory.rs        # ✅ Factory for creating exchange clients
 │   ├── perps-database/       # Database repository and schema management logic
-│   │   ├── schema.sql        # Contain the all-in-one commands to generate databse
+│   │   ├── repository.rs     # ✅ Repository trait and PostgreSQL implementation
+│   │   ├── partitions.rs     # ✅ Partition management functions
+│   │   ├── stats.rs          # ✅ Database statistics functions
+│   │   └── db.rs             # ✅ Database connection and utilities
 │   └── perps-aggregator/     # Business logic for calculated metrics
+│       ├── aggregator.rs     # ✅ IAggregator trait with calculate_liquidity_depth
+│       └── types.rs          # ✅ MarketDepth and other aggregation types
 │
 ├── src/                      # Main binary crate that defines the CLI
-│   ├── main.rs               # Application entry point
-│   ├── cli.rs                # CLI command definitions (using Clap)
+│   ├── main.rs               # ✅ Application entry point
+│   ├── cli.rs                # ✅ CLI command definitions (using Clap)
 │   ├── commands/             # Modules for subcommand logic
-│   │   ├── backfill.rs       # Query and store historical data
-│   │   ├── serve.rs          # Start API service
-│   │   ├── stream.rs         # Stream and store real-time data
-│   │   ├── run.rs            # Start an all-in-one service   
-│   │   ├── db.rs             # Perform database operation: initialize, clean, migrate, statistics
-│   │   ├── market.rs         # Retrieve L1 market data
-│   │   └── liquidity.rs      # Retrieve liquidity depth data
+│   │   ├── backfill.rs       # ❌ Not yet implemented
+│   │   ├── serve.rs          # ❌ Not yet implemented
+│   │   ├── stream.rs         # ✅ Real-time WebSocket streaming with database storage
+│   │   ├── run.rs            # ✅ Periodic data collection with Excel/CSV export
+│   │   ├── db.rs             # ✅ Database operations: init, clean, migrate, stats
+│   │   ├── market.rs         # ✅ Retrieve L1 market data
+│   │   ├── liquidity.rs      # ✅ Retrieve liquidity depth data
+│   │   └── ticker.rs         # ✅ Retrieve ticker data
 │
-└── migrations/               # SQL migration files (for sqlx-cli)
+└── migrations/               # ✅ SQL migration files (for sqlx-cli)
+    ├── 20251010000001_create_exchanges_and_markets.sql
+    ├── 20251010000002_create_timeseries_tables.sql
+    ├── 20251010000003_create_initial_partitions_and_indexes.sql
+    ├── 20251010000004_seed_exchanges.sql
+    ├── 20251011000001_create_liquidity_depth_table.sql
+    ├── 20251011000002_create_open_interest_table.sql
+    └── 20251011000003_create_klines_table.sql
 ```
 
 # Core Components & Data Flow
@@ -112,13 +232,18 @@ Data ingestion is split into two distinct processes: historical backfilling and 
   - The database query should be idempotent, using `INSERT ... ON CONFLICT DO NOTHING` to prevent duplicates if the backfill is run multiple times over the same period.
 
 ### Real-time Streamer
-- **Trigger**. 
-  - Run as a long-running service: `perps-stats stream --exchange kucoin --symbols BTC,ETH --data trades,orderbook`.
-  - Run as a service within the main application.
+- **Status**: ✅ **Implemented for Binance**
+- **Trigger**.
+  - Run as a long-running service: `perps-stats stream --exchange binance --symbols BTC,ETH --data-types ticker,trade,orderbook`.
+  - Optional database storage with `--database-url` flag or `DATABASE_URL` env variable.
 - **Logic**
-  - Uses the client to establish a WebSocket connection to the exchange's real-time data feed.
-  - Messages are deserialized into the core Rust structs (e.g, `Trade`).
-  - To avoid overwhelming the database, the streamer should batch writes by collecting data in a Vec before performing a bulk insert.
+  - Uses the `IPerpsStream` trait (defined in `crates/perps-core/src/streaming.rs`) to establish WebSocket connections.
+  - Binance implementation (`BinanceWsClient` in `crates/perps-exchanges/src/binance/ws_client.rs`) connects to `wss://fstream.binance.com/ws`.
+  - Messages are deserialized into the core Rust structs (`Ticker`, `Trade`, `Orderbook`).
+  - Supports multiple data types simultaneously via `stream_multi()` method that returns `StreamEvent` enum.
+  - Batch writes to database with configurable batch size (default: 100 events) to avoid overwhelming the system.
+  - Separate buffers for each data type (tickers, trades, orderbooks) with automatic flushing on shutdown.
+  - Optional `--max-duration` flag to limit streaming time (useful for testing).
 
 ## Data Storage
 This layer provides a clean abstraction over the database.
@@ -180,7 +305,72 @@ pub fn calculate_slippage(book: &Orderbook, trade_size: Decimal, side: OrderSide
 ```
 
 # Interfaces & Data Structure
-- The `IPerps` trait (`crates/perps-core/src/traits.rs`)
+
+## Streaming Interface
+
+### IPerpsStream Trait
+The `IPerpsStream` trait (`crates/perps-core/src/streaming.rs`) defines the interface for real-time WebSocket streaming from exchanges.
+
+```rust
+// crates/perps-core/src/streaming.rs
+use async_trait::async_trait;
+use futures::Stream;
+use std::pin::Pin;
+
+pub type DataStream<T> = Pin<Box<dyn Stream<Item = anyhow::Result<T>> + Send>>;
+
+#[derive(Debug, Clone)]
+pub enum StreamEvent {
+    Ticker(Ticker),
+    Trade(Trade),
+    Orderbook(Orderbook),
+    FundingRate(FundingRate),
+}
+
+#[derive(Debug, Clone)]
+pub enum StreamDataType {
+    Ticker,
+    Trade,
+    Orderbook,
+    FundingRate,
+}
+
+#[derive(Debug, Clone)]
+pub struct StreamConfig {
+    pub symbols: Vec<String>,
+    pub data_types: Vec<StreamDataType>,
+    pub auto_reconnect: bool,
+}
+
+#[async_trait]
+pub trait IPerpsStream: Send + Sync {
+    /// Returns the name of the exchange
+    fn get_name(&self) -> &str;
+
+    /// Stream real-time ticker updates for specified symbols
+    async fn stream_tickers(&self, symbols: Vec<String>) -> anyhow::Result<DataStream<Ticker>>;
+
+    /// Stream real-time trade updates for specified symbols
+    async fn stream_trades(&self, symbols: Vec<String>) -> anyhow::Result<DataStream<Trade>>;
+
+    /// Stream real-time orderbook updates for specified symbols
+    async fn stream_orderbooks(&self, symbols: Vec<String>) -> anyhow::Result<DataStream<Orderbook>>;
+
+    /// Stream multiple data types simultaneously
+    async fn stream_multi(&self, config: StreamConfig) -> anyhow::Result<DataStream<StreamEvent>>;
+}
+```
+
+**Implementation Notes**:
+- Currently implemented for Binance only (`BinanceWsClient`)
+- Uses `async_stream` macro for ergonomic async stream creation
+- Returns type-erased pinned streams for flexibility
+- Supports multiplexing multiple data types in a single WebSocket connection via `stream_multi()`
+
+## REST API Interface
+
+### IPerps Trait
+The `IPerps` trait (`crates/perps-core/src/traits.rs`) defines the interface for REST API operations.
 ```rust
 // crates/perps-core/src/traits.rs
 use crate::types::*;

@@ -5,6 +5,8 @@ use prettytable::{format, Cell, Row, Table};
 use rust_decimal::Decimal;
 use serde_json;
 
+use super::common::validate_symbols;
+
 /// Holds all market data for a single symbol
 struct MarketData {
     ticker: perps_core::Ticker,
@@ -13,13 +15,23 @@ struct MarketData {
     orderbook: Option<perps_core::Orderbook>,
 }
 
-pub async fn execute(
-    exchange: String,
-    symbols: String,
-    format: String,
-    detailed: bool,
-    timeframe: String,
-) -> Result<()> {
+/// Arguments for the market command
+pub struct MarketArgs {
+    pub exchange: String,
+    pub symbols: String,
+    pub format: String,
+    pub detailed: bool,
+    pub timeframe: String,
+}
+
+pub async fn execute(args: MarketArgs) -> Result<()> {
+    let MarketArgs {
+        exchange,
+        symbols,
+        format,
+        detailed,
+        timeframe,
+    } = args;
     tracing::info!(
         "Retrieving L1 market data for {} from exchange {} (timeframe: {})",
         symbols,
@@ -385,46 +397,3 @@ fn build_json_object(
     data
 }
 
-/// Validate symbols against the exchange - filter out unsupported symbols
-async fn validate_symbols(client: &dyn IPerps, symbols: &[String]) -> Result<Vec<String>> {
-    let mut valid_symbols = Vec::new();
-    let mut invalid_symbols = Vec::new();
-
-    for symbol in symbols {
-        match client.is_supported(symbol).await {
-            Ok(true) => {
-                tracing::debug!("✓ Symbol {} is supported on {}", symbol, client.get_name());
-                valid_symbols.push(symbol.clone());
-            }
-            Ok(false) => {
-                tracing::warn!("✗ Symbol {} is not supported on {} - skipping", symbol, client.get_name());
-                invalid_symbols.push(symbol.clone());
-            }
-            Err(e) => {
-                tracing::error!("Failed to check if symbol {} is supported: {} - skipping", symbol, e);
-                invalid_symbols.push(symbol.clone());
-            }
-        }
-    }
-
-    // Log summary
-    if !invalid_symbols.is_empty() {
-        eprintln!(
-            "Warning: {} symbol(s) not supported on {}: {}",
-            invalid_symbols.len(),
-            client.get_name(),
-            invalid_symbols.join(", ")
-        );
-    }
-
-    if !valid_symbols.is_empty() {
-        tracing::info!(
-            "Validated {} symbol(s) on {}: {}",
-            valid_symbols.len(),
-            client.get_name(),
-            valid_symbols.join(", ")
-        );
-    }
-
-    Ok(valid_symbols)
-}

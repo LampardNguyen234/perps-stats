@@ -313,7 +313,7 @@ impl IPerps for HyperliquidClient {
         _limit: Option<u32>,
     ) -> Result<Vec<FundingRate>> {
         let start = start_time.unwrap_or_else(|| Utc::now() - chrono::Duration::days(7));
-        let end = end_time.unwrap_or_else(|| Utc::now());
+        let end = end_time.unwrap_or_else(Utc::now);
         let body = serde_json::json!({ "type": "fundingHistory", "coin": symbol, "startTime": start.timestamp_millis(), "endTime": end.timestamp_millis() });
         let history: Vec<FundingHistory> = self.post(body).await?;
         let rates = history

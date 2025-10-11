@@ -37,6 +37,7 @@ pub struct L2Book {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[allow(non_snake_case)]
 pub struct CandleSnapshot {
     pub t: u64,
     pub T: u64,

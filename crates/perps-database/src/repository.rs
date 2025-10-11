@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use perps_core::*;
+use rust_decimal::prelude::ToPrimitive;
 use sqlx::PgPool;
 
 /// Repository trait defines database operations for perps data.
@@ -18,6 +19,9 @@ pub trait Repository: Send + Sync {
     /// Store orderbook snapshots
     async fn store_orderbooks(&self, orderbooks: &[Orderbook]) -> anyhow::Result<()>;
 
+    /// Store orderbook snapshots with exchange information
+    async fn store_orderbooks_with_exchange(&self, exchange: &str, orderbooks: &[Orderbook]) -> anyhow::Result<()>;
+
     /// Store funding rates
     async fn store_funding_rates(&self, rates: &[FundingRate]) -> anyhow::Result<()>;
 
@@ -35,6 +39,9 @@ pub trait Repository: Send + Sync {
 
     /// Store trades
     async fn store_trades(&self, trades: &[Trade]) -> anyhow::Result<()>;
+
+    /// Store trades with exchange information
+    async fn store_trades_with_exchange(&self, exchange: &str, trades: &[Trade]) -> anyhow::Result<()>;
 
     /// Store liquidity depth statistics
     async fn store_liquidity_depth(&self, depth_stats: &[LiquidityDepthStats]) -> anyhow::Result<()>;
@@ -69,8 +76,7 @@ impl PostgresRepository {
 #[async_trait]
 impl Repository for PostgresRepository {
     async fn store_markets(&self, _markets: &[Market]) -> anyhow::Result<()> {
-        // TODO: Implement using sqlx::query! with INSERT ... ON CONFLICT DO NOTHING
-        tracing::warn!("store_markets not yet implemented");
+        tracing::warn!("store_markets not yet implemented - markets require exchange context, use direct storage with exchange_id");
         Ok(())
     }
 
@@ -88,6 +94,9 @@ impl Repository for PostgresRepository {
         let mut tx = self.pool.begin().await?;
 
         for ticker in tickers {
+            // Normalize symbol to global format (e.g., BTCUSDT -> BTC)
+            let normalized_symbol = extract_base_symbol(&ticker.symbol);
+
             sqlx::query(
                 r#"
                 INSERT INTO tickers (
@@ -100,7 +109,7 @@ impl Repository for PostgresRepository {
                 "#
             )
             .bind(exchange_id)
-            .bind(&ticker.symbol)
+            .bind(&normalized_symbol)
             .bind(ticker.last_price)
             .bind(ticker.mark_price)
             .bind(ticker.index_price)
@@ -122,7 +131,60 @@ impl Repository for PostgresRepository {
     }
 
     async fn store_orderbooks(&self, _orderbooks: &[Orderbook]) -> anyhow::Result<()> {
-        tracing::warn!("store_orderbooks not yet implemented");
+        tracing::warn!("store_orderbooks not yet implemented - orderbooks require exchange context, use store_orderbooks_with_exchange instead");
+        Ok(())
+    }
+
+    async fn store_orderbooks_with_exchange(&self, exchange: &str, orderbooks: &[Orderbook]) -> anyhow::Result<()> {
+        if orderbooks.is_empty() {
+            return Ok(());
+        }
+
+        let exchange_id = self.get_exchange_id(exchange).await?;
+        let mut tx = self.pool.begin().await?;
+
+        for orderbook in orderbooks {
+            // Normalize symbol to global format
+            let normalized_symbol = extract_base_symbol(&orderbook.symbol);
+
+            // Calculate spread in basis points
+            let spread_bps = if !orderbook.bids.is_empty() && !orderbook.asks.is_empty() {
+                let best_bid = orderbook.bids[0].price;
+                let best_ask = orderbook.asks[0].price;
+                let spread = best_ask - best_bid;
+                let mid = (best_bid + best_ask) / rust_decimal::Decimal::from(2);
+                if mid > rust_decimal::Decimal::ZERO {
+                    ((spread / mid) * rust_decimal::Decimal::from(10000)).to_i32().unwrap_or(0)
+                } else {
+                    0
+                }
+            } else {
+                0
+            };
+
+            // Convert orderbook to JSON
+            let raw_book = serde_json::to_value(orderbook)?;
+
+            sqlx::query(
+                r#"
+                INSERT INTO orderbooks (
+                    exchange_id, symbol, spread_bps, raw_book, ts
+                )
+                VALUES ($1, $2, $3, $4, $5)
+                ON CONFLICT DO NOTHING
+                "#
+            )
+            .bind(exchange_id)
+            .bind(&normalized_symbol)
+            .bind(spread_bps)
+            .bind(raw_book)
+            .bind(orderbook.timestamp)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        tx.commit().await?;
+        tracing::info!("Stored {} orderbook records to database for exchange {}", orderbooks.len(), exchange);
         Ok(())
     }
 
@@ -140,6 +202,9 @@ impl Repository for PostgresRepository {
         let mut tx = self.pool.begin().await?;
 
         for rate in rates {
+            // Normalize symbol to global format
+            let normalized_symbol = extract_base_symbol(&rate.symbol);
+
             sqlx::query(
                 r#"
                 INSERT INTO funding_rates (
@@ -150,7 +215,7 @@ impl Repository for PostgresRepository {
                 "#
             )
             .bind(exchange_id)
-            .bind(&rate.symbol)
+            .bind(&normalized_symbol)
             .bind(rate.funding_rate)
             .bind(rate.predicted_rate)
             .bind(rate.funding_time)
@@ -177,6 +242,9 @@ impl Repository for PostgresRepository {
         let mut tx = self.pool.begin().await?;
 
         for interest in oi {
+            // Normalize symbol to global format
+            let normalized_symbol = extract_base_symbol(&interest.symbol);
+
             sqlx::query(
                 r#"
                 INSERT INTO open_interest (
@@ -187,7 +255,7 @@ impl Repository for PostgresRepository {
                 "#
             )
             .bind(exchange_id)
-            .bind(&interest.symbol)
+            .bind(&normalized_symbol)
             .bind(interest.open_interest)
             .bind(interest.open_value)
             .bind(interest.timestamp)
@@ -201,12 +269,54 @@ impl Repository for PostgresRepository {
     }
 
     async fn store_klines(&self, _klines: &[Kline]) -> anyhow::Result<()> {
-        tracing::warn!("store_klines not yet implemented");
+        tracing::warn!("store_klines not yet implemented - klines require exchange context, use direct storage with exchange_id");
         Ok(())
     }
 
     async fn store_trades(&self, _trades: &[Trade]) -> anyhow::Result<()> {
-        tracing::warn!("store_trades not yet implemented");
+        tracing::warn!("store_trades not yet implemented - trades require exchange context, use store_trades_with_exchange instead");
+        Ok(())
+    }
+
+    async fn store_trades_with_exchange(&self, exchange: &str, trades: &[Trade]) -> anyhow::Result<()> {
+        if trades.is_empty() {
+            return Ok(());
+        }
+
+        let exchange_id = self.get_exchange_id(exchange).await?;
+        let mut tx = self.pool.begin().await?;
+
+        for trade in trades {
+            // Normalize symbol to global format
+            let normalized_symbol = extract_base_symbol(&trade.symbol);
+
+            let side_str = match trade.side {
+                OrderSide::Buy => "buy",
+                OrderSide::Sell => "sell",
+            };
+
+            sqlx::query(
+                r#"
+                INSERT INTO trades (
+                    exchange_id, symbol, trade_id, price, size, side, ts
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                ON CONFLICT DO NOTHING
+                "#
+            )
+            .bind(exchange_id)
+            .bind(&normalized_symbol)
+            .bind(&trade.id)
+            .bind(trade.price)
+            .bind(trade.quantity)
+            .bind(side_str)
+            .bind(trade.timestamp)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        tx.commit().await?;
+        tracing::info!("Stored {} trade records to database for exchange {}", trades.len(), exchange);
         Ok(())
     }
 
@@ -221,6 +331,9 @@ impl Repository for PostgresRepository {
         for stat in depth_stats {
             // Get exchange_id from exchange name
             let exchange_id = self.get_exchange_id(&stat.exchange).await?;
+
+            // Normalize symbol to global format
+            let normalized_symbol = extract_base_symbol(&stat.symbol);
 
             // Insert liquidity depth data
             // Using INSERT ... ON CONFLICT DO NOTHING for idempotency
@@ -237,7 +350,7 @@ impl Repository for PostgresRepository {
                 "#
             )
             .bind(exchange_id)
-            .bind(&stat.symbol)
+            .bind(&normalized_symbol)
             .bind(stat.mid_price)
             .bind(stat.bid_1bps)
             .bind(stat.bid_2_5bps)

@@ -211,7 +211,7 @@ impl IPerps for KucoinClient {
             funding_time: Utc.timestamp_millis_opt(rate.time_point).unwrap(),
             predicted_rate: rate
                 .predicted_value
-                .and_then(|v| Decimal::from_f64_retain(v))
+                .and_then(Decimal::from_f64_retain)
                 .unwrap_or(Decimal::ZERO),
             next_funding_time: Utc
                 .timestamp_millis_opt(rate.time_point + rate.granularity)
@@ -251,15 +251,15 @@ impl IPerps for KucoinClient {
 
         let last_price = contract
             .last_trade_price
-            .and_then(|p| Decimal::from_f64_retain(p))
+            .and_then(Decimal::from_f64_retain)
             .unwrap_or(Decimal::ZERO);
         let mark_price = contract
             .mark_price
-            .and_then(|p| Decimal::from_f64_retain(p))
+            .and_then(Decimal::from_f64_retain)
             .unwrap_or(Decimal::ZERO);
         let index_price = contract
             .index_price
-            .and_then(|p| Decimal::from_f64_retain(p))
+            .and_then(Decimal::from_f64_retain)
             .unwrap_or(Decimal::ZERO);
 
         let best_bid_price = Decimal::from_str(&ticker.best_bid_price)
@@ -271,27 +271,27 @@ impl IPerps for KucoinClient {
 
         let volume_24h = contract
             .volume_of_24h
-            .and_then(|v| Decimal::from_f64_retain(v))
+            .and_then(Decimal::from_f64_retain)
             .unwrap_or(Decimal::ZERO);
         let turnover_24h = contract
             .turnover_of_24h
-            .and_then(|t| Decimal::from_f64_retain(t))
+            .and_then(Decimal::from_f64_retain)
             .unwrap_or(Decimal::ZERO);
         let price_change_24h = contract
             .price_chg
-            .and_then(|c| Decimal::from_f64_retain(c))
+            .and_then(Decimal::from_f64_retain)
             .unwrap_or(Decimal::ZERO);
         let price_change_pct = contract
             .price_chg_pct
-            .and_then(|p| Decimal::from_f64_retain(p))
+            .and_then(Decimal::from_f64_retain)
             .unwrap_or(Decimal::ZERO);
         let high_price_24h = contract
             .high_price
-            .and_then(|p| Decimal::from_f64_retain(p))
+            .and_then(Decimal::from_f64_retain)
             .unwrap_or(Decimal::ZERO);
         let low_price_24h = contract
             .low_price
-            .and_then(|p| Decimal::from_f64_retain(p))
+            .and_then(Decimal::from_f64_retain)
             .unwrap_or(Decimal::ZERO);
 
         Ok(Ticker {

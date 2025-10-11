@@ -11,15 +11,27 @@ use std::path::Path;
 use std::sync::Arc;
 use tokio::time::{sleep, Duration};
 
+use super::common::validate_symbols;
+
 const ALL_EXCHANGES: &[&str] = &["binance", "bybit", "hyperliquid", "kucoin", "lighter", "paradex"];
 
-pub async fn execute(
-    symbols_file: String,
-    exchange: Option<String>,
-    interval: u64,
-    output_dir: String,
-    max_snapshots: usize,
-) -> Result<()> {
+/// Arguments for the run command
+pub struct RunArgs {
+    pub symbols_file: String,
+    pub exchange: Option<String>,
+    pub interval: u64,
+    pub output_dir: String,
+    pub max_snapshots: usize,
+}
+
+pub async fn execute(args: RunArgs) -> Result<()> {
+    let RunArgs {
+        symbols_file,
+        exchange,
+        interval,
+        output_dir,
+        max_snapshots,
+    } = args;
     let exchange_names = if let Some(ref ex) = exchange {
         vec![ex.as_str()]
     } else {
@@ -187,34 +199,32 @@ pub async fn execute(
         // Wait for all tasks to complete
         let results = join_all(tasks).await;
 
-        // Process results
-        for result in results {
-            if let Ok((ex_name, symbol, (ticker_opt, liquidity_opt))) = result {
-                // Find the global symbol for this parsed symbol
-                let global_symbol = symbols.iter().find(|s| {
-                    // Check all clients to see which one parses to this symbol
-                    clients.iter().any(|(client_ex_name, client)| {
-                        client_ex_name == &ex_name && client.parse_symbol(s) == symbol
-                    })
-                }).unwrap_or(&symbol);
+        // Process results - filter out errors and process successful results
+        for (ex_name, symbol, (ticker_opt, liquidity_opt)) in results.into_iter().filter_map(Result::ok) {
+            // Find the global symbol for this parsed symbol
+            let global_symbol = symbols.iter().find(|s| {
+                // Check all clients to see which one parses to this symbol
+                clients.iter().any(|(client_ex_name, client)| {
+                    client_ex_name == &ex_name && client.parse_symbol(s) == symbol
+                })
+            }).unwrap_or(&symbol);
 
-                if let Some(ticker) = ticker_opt {
-                    ticker_data
-                        .get_mut(global_symbol)
-                        .unwrap()
-                        .get_mut(&ex_name)
-                        .unwrap()
-                        .push(ticker);
-                }
+            if let Some(ticker) = ticker_opt {
+                ticker_data
+                    .get_mut(global_symbol)
+                    .unwrap()
+                    .get_mut(&ex_name)
+                    .unwrap()
+                    .push(ticker);
+            }
 
-                if let Some(liquidity) = liquidity_opt {
-                    liquidity_data
-                        .get_mut(global_symbol)
-                        .unwrap()
-                        .get_mut(&ex_name)
-                        .unwrap()
-                        .push(liquidity);
-                }
+            if let Some(liquidity) = liquidity_opt {
+                liquidity_data
+                    .get_mut(global_symbol)
+                    .unwrap()
+                    .get_mut(&ex_name)
+                    .unwrap()
+                    .push(liquidity);
             }
         }
 
@@ -271,40 +281,6 @@ fn read_symbols_from_file(file_path: &str) -> Result<Vec<String>> {
     }
 
     Ok(symbols)
-}
-
-/// Validate symbols against the exchange
-async fn validate_symbols(client: &dyn IPerps, symbols: &[String]) -> Result<Vec<String>> {
-    let mut valid_symbols = Vec::new();
-    let mut invalid_symbols = Vec::new();
-
-    for symbol in symbols {
-        match client.is_supported(symbol).await {
-            Ok(true) => {
-                tracing::debug!("✓ Symbol {} is supported on {}", symbol, client.get_name());
-                valid_symbols.push(symbol.clone());
-            }
-            Ok(false) => {
-                tracing::warn!("✗ Symbol {} is not supported on {} - skipping", symbol, client.get_name());
-                invalid_symbols.push(symbol.clone());
-            }
-            Err(e) => {
-                tracing::error!("Failed to check if symbol {} is supported: {} - skipping", symbol, e);
-                invalid_symbols.push(symbol.clone());
-            }
-        }
-    }
-
-    if !invalid_symbols.is_empty() {
-        eprintln!(
-            "Warning: {} symbol(s) not supported on {}: {}",
-            invalid_symbols.len(),
-            client.get_name(),
-            invalid_symbols.join(", ")
-        );
-    }
-
-    Ok(valid_symbols)
 }
 
 /// Write liquidity depth data to Excel file (multi-exchange version)

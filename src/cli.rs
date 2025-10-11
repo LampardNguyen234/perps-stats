@@ -31,19 +31,7 @@ pub enum Commands {
     },
 
     /// Stream real-time data from exchanges
-    Stream {
-        /// Exchange name (e.g., kucoin, binance)
-        #[arg(short, long)]
-        exchange: String,
-
-        /// Comma-separated list of symbols (e.g., BTC,ETH)
-        #[arg(short, long)]
-        symbols: String,
-
-        /// Data types to stream (trades, orderbook, ticker)
-        #[arg(short, long, default_value = "trades,orderbook")]
-        data: String,
-    },
+    Stream(crate::commands::stream::StreamArgs),
 
     /// Start the REST API server
     Serve {
@@ -83,6 +71,10 @@ pub enum Commands {
     Db {
         #[command(subcommand)]
         command: DbCommands,
+
+        /// Database URL (e.g., postgres://user:pass@localhost/perps)
+        #[arg(long, env = "DATABASE_URL", global = true)]
+        database_url: Option<String>,
     },
 
     /// Retrieve L1 market data for contracts
@@ -182,14 +174,34 @@ pub enum Commands {
 #[derive(Subcommand)]
 pub enum DbCommands {
     /// Initialize the database schema
-    Init,
+    Init {
+        /// Number of days to create partitions for (default: 7)
+        #[arg(long, default_value = "7")]
+        create_partitions_days: i32,
+    },
 
     /// Run migrations
     Migrate,
 
     /// Clean the database (WARNING: deletes all data)
-    Clean,
+    Clean {
+        /// Delete data older than N days
+        #[arg(long)]
+        older_than: Option<i32>,
+
+        /// Drop partitions older than N days
+        #[arg(long)]
+        drop_partitions_older_than: Option<i32>,
+
+        /// Truncate all tables (WARNING: deletes ALL data)
+        #[arg(long)]
+        truncate: bool,
+    },
 
     /// Show database statistics
-    Stats,
+    Stats {
+        /// Output format (table, json)
+        #[arg(short, long, default_value = "table")]
+        format: String,
+    },
 }
