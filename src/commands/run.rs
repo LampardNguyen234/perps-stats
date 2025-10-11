@@ -316,7 +316,12 @@ fn write_liquidity_to_excel_multi(
     let header_format = Format::new().set_bold();
     let timestamp_format = Format::new();
 
-    for (symbol, exchange_data) in data_by_symbol {
+    // Sort symbols alphabetically
+    let mut symbols: Vec<&String> = data_by_symbol.keys().collect();
+    symbols.sort();
+
+    for symbol in symbols {
+        let exchange_data = &data_by_symbol[symbol];
         // Collect all data from all exchanges for this symbol
         let mut all_data: Vec<(&String, &LiquidityDepthStats)> = Vec::new();
         for (exchange, snapshots) in exchange_data {
@@ -405,7 +410,12 @@ fn write_ticker_to_excel_multi(
     let header_format = Format::new().set_bold();
     let timestamp_format = Format::new();
 
-    for (symbol, exchange_data) in data_by_symbol {
+    // Sort symbols alphabetically
+    let mut symbols: Vec<&String> = data_by_symbol.keys().collect();
+    symbols.sort();
+
+    for symbol in symbols {
+        let exchange_data = &data_by_symbol[symbol];
         // Collect all data from all exchanges for this symbol
         let mut all_data: Vec<(&String, &Ticker)> = Vec::new();
         for (exchange, snapshots) in exchange_data {
