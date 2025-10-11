@@ -96,7 +96,7 @@ impl IPerps for ParadexClient {
     }
 
     async fn get_orderbook(&self, symbol: &str, _depth: u32) -> Result<Orderbook> {
-        let response: OrderbookResponse = self.get(&format!("/orderbook/{}", symbol)).await?;
+        let response: OrderbookResponse = self.get(&format!("/orderbook/{}?depth=100", symbol)).await?;
         let bids = response
             .bids
             .into_iter()

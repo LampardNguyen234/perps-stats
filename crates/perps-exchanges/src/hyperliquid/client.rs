@@ -33,6 +33,26 @@ impl HyperliquidClient {
         let data = response.json().await?;
         Ok(data)
     }
+
+    /// Helper method to fetch combined meta and asset contexts
+    async fn get_meta_and_asset_ctxs(&self) -> Result<MetaAndAssetCtxs> {
+        let body = serde_json::json!({ "type": "metaAndAssetCtxs" });
+        // The response is an array: [{"universe": [...]}, [...assetCtxs]]
+        let response: Vec<Value> = self.post(body).await?;
+
+        if response.len() < 2 {
+            return Err(anyhow!("Unexpected response format from metaAndAssetCtxs"));
+        }
+
+        // First element is {"universe": [...]}
+        let meta: Meta = serde_json::from_value(response[0].clone())?;
+        let asset_ctxs: Vec<AssetCtx> = serde_json::from_value(response[1].clone())?;
+
+        Ok(MetaAndAssetCtxs {
+            universe: meta.universe,
+            asset_ctxs,
+        })
+    }
 }
 
 impl Default for HyperliquidClient {
@@ -81,18 +101,98 @@ impl IPerps for HyperliquidClient {
             .ok_or_else(|| anyhow!("Market {} not found", symbol))
     }
 
-    async fn get_ticker(&self, _symbol: &str) -> Result<Ticker> {
-        // Hyperliquid does not have a dedicated ticker endpoint in the same way as other exchanges.
-        // This would need to be constructed from multiple sources (e.g., orderbook, trades).
-        unimplemented!("Ticker data is not directly available from the Hyperliquid API.")
+    async fn get_ticker(&self, symbol: &str) -> Result<Ticker> {
+        let data = self.get_meta_and_asset_ctxs().await?;
+
+        // Find the index of the symbol in the universe
+        let index = data
+            .universe
+            .iter()
+            .position(|u| u.name == symbol)
+            .ok_or_else(|| anyhow!("Symbol {} not found", symbol))?;
+
+        let asset_ctx = data
+            .asset_ctxs
+            .get(index)
+            .ok_or_else(|| anyhow!("Asset context not found for {}", symbol))?;
+
+        // Get orderbook for best bid/ask
+        let orderbook = self.get_orderbook(symbol, 1).await?;
+        let best_bid = orderbook.bids.first().map(|l| l.price).unwrap_or(Decimal::ZERO);
+        let best_ask = orderbook.asks.first().map(|l| l.price).unwrap_or(Decimal::ZERO);
+
+        let last_price = Decimal::from_str(&asset_ctx.mid_px.clone().unwrap_or_else(|| "0".to_string()))?;
+        let prev_day_px = Decimal::from_str(&asset_ctx.prev_day_px)?;
+        let price_change = last_price - prev_day_px;
+        let price_change_percent = if prev_day_px > Decimal::ZERO {
+            (price_change / prev_day_px) * Decimal::from(100)
+        } else {
+            Decimal::ZERO
+        };
+
+        Ok(Ticker {
+            symbol: symbol.to_string(),
+            last_price,
+            mark_price: Decimal::from_str(&asset_ctx.mark_px)?,
+            index_price: Decimal::from_str(&asset_ctx.oracle_px)?,
+            best_bid_price: best_bid,
+            best_bid_qty: Decimal::ZERO, // Not available from API
+            best_ask_price: best_ask,
+            best_ask_qty: Decimal::ZERO, // Not available from API
+            volume_24h: Decimal::from_str(&asset_ctx.day_base_vlm)?,
+            turnover_24h: Decimal::from_str(&asset_ctx.day_ntl_vlm)?,
+            price_change_24h: price_change,
+            price_change_pct: price_change_percent,
+            high_price_24h: Decimal::ZERO, // Not available
+            low_price_24h: Decimal::ZERO,  // Not available
+            timestamp: Utc::now(),
+        })
     }
 
     async fn get_all_tickers(&self) -> Result<Vec<Ticker>> {
-        unimplemented!("Ticker data is not directly available from the Hyperliquid API.")
+        let data = self.get_meta_and_asset_ctxs().await?;
+        let mut tickers = Vec::new();
+
+        for (index, universe_item) in data.universe.iter().enumerate() {
+            if let Some(asset_ctx) = data.asset_ctxs.get(index) {
+                // For all tickers, we skip fetching orderbook to improve performance
+                // Use mid price as last price and mark price for bid/ask approximation
+                let last_price = Decimal::from_str(
+                    &asset_ctx.mid_px.clone().unwrap_or_else(|| asset_ctx.mark_px.clone()),
+                )?;
+                let prev_day_px = Decimal::from_str(&asset_ctx.prev_day_px)?;
+                let price_change = last_price - prev_day_px;
+                let price_change_percent = if prev_day_px > Decimal::ZERO {
+                    (price_change / prev_day_px) * Decimal::from(100)
+                } else {
+                    Decimal::ZERO
+                };
+
+                tickers.push(Ticker {
+                    symbol: universe_item.name.clone(),
+                    last_price,
+                    mark_price: Decimal::from_str(&asset_ctx.mark_px)?,
+                    index_price: Decimal::from_str(&asset_ctx.oracle_px)?,
+                    best_bid_price: last_price, // Approximation
+                    best_bid_qty: Decimal::ZERO,
+                    best_ask_price: last_price, // Approximation
+                    best_ask_qty: Decimal::ZERO,
+                    volume_24h: Decimal::from_str(&asset_ctx.day_base_vlm)?,
+                    turnover_24h: Decimal::from_str(&asset_ctx.day_ntl_vlm)?,
+                    price_change_24h: price_change,
+                    price_change_pct: price_change_percent,
+                    high_price_24h: Decimal::ZERO,
+                    low_price_24h: Decimal::ZERO,
+                    timestamp: Utc::now(),
+                });
+            }
+        }
+
+        Ok(tickers)
     }
 
     async fn get_orderbook(&self, symbol: &str, _depth: u32) -> Result<Orderbook> {
-        let body = serde_json::json!({ "type": "l2Book", "coin": symbol });
+        let body = serde_json::json!({ "type": "l2Book", "coin": symbol, "nSigFigs": 5, "mantisa": 1 });
         let book: L2Book = self.post(body).await?;
         let bids = book
             .levels[0]
@@ -165,8 +265,31 @@ impl IPerps for HyperliquidClient {
         Ok(rates)
     }
 
-    async fn get_open_interest(&self, _symbol: &str) -> Result<OpenInterest> {
-        unimplemented!("Open interest is not directly available from a public endpoint.")
+    async fn get_open_interest(&self, symbol: &str) -> Result<OpenInterest> {
+        let data = self.get_meta_and_asset_ctxs().await?;
+
+        // Find the index of the symbol in the universe
+        let index = data
+            .universe
+            .iter()
+            .position(|u| u.name == symbol)
+            .ok_or_else(|| anyhow!("Symbol {} not found", symbol))?;
+
+        let asset_ctx = data
+            .asset_ctxs
+            .get(index)
+            .ok_or_else(|| anyhow!("Asset context not found for {}", symbol))?;
+
+        let open_interest = Decimal::from_str(&asset_ctx.open_interest)?;
+        let mark_price = Decimal::from_str(&asset_ctx.mark_px)?;
+        let open_value = open_interest * mark_price;
+
+        Ok(OpenInterest {
+            symbol: symbol.to_string(),
+            open_interest,
+            open_value,
+            timestamp: Utc::now(),
+        })
     }
 
     async fn get_klines(
@@ -177,7 +300,7 @@ impl IPerps for HyperliquidClient {
         _end_time: Option<DateTime<Utc>>,
         _limit: Option<u32>,
     ) -> Result<Vec<Kline>> {
-        let body = serde_json::json!({ "type": "candleSnapshot", "coin": symbol, "interval": interval, "startTime": start_time.unwrap().timestamp_millis() });
+        let body = serde_json::json!({ "type": "candleSnapshot", "req": { "coin": symbol, "interval": interval, "startTime": start_time.unwrap_or_else(Utc::now).timestamp_millis() } });
         let klines: Vec<CandleSnapshot> = self.post(body).await?;
         let klines = klines
             .into_iter()
@@ -200,15 +323,69 @@ impl IPerps for HyperliquidClient {
     }
 
     async fn get_recent_trades(&self, _symbol: &str, _limit: u32) -> Result<Vec<Trade>> {
-        unimplemented!("Recent trades are not available from a simple public endpoint.")
+        // Hyperliquid doesn't have a public recent trades endpoint
+        // Would require userFills with a known address
+        Err(anyhow!("Recent trades are not available from Hyperliquid public API"))
     }
 
-    async fn get_market_stats(&self, _symbol: &str) -> Result<MarketStats> {
-        unimplemented!("Market stats must be constructed from multiple endpoints.")
+    async fn get_market_stats(&self, symbol: &str) -> Result<MarketStats> {
+        let ticker = self.get_ticker(symbol).await?;
+        let oi = self.get_open_interest(symbol).await?;
+        let funding = self.get_funding_rate(symbol).await?;
+
+        Ok(MarketStats {
+            symbol: symbol.to_string(),
+            last_price: ticker.last_price,
+            mark_price: ticker.mark_price,
+            index_price: ticker.index_price,
+            high_price_24h: ticker.high_price_24h,
+            low_price_24h: ticker.low_price_24h,
+            volume_24h: ticker.volume_24h,
+            turnover_24h: ticker.turnover_24h,
+            price_change_24h: ticker.price_change_24h,
+            price_change_pct: ticker.price_change_pct,
+            open_interest: oi.open_interest,
+            funding_rate: funding.funding_rate,
+            timestamp: Utc::now(),
+        })
     }
 
     async fn get_all_market_stats(&self) -> Result<Vec<MarketStats>> {
-        unimplemented!("Market stats must be constructed from multiple endpoints.")
+        let data = self.get_meta_and_asset_ctxs().await?;
+        let mut stats = Vec::new();
+
+        for (index, universe_item) in data.universe.iter().enumerate() {
+            if let Some(asset_ctx) = data.asset_ctxs.get(index) {
+                let last_price = Decimal::from_str(
+                    &asset_ctx.mid_px.clone().unwrap_or_else(|| asset_ctx.mark_px.clone()),
+                )?;
+                let prev_day_px = Decimal::from_str(&asset_ctx.prev_day_px)?;
+                let price_change = last_price - prev_day_px;
+                let price_change_percent = if prev_day_px > Decimal::ZERO {
+                    (price_change / prev_day_px) * Decimal::from(100)
+                } else {
+                    Decimal::ZERO
+                };
+
+                stats.push(MarketStats {
+                    symbol: universe_item.name.clone(),
+                    last_price,
+                    mark_price: Decimal::from_str(&asset_ctx.mark_px)?,
+                    index_price: Decimal::from_str(&asset_ctx.oracle_px)?,
+                    high_price_24h: Decimal::ZERO,
+                    low_price_24h: Decimal::ZERO,
+                    volume_24h: Decimal::from_str(&asset_ctx.day_base_vlm)?,
+                    turnover_24h: Decimal::from_str(&asset_ctx.day_ntl_vlm)?,
+                    price_change_24h: price_change,
+                    price_change_pct: price_change_percent,
+                    open_interest: Decimal::from_str(&asset_ctx.open_interest)?,
+                    funding_rate: Decimal::from_str(&asset_ctx.funding)?,
+                    timestamp: Utc::now(),
+                });
+            }
+        }
+
+        Ok(stats)
     }
 
     async fn is_supported(&self, symbol: &str) -> Result<bool> {
@@ -242,5 +419,21 @@ mod tests {
         let client = HyperliquidClient::default();
         let funding_rate = client.get_funding_rate("BTC").await.unwrap();
         assert_eq!(funding_rate.symbol, "BTC");
+    }
+
+    #[tokio::test]
+    async fn test_get_ticker() {
+        let client = HyperliquidClient::default();
+        let ticker = client.get_ticker("BTC").await.unwrap();
+        assert_eq!(ticker.symbol, "BTC");
+        assert!(ticker.last_price > Decimal::ZERO);
+    }
+
+    #[tokio::test]
+    async fn test_get_open_interest() {
+        let client = HyperliquidClient::default();
+        let oi = client.get_open_interest("BTC").await.unwrap();
+        assert_eq!(oi.symbol, "BTC");
+        assert!(oi.open_interest >= Decimal::ZERO);
     }
 }

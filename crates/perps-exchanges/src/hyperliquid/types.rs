@@ -1,11 +1,6 @@
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize, Clone)]
-pub struct AssetCtx {
-    pub universe: Vec<Asset>,
-}
-
-#[derive(Debug, Deserialize, Clone)]
 pub struct Asset {
     pub name: String,
     #[serde(rename = "szDecimals")]
@@ -37,6 +32,7 @@ pub struct Delta {
 #[derive(Debug, Deserialize, Clone)]
 pub struct L2Book {
     pub coin: String,
+    pub time: u64,
     pub levels: Vec<Vec<Level>>,
 }
 
@@ -61,7 +57,7 @@ pub struct Universe {
     pub sz_decimals: u32,
     #[serde(rename = "maxLeverage")]
     pub max_leverage: u32,
-    #[serde(rename = "onlyIsolated")]
+    #[serde(rename = "onlyIsolated", default)]
     pub only_isolated: bool,
 }
 
@@ -135,6 +131,37 @@ pub struct FundingHistory {
     #[serde(rename = "fundingRate")]
     pub funding_rate: String,
     pub premium: String,
-    pub delta: String,
-    pub usdc: String,
+    #[serde(default)]
+    pub delta: Option<String>,
+    #[serde(default)]
+    pub usdc: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct MetaAndAssetCtxs {
+    pub universe: Vec<Universe>,
+    #[serde(rename = "assetCtxs")]
+    pub asset_ctxs: Vec<AssetCtx>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct AssetCtx {
+    pub funding: String,
+    #[serde(rename = "openInterest")]
+    pub open_interest: String,
+    #[serde(rename = "prevDayPx")]
+    pub prev_day_px: String,
+    #[serde(rename = "dayNtlVlm")]
+    pub day_ntl_vlm: String,
+    pub premium: Option<String>,
+    #[serde(rename = "oraclePx")]
+    pub oracle_px: String,
+    #[serde(rename = "markPx")]
+    pub mark_px: String,
+    #[serde(rename = "midPx")]
+    pub mid_px: Option<String>,
+    #[serde(rename = "impactPxs")]
+    pub impact_pxs: Option<Vec<String>>,
+    #[serde(rename = "dayBaseVlm")]
+    pub day_base_vlm: String,
 }
