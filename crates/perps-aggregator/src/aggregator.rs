@@ -1,11 +1,11 @@
 use async_trait::async_trait;
 use chrono::Utc;
 use futures::future::join_all;
-use perps_core::{IPerps, LiquidityDepthStats, OrderSide, Orderbook, Trade};
+use perps_core::{FundingRate, IPerps, LiquidityDepthStats, OrderSide, Orderbook, Trade};
 use rust_decimal::Decimal;
 use std::time::Instant;
 
-use crate::types::MarketDepth;
+use crate::types::{FundingRateStats, MarketDepth};
 
 /// IAggregator trait defines business logic for calculating market metrics
 #[async_trait]
@@ -43,6 +43,14 @@ pub trait IAggregator: Send + Sync {
         exchanges: &[Box<dyn IPerps + Send + Sync>],
         symbol: &str,
     ) -> anyhow::Result<Vec<LiquidityDepthStats>>;
+
+    /// Calculates statistics for funding rates over a time period.
+    /// Includes average, min, max, standard deviation, and trend analysis.
+    async fn calculate_funding_rate_stats(
+        &self,
+        rates: &[FundingRate],
+        exchange: &str,
+    ) -> anyhow::Result<FundingRateStats>;
 }
 
 /// Default implementation of the IAggregator trait
@@ -228,13 +236,102 @@ impl IAggregator for Aggregator {
 
         Ok(stats)
     }
+
+    async fn calculate_funding_rate_stats(
+        &self,
+        rates: &[FundingRate],
+        exchange: &str,
+    ) -> anyhow::Result<FundingRateStats> {
+        if rates.is_empty() {
+            anyhow::bail!("Cannot calculate funding rate stats: no rates provided");
+        }
+
+        let symbol = rates[0].symbol.clone();
+        let count = rates.len();
+
+        // Calculate average
+        let sum: Decimal = rates.iter().map(|r| r.funding_rate).sum();
+        let average_rate = sum / Decimal::from(count);
+
+        // Find min and max
+        let mut min_rate = rates[0].funding_rate;
+        let mut max_rate = rates[0].funding_rate;
+        for rate in rates.iter().skip(1) {
+            if rate.funding_rate < min_rate {
+                min_rate = rate.funding_rate;
+            }
+            if rate.funding_rate > max_rate {
+                max_rate = rate.funding_rate;
+            }
+        }
+
+        // Calculate standard deviation
+        let variance_sum: Decimal = rates
+            .iter()
+            .map(|r| {
+                let diff = r.funding_rate - average_rate;
+                diff * diff
+            })
+            .sum();
+        let variance = variance_sum / Decimal::from(count);
+
+        // sqrt approximation using newton's method for Decimal
+        let std_dev = if variance.is_zero() {
+            Decimal::ZERO
+        } else {
+            let mut x = variance / Decimal::TWO;
+            for _ in 0..10 {
+                x = (x + variance / x) / Decimal::TWO;
+            }
+            x
+        };
+
+        // Calculate trend using simple linear regression slope
+        // trend = sum((x - x_mean) * (y - y_mean)) / sum((x - x_mean)^2)
+        let mut trend = Decimal::ZERO;
+        if count > 1 {
+            let x_mean = Decimal::from(count - 1) / Decimal::TWO;
+            let y_mean = average_rate;
+
+            let mut numerator = Decimal::ZERO;
+            let mut denominator = Decimal::ZERO;
+
+            for (i, rate) in rates.iter().enumerate() {
+                let x_diff = Decimal::from(i) - x_mean;
+                let y_diff = rate.funding_rate - y_mean;
+                numerator += x_diff * y_diff;
+                denominator += x_diff * x_diff;
+            }
+
+            if !denominator.is_zero() {
+                trend = numerator / denominator;
+            }
+        }
+
+        // Get time range
+        let start_time = rates.iter().map(|r| r.funding_time).min().unwrap();
+        let end_time = rates.iter().map(|r| r.funding_time).max().unwrap();
+
+        Ok(FundingRateStats {
+            symbol,
+            exchange: exchange.to_string(),
+            start_time,
+            end_time,
+            average_rate,
+            min_rate,
+            max_rate,
+            std_dev,
+            count,
+            trend,
+        })
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use chrono::Utc;
-    use perps_core::{OrderbookLevel, Trade};
+    use perps_core::{FundingRate, OrderbookLevel, Trade};
     use rust_decimal_macros::dec;
 
     #[tokio::test]
@@ -317,5 +414,85 @@ mod tests {
 
         // 20 bps asks: (100.01 * 10) + (100.05 * 10) + (100.20 * 10) = 2000.6 + 1002.0 = 3002.6
         assert_eq!(stats.ask_20bps, dec!(3002.6));
+    }
+
+    #[tokio::test]
+    async fn test_calculate_funding_rate_stats() {
+        let aggregator = Aggregator::new();
+        let now = Utc::now();
+
+        let rates = vec![
+            FundingRate {
+                symbol: "BTC".to_string(),
+                funding_rate: dec!(0.0001),
+                predicted_rate: dec!(0.0001),
+                funding_time: now,
+                next_funding_time: now,
+                funding_interval: 8,
+                funding_rate_cap_floor: dec!(0.005),
+            },
+            FundingRate {
+                symbol: "BTC".to_string(),
+                funding_rate: dec!(0.0002),
+                predicted_rate: dec!(0.0002),
+                funding_time: now,
+                next_funding_time: now,
+                funding_interval: 8,
+                funding_rate_cap_floor: dec!(0.005),
+            },
+            FundingRate {
+                symbol: "BTC".to_string(),
+                funding_rate: dec!(0.0003),
+                predicted_rate: dec!(0.0003),
+                funding_time: now,
+                next_funding_time: now,
+                funding_interval: 8,
+                funding_rate_cap_floor: dec!(0.005),
+            },
+        ];
+
+        let stats = aggregator.calculate_funding_rate_stats(&rates, "binance").await.unwrap();
+
+        assert_eq!(stats.symbol, "BTC");
+        assert_eq!(stats.exchange, "binance");
+        assert_eq!(stats.count, 3);
+        assert_eq!(stats.average_rate, dec!(0.0002)); // (0.0001 + 0.0002 + 0.0003) / 3 = 0.0002
+        assert_eq!(stats.min_rate, dec!(0.0001));
+        assert_eq!(stats.max_rate, dec!(0.0003));
+        assert!(stats.trend > Decimal::ZERO); // Should be positive trend (increasing)
+    }
+
+    #[tokio::test]
+    async fn test_calculate_funding_rate_stats_empty() {
+        let aggregator = Aggregator::new();
+        let rates: Vec<FundingRate> = vec![];
+
+        let result = aggregator.calculate_funding_rate_stats(&rates, "binance").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_calculate_funding_rate_stats_single_rate() {
+        let aggregator = Aggregator::new();
+        let now = Utc::now();
+
+        let rates = vec![FundingRate {
+            symbol: "BTC".to_string(),
+            funding_rate: dec!(0.0001),
+            predicted_rate: dec!(0.0001),
+            funding_time: now,
+            next_funding_time: now,
+            funding_interval: 8,
+            funding_rate_cap_floor: dec!(0.005),
+        }];
+
+        let stats = aggregator.calculate_funding_rate_stats(&rates, "binance").await.unwrap();
+
+        assert_eq!(stats.count, 1);
+        assert_eq!(stats.average_rate, dec!(0.0001));
+        assert_eq!(stats.min_rate, dec!(0.0001));
+        assert_eq!(stats.max_rate, dec!(0.0001));
+        assert_eq!(stats.std_dev, Decimal::ZERO);
+        assert_eq!(stats.trend, Decimal::ZERO); // No trend with single data point
     }
 }

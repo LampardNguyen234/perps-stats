@@ -97,3 +97,21 @@ pub struct FundingRate {
     pub symbol: String,
     pub rate: f64,
 }
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct CandlesticksResponse {
+    pub resolution: String,
+    pub candlesticks: Vec<Candlestick>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct Candlestick {
+    pub timestamp: i64,  // milliseconds
+    pub open: f64,
+    pub high: f64,
+    pub low: f64,
+    pub close: f64,
+    pub volume0: f64,  // base volume
+    pub volume1: f64,  // quote volume
+    pub last_trade_id: u64,
+}

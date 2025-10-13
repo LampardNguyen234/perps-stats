@@ -6,6 +6,7 @@ use chrono::{TimeZone, Utc};
 use perps_core::types::*;
 use perps_core::IPerps;
 use rust_decimal::Decimal;
+use rust_decimal::prelude::FromPrimitive;
 use std::str::FromStr;
 
 const BASE_URL: &str = "https://api-futures.kucoin.com";
@@ -99,7 +100,7 @@ impl IPerps for KucoinClient {
                     price_scale,
                     quantity_scale,
                     min_order_qty: Decimal::from(c.lot_size),
-                    contract_size: Decimal::from_f64_retain(c.multiplier).unwrap_or(Decimal::ONE),
+                    contract_size: Decimal::from_f64(c.multiplier).unwrap_or(Decimal::ONE),
                     max_order_qty: Decimal::from(c.max_order_qty),
                     min_order_value: Decimal::ZERO,
                     max_leverage: Decimal::from(c.max_leverage),
@@ -133,7 +134,7 @@ impl IPerps for KucoinClient {
             price_scale,
             quantity_scale,
             min_order_qty: Decimal::from(contract.lot_size),
-            contract_size: Decimal::from_f64_retain(contract.multiplier).unwrap_or(Decimal::ONE),
+            contract_size: Decimal::from_f64(contract.multiplier).unwrap_or(Decimal::ONE),
             max_order_qty: Decimal::from(contract.max_order_qty),
             min_order_value: Decimal::ZERO,
             max_leverage: Decimal::from(contract.max_leverage),
@@ -150,7 +151,7 @@ impl IPerps for KucoinClient {
             .into_iter()
             .map(|(price, quantity)| {
                 Ok(OrderbookLevel {
-                    price: Decimal::from_f64_retain(price).unwrap_or(Decimal::ZERO),
+                    price: Decimal::from_f64(price).unwrap_or(Decimal::ZERO),
                     quantity: Decimal::from(quantity),
                 })
             })
@@ -161,7 +162,7 @@ impl IPerps for KucoinClient {
             .into_iter()
             .map(|(price, quantity)| {
                 Ok(OrderbookLevel {
-                    price: Decimal::from_f64_retain(price).unwrap_or(Decimal::ZERO),
+                    price: Decimal::from_f64(price).unwrap_or(Decimal::ZERO),
                     quantity: Decimal::from(quantity),
                 })
             })
@@ -207,11 +208,11 @@ impl IPerps for KucoinClient {
 
         Ok(FundingRate {
             symbol: rate.symbol.clone(),
-            funding_rate: Decimal::from_f64_retain(rate.value).unwrap_or(Decimal::ZERO),
+            funding_rate: Decimal::from_f64(rate.value).unwrap_or(Decimal::ZERO),
             funding_time: Utc.timestamp_millis_opt(rate.time_point).unwrap(),
             predicted_rate: rate
                 .predicted_value
-                .and_then(Decimal::from_f64_retain)
+                .and_then(Decimal::from_f64)
                 .unwrap_or(Decimal::ZERO),
             next_funding_time: Utc
                 .timestamp_millis_opt(rate.time_point + rate.granularity)
@@ -229,8 +230,9 @@ impl IPerps for KucoinClient {
         _end_time: Option<chrono::DateTime<chrono::Utc>>,
         _limit: Option<u32>,
     ) -> Result<Vec<Kline>> {
-        // KuCoin doesn't have a public klines endpoint for futures
-        Err(anyhow!("get_klines is not available from KuCoin Futures public API"))
+        // KuCoin doesn't provide a REST API endpoint for klines
+        // Use WebSocket streaming instead (via IPerpsStream trait and StreamDataType::Kline)
+        Err(anyhow!("get_klines is not available from KuCoin Futures REST API. Use WebSocket streaming instead."))
     }
 
     async fn is_supported(&self, symbol: &str) -> Result<bool> {
@@ -239,28 +241,36 @@ impl IPerps for KucoinClient {
     }
 
     async fn get_ticker(&self, symbol: &str) -> Result<Ticker> {
-        // Get detailed contract info from active contracts which includes 24h stats
-        let contracts: Vec<KucoinContractDetail> = self.get("/api/v1/contracts/active").await?;
-        let contract = contracts
-            .into_iter()
-            .find(|c| c.symbol == symbol)
-            .ok_or_else(|| anyhow!("Contract {} not found", symbol))?;
+        // Get detailed contract info for this specific symbol (includes 24h stats)
+        let contract: KucoinContractDetail = self
+            .get(&format!("/api/v1/contracts/{}", symbol))
+            .await?;
 
         // Get ticker for real-time best bid/ask
         let ticker: KucoinTicker = self.get(&format!("/api/v1/ticker?symbol={}", symbol)).await?;
 
+        // Parse prices with fallback logging
         let last_price = contract
             .last_trade_price
-            .and_then(Decimal::from_f64_retain)
-            .unwrap_or(Decimal::ZERO);
+            .and_then(Decimal::from_f64)
+            .unwrap_or_else(|| {
+                tracing::debug!("KuCoin {} last_trade_price is None, using ZERO", symbol);
+                Decimal::ZERO
+            });
         let mark_price = contract
             .mark_price
-            .and_then(Decimal::from_f64_retain)
-            .unwrap_or(Decimal::ZERO);
+            .and_then(Decimal::from_f64)
+            .unwrap_or_else(|| {
+                tracing::debug!("KuCoin {} mark_price is None, using last_price fallback", symbol);
+                last_price
+            });
         let index_price = contract
             .index_price
-            .and_then(Decimal::from_f64_retain)
-            .unwrap_or(Decimal::ZERO);
+            .and_then(Decimal::from_f64)
+            .unwrap_or_else(|| {
+                tracing::debug!("KuCoin {} index_price is None, using last_price fallback", symbol);
+                last_price
+            });
 
         let best_bid_price = Decimal::from_str(&ticker.best_bid_price)
             .unwrap_or(Decimal::ZERO);
@@ -269,30 +279,49 @@ impl IPerps for KucoinClient {
             .unwrap_or(Decimal::ZERO);
         let best_ask_qty = Decimal::from(ticker.best_ask_size);
 
+        // Parse 24h statistics with fallback logging
         let volume_24h = contract
             .volume_of_24h
-            .and_then(Decimal::from_f64_retain)
-            .unwrap_or(Decimal::ZERO);
+            .and_then(Decimal::from_f64)
+            .unwrap_or_else(|| {
+                tracing::debug!("KuCoin {} volume_of_24h is None, using ZERO", symbol);
+                Decimal::ZERO
+            });
         let turnover_24h = contract
             .turnover_of_24h
-            .and_then(Decimal::from_f64_retain)
-            .unwrap_or(Decimal::ZERO);
+            .and_then(Decimal::from_f64)
+            .unwrap_or_else(|| {
+                tracing::debug!("KuCoin {} turnover_of_24h is None, using ZERO", symbol);
+                Decimal::ZERO
+            });
         let price_change_24h = contract
             .price_chg
-            .and_then(Decimal::from_f64_retain)
-            .unwrap_or(Decimal::ZERO);
+            .and_then(Decimal::from_f64)
+            .unwrap_or_else(|| {
+                tracing::debug!("KuCoin {} price_chg is None, using ZERO", symbol);
+                Decimal::ZERO
+            });
         let price_change_pct = contract
             .price_chg_pct
-            .and_then(Decimal::from_f64_retain)
-            .unwrap_or(Decimal::ZERO);
+            .and_then(Decimal::from_f64)
+            .unwrap_or_else(|| {
+                tracing::debug!("KuCoin {} price_chg_pct is None, using ZERO", symbol);
+                Decimal::ZERO
+            });
         let high_price_24h = contract
             .high_price
-            .and_then(Decimal::from_f64_retain)
-            .unwrap_or(Decimal::ZERO);
+            .and_then(Decimal::from_f64)
+            .unwrap_or_else(|| {
+                tracing::debug!("KuCoin {} high_price is None, using ZERO", symbol);
+                Decimal::ZERO
+            });
         let low_price_24h = contract
             .low_price
-            .and_then(Decimal::from_f64_retain)
-            .unwrap_or(Decimal::ZERO);
+            .and_then(Decimal::from_f64)
+            .unwrap_or_else(|| {
+                tracing::debug!("KuCoin {} low_price is None, using ZERO", symbol);
+                Decimal::ZERO
+            });
 
         Ok(Ticker {
             symbol: contract.symbol,

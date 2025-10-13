@@ -21,3 +21,6 @@ anyhow = "1.0"
 
 # Async streams
 futures = "0.3"
+
+[dev-dependencies]
+rust_decimal_macros = "1.37"

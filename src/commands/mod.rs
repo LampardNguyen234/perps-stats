@@ -5,5 +5,6 @@ pub mod liquidity;
 pub mod market;
 pub mod run;
 pub mod serve;
+pub mod start;
 pub mod stream;
 pub mod ticker;

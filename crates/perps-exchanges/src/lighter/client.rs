@@ -4,6 +4,7 @@ use chrono::{DateTime, Utc};
 use perps_core::{FundingRate, IPerps, Kline, Market, MarketStats, OpenInterest, Orderbook, Ticker, Trade};
 use crate::cache::SymbolsCache;
 use reqwest::Client;
+use rust_decimal::prelude::FromPrimitive;
 use std::collections::HashMap;
 use tracing;
 
@@ -189,7 +190,12 @@ impl IPerps for LighterClient {
 
         let detail = self.fetch_orderbook_detail(symbol).await?;
         tracing::debug!("get_ticker detail: {:?}", detail);
-        conversions::to_ticker(&detail)
+
+        // Also fetch orderbook to get best bid/ask quantities
+        // Use a small depth (5) to minimize API load
+        let orderbook = self.get_orderbook(symbol, 5).await?;
+
+        conversions::to_ticker_with_orderbook(&detail, &orderbook)
     }
 
     async fn get_all_tickers(&self) -> Result<Vec<Ticker>> {
@@ -291,9 +297,9 @@ impl IPerps for LighterClient {
 
         Ok(OpenInterest {
             symbol: symbol.to_string(),
-            open_interest: rust_decimal::Decimal::from_f64_retain(detail.open_interest)
+            open_interest: rust_decimal::Decimal::from_f64(detail.open_interest)
                 .unwrap_or_else(|| rust_decimal::Decimal::from(0)),
-            open_value: rust_decimal::Decimal::from_f64_retain(detail.open_interest * detail.last_trade_price)
+            open_value: rust_decimal::Decimal::from_f64(detail.open_interest * detail.last_trade_price)
                 .unwrap_or_else(|| rust_decimal::Decimal::from(0)),
             timestamp: Utc::now(),
         })
@@ -301,15 +307,58 @@ impl IPerps for LighterClient {
 
     async fn get_klines(
         &self,
-        _symbol: &str,
-        _interval: &str,
-        _start_time: Option<DateTime<Utc>>,
-        _end_time: Option<DateTime<Utc>>,
-        _limit: Option<u32>,
+        symbol: &str,
+        interval: &str,
+        start_time: Option<DateTime<Utc>>,
+        end_time: Option<DateTime<Utc>>,
+        limit: Option<u32>,
     ) -> Result<Vec<Kline>> {
-        // Lighter has /candlesticks endpoint, but implementation would require
-        // understanding their interval format and parameters
-        Err(anyhow!("Klines not yet implemented for Lighter"))
+        tracing::debug!("Fetching klines for {} from Lighter (interval: {})", symbol, interval);
+
+        // Get market_id for the symbol
+        let market_id = self.clone().get_market_id(symbol).await?;
+
+        // Build the URL
+        let mut url = format!(
+            "{}/candlesticks?market_id={}&resolution={}",
+            self.base_url, market_id, interval
+        );
+
+        // Add time parameters if provided (Lighter expects milliseconds)
+        if let Some(start) = start_time {
+            url.push_str(&format!("&start_timestamp={}", start.timestamp_millis()));
+        }
+        if let Some(end) = end_time {
+            url.push_str(&format!("&end_timestamp={}", end.timestamp_millis()));
+        }
+        // Add limit parameter if provided
+        if let Some(lim) = limit {
+            url.push_str(&format!("&count_back={}", lim));
+        }
+
+        tracing::debug!("Lighter klines URL: {}", url);
+
+        let response: LighterResponse<CandlesticksResponse> = self
+            .client
+            .get(&url)
+            .send()
+            .await?
+            .json()
+            .await?;
+
+        if response.code != 200 {
+            return Err(anyhow!("API error: code {}", response.code));
+        }
+
+        // Convert candlesticks to Kline format
+        let klines: Result<Vec<Kline>> = response
+            .data
+            .candlesticks
+            .iter()
+            .map(|cs| conversions::to_kline(symbol, interval, cs))
+            .collect();
+
+        klines
     }
 
     async fn get_recent_trades(&self, _symbol: &str, _limit: u32) -> Result<Vec<Trade>> {
@@ -322,11 +371,11 @@ impl IPerps for LighterClient {
 
         let detail = self.fetch_orderbook_detail(symbol).await?;
 
-        let last_price = rust_decimal::Decimal::from_f64_retain(detail.last_trade_price)
+        let last_price = rust_decimal::Decimal::from_f64(detail.last_trade_price)
             .unwrap_or_else(|| rust_decimal::Decimal::from(0));
 
         // Lighter API returns daily_price_change as a percentage (e.g., -1.19 for -1.19%)
-        let price_change_pct_raw = rust_decimal::Decimal::from_f64_retain(detail.daily_price_change)
+        let price_change_pct_raw = rust_decimal::Decimal::from_f64(detail.daily_price_change)
             .unwrap_or_else(|| rust_decimal::Decimal::from(0));
 
         // Convert to decimal to match other exchanges (e.g., -1.19% -> -0.0119)
@@ -344,17 +393,17 @@ impl IPerps for LighterClient {
             last_price,
             mark_price: last_price,
             index_price: last_price,
-            volume_24h: rust_decimal::Decimal::from_f64_retain(detail.daily_base_token_volume)
+            volume_24h: rust_decimal::Decimal::from_f64(detail.daily_base_token_volume)
                 .unwrap_or_else(|| rust_decimal::Decimal::from(0)),
-            turnover_24h: rust_decimal::Decimal::from_f64_retain(detail.daily_quote_token_volume)
+            turnover_24h: rust_decimal::Decimal::from_f64(detail.daily_quote_token_volume)
                 .unwrap_or_else(|| rust_decimal::Decimal::from(0)),
-            high_price_24h: rust_decimal::Decimal::from_f64_retain(detail.daily_price_high)
+            high_price_24h: rust_decimal::Decimal::from_f64(detail.daily_price_high)
                 .unwrap_or_else(|| rust_decimal::Decimal::from(0)),
-            low_price_24h: rust_decimal::Decimal::from_f64_retain(detail.daily_price_low)
+            low_price_24h: rust_decimal::Decimal::from_f64(detail.daily_price_low)
                 .unwrap_or_else(|| rust_decimal::Decimal::from(0)),
             price_change_24h,
             price_change_pct,
-            open_interest: rust_decimal::Decimal::from_f64_retain(detail.open_interest)
+            open_interest: rust_decimal::Decimal::from_f64(detail.open_interest)
                 .unwrap_or_else(|| rust_decimal::Decimal::from(0)),
             funding_rate: rust_decimal::Decimal::ZERO,
             timestamp: Utc::now(),
@@ -382,11 +431,11 @@ impl IPerps for LighterClient {
             .order_book_details
             .iter()
             .map(|detail| {
-                let last_price = rust_decimal::Decimal::from_f64_retain(detail.last_trade_price)
+                let last_price = rust_decimal::Decimal::from_f64(detail.last_trade_price)
                     .unwrap_or_else(|| rust_decimal::Decimal::from(0));
 
                 // Lighter API returns daily_price_change as a percentage
-                let price_change_pct = rust_decimal::Decimal::from_f64_retain(detail.daily_price_change)
+                let price_change_pct = rust_decimal::Decimal::from_f64(detail.daily_price_change)
                     .unwrap_or_else(|| rust_decimal::Decimal::from(0));
 
                 // Calculate absolute price change
@@ -401,17 +450,17 @@ impl IPerps for LighterClient {
                     last_price,
                     mark_price: last_price,
                     index_price: last_price,
-                    volume_24h: rust_decimal::Decimal::from_f64_retain(detail.daily_base_token_volume)
+                    volume_24h: rust_decimal::Decimal::from_f64(detail.daily_base_token_volume)
                         .unwrap_or_else(|| rust_decimal::Decimal::from(0)),
-                    turnover_24h: rust_decimal::Decimal::from_f64_retain(detail.daily_quote_token_volume)
+                    turnover_24h: rust_decimal::Decimal::from_f64(detail.daily_quote_token_volume)
                         .unwrap_or_else(|| rust_decimal::Decimal::from(0)),
-                    high_price_24h: rust_decimal::Decimal::from_f64_retain(detail.daily_price_high)
+                    high_price_24h: rust_decimal::Decimal::from_f64(detail.daily_price_high)
                         .unwrap_or_else(|| rust_decimal::Decimal::from(0)),
-                    low_price_24h: rust_decimal::Decimal::from_f64_retain(detail.daily_price_low)
+                    low_price_24h: rust_decimal::Decimal::from_f64(detail.daily_price_low)
                         .unwrap_or_else(|| rust_decimal::Decimal::from(0)),
                     price_change_24h,
                     price_change_pct,
-                    open_interest: rust_decimal::Decimal::from_f64_retain(detail.open_interest)
+                    open_interest: rust_decimal::Decimal::from_f64(detail.open_interest)
                         .unwrap_or_else(|| rust_decimal::Decimal::from(0)),
                     funding_rate: rust_decimal::Decimal::ZERO,
                     timestamp: Utc::now(),

@@ -57,9 +57,11 @@ pub struct ParadexFundingRate {
 }
 
 // For /v1/markets/klines
+// Format: [timestamp, open, high, low, close, volume]
+// All price and volume fields are returned as numbers, not strings
 #[derive(Debug, Deserialize, Clone)]
 pub struct KlinesResponse {
-    pub results: Vec<(u64, String, String, String, String, String)>,
+    pub results: Vec<(u64, f64, f64, f64, f64, f64)>,
 }
 
 // For /v1/bbo/{symbol}

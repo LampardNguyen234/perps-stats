@@ -368,6 +368,7 @@ impl IPerpsStream for BinanceWsClient {
                 StreamDataType::Trade => "aggTrade",
                 StreamDataType::Orderbook => "depth@100ms",
                 StreamDataType::FundingRate => "markPrice", // Mark price stream includes funding rate
+                StreamDataType::Kline => continue, // Klines not yet implemented for Binance WebSocket
             };
 
             for symbol in &config.symbols {

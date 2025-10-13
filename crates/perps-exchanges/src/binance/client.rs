@@ -181,7 +181,7 @@ impl BinanceClient {
         let best_ask = str_to_decimal(book_ticker["askPrice"].as_str().unwrap_or("0"))?;
         let best_ask_qty = str_to_decimal(book_ticker["askQty"].as_str().unwrap_or("0"))?;
 
-        let timestamp = ticker["openTime"].as_i64().unwrap_or_else(|| Utc::now().timestamp_millis());
+        let timestamp = Utc::now().timestamp_millis();
 
         Ok(Ticker {
             symbol: normalize_symbol(symbol),

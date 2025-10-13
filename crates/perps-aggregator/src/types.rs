@@ -20,3 +20,24 @@ pub struct MarketDepth {
     pub timestamp: DateTime<Utc>,
     pub levels: Vec<DepthLevel>,
 }
+
+/// Funding rate statistics calculated over a time period
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FundingRateStats {
+    pub symbol: String,
+    pub exchange: String,
+    pub start_time: DateTime<Utc>,
+    pub end_time: DateTime<Utc>,
+    /// Average funding rate over the period
+    pub average_rate: Decimal,
+    /// Minimum funding rate in the period
+    pub min_rate: Decimal,
+    /// Maximum funding rate in the period
+    pub max_rate: Decimal,
+    /// Standard deviation of funding rates
+    pub std_dev: Decimal,
+    /// Number of funding rate observations
+    pub count: usize,
+    /// Trend: positive if increasing, negative if decreasing, zero if stable
+    pub trend: Decimal,
+}

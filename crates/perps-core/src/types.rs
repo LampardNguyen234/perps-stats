@@ -41,6 +41,35 @@ pub struct Ticker {
     pub timestamp: DateTime<Utc>,
 }
 
+impl Ticker {
+    /// Returns true if the ticker has no meaningful data (all prices and volumes are zero).
+    /// This is useful for filtering out incomplete ticker data from WebSocket streams
+    /// that don't provide 24h statistics.
+    pub fn is_empty(&self) -> bool {
+        if self.last_price == Decimal::ZERO
+            && self.mark_price == Decimal::ZERO
+            && self.index_price == Decimal::ZERO {
+            return true
+        }
+
+        if self.volume_24h == Decimal::ZERO && self.turnover_24h == Decimal::ZERO {
+            return true
+        }
+
+        self.best_bid_price == Decimal::ZERO
+            && self.best_ask_price == Decimal::ZERO
+            && self.best_bid_qty == Decimal::ZERO
+            && self.best_ask_qty == Decimal::ZERO
+    }
+
+    /// Returns true if the ticker has incomplete 24h statistics (volume and turnover are zero).
+    /// This is common for WebSocket tickers from exchanges like KuCoin that don't provide
+    /// 24h statistics in their WebSocket streams.
+    pub fn has_incomplete_24h_stats(&self) -> bool {
+        self.volume_24h == Decimal::ZERO && self.turnover_24h == Decimal::ZERO
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct OrderbookLevel {
     pub price: Decimal,

@@ -1,0 +1,1203 @@
+use anyhow::Result;
+use chrono;
+use clap::Args;
+use perps_core::types::{FundingRate, Kline, Orderbook, Ticker, Trade};
+use perps_core::streaming::StreamEvent;
+use perps_database::{PostgresRepository, Repository};
+use perps_exchanges::factory;
+use perps_aggregator::Aggregator;
+use sqlx::PgPool;
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use tokio::sync::Mutex;
+use tokio::time::{interval, Duration};
+use futures::StreamExt as _;
+use tokio::signal;
+
+use crate::commands::common;
+
+#[derive(Args)]
+pub struct StartArgs {
+    /// Exchanges to stream from (comma-separated: binance,hyperliquid,bybit,kucoin,lighter,paradex). If not specified, uses all supported exchanges.
+    #[arg(short, long, value_delimiter = ',')]
+    pub exchanges: Option<Vec<String>>,
+
+    /// Path to symbols file (one symbol per line or comma-separated)
+    #[arg(short, long, default_value = "symbols.txt")]
+    pub symbols_file: String,
+
+    /// Database URL for storing data
+    #[arg(long, env = "DATABASE_URL")]
+    pub database_url: String,
+
+    /// Batch size for database writes (number of events before writing)
+    #[arg(long, default_value = "100")]
+    pub batch_size: usize,
+
+    /// Klines fetch interval in seconds
+    #[arg(long, default_value = "60")]
+    pub klines_interval: u64,
+
+    /// Report generation interval in seconds (applies to both liquidity depth and ticker reports)
+    #[arg(long, default_value = "30")]
+    pub report_interval: u64,
+
+    /// Klines interval/timeframe for fetching (e.g., 1m, 5m, 15m, 1h, 4h, 1d)
+    #[arg(long, default_value = "1h")]
+    pub klines_timeframe: String,
+
+    /// Enable automatic partition cleanup (drops old partitions)
+    #[arg(long, default_value = "false")]
+    pub enable_partition_cleanup: bool,
+
+    /// Retention period in days for partition cleanup (partitions older than this will be dropped)
+    #[arg(long, default_value = "30")]
+    pub retention_days: i64,
+
+    /// Partition cleanup interval in seconds (how often to check for old partitions)
+    #[arg(long, default_value = "3600")]
+    pub cleanup_interval: u64,
+
+    /// Maximum number of reconnection attempts (0 = unlimited)
+    #[arg(long, default_value = "0")]
+    pub max_reconnect_attempts: usize,
+
+    /// Initial reconnection delay in seconds
+    #[arg(long, default_value = "5")]
+    pub reconnect_delay_seconds: u64,
+
+    /// Maximum reconnection delay in seconds (for exponential backoff)
+    #[arg(long, default_value = "300")]
+    pub max_reconnect_delay_seconds: u64,
+}
+
+/// Load symbols from file (supports both line-separated and comma-separated formats)
+async fn load_symbols(file_path: &str) -> Result<Vec<String>> {
+    let content = tokio::fs::read_to_string(file_path).await?;
+
+    let mut symbols = Vec::new();
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue; // Skip empty lines and comments
+        }
+
+        // Support comma-separated symbols on a single line
+        if line.contains(',') {
+            symbols.extend(line.split(',').map(|s| s.trim().to_uppercase()).filter(|s| !s.is_empty()));
+        } else {
+            symbols.push(line.to_uppercase());
+        }
+    }
+
+    Ok(symbols)
+}
+
+/// Validate symbols against exchange
+async fn validate_symbols(exchange: &str, symbols: &[String]) -> Result<Vec<String>> {
+    tracing::info!("Validating {} symbols for exchange: {}", symbols.len(), exchange);
+
+    let client = factory::get_exchange(exchange)?;
+    let mut valid_symbols = Vec::new();
+
+    for symbol in symbols {
+        // Parse symbol to exchange-specific format first
+        let parsed_symbol = client.parse_symbol(symbol);
+        if client.is_supported(&parsed_symbol).await? {
+            valid_symbols.push(symbol.clone()); // Store the global format
+        } else {
+            tracing::warn!("Symbol {} not supported on exchange {}", symbol, exchange);
+        }
+    }
+
+    tracing::info!("Validated {}/{} symbols for exchange {}", valid_symbols.len(), symbols.len(), exchange);
+    Ok(valid_symbols)
+}
+
+/// Get supported data types for a specific exchange
+/// NOTE: Ticker is excluded from all exchanges because the ticker report task
+/// fetches complete ticker data via REST API every 30 seconds. WebSocket tickers
+/// often have incomplete 24h statistics (zero values), so we rely solely on REST API.
+fn get_supported_data_types(exchange: &str) -> Vec<perps_core::streaming::StreamDataType> {
+    use perps_core::streaming::StreamDataType;
+
+    match exchange {
+        "binance" => vec![
+            // Note: Ticker excluded - use ticker report task for complete data via REST API
+            StreamDataType::Trade,
+            StreamDataType::Orderbook,
+            StreamDataType::FundingRate,
+        ],
+        "hyperliquid" => vec![
+            // Note: Ticker excluded - use ticker report task for complete data via REST API
+            StreamDataType::Trade,
+            StreamDataType::Orderbook,
+        ],
+        "bybit" => vec![
+            // Note: Ticker excluded - use ticker report task for complete data via REST API
+            StreamDataType::Trade,
+            StreamDataType::Orderbook,
+        ],
+        "kucoin" => vec![
+            // Note: Ticker excluded - use ticker report task for complete data via REST API
+            StreamDataType::Trade,
+            // Note: Orderbook requires incremental update handling (not implemented)
+            // Note: Klines added separately based on configuration
+        ],
+        "lighter" => vec![
+            // Note: Ticker excluded - use ticker report task for complete data via REST API
+            StreamDataType::Trade,
+            StreamDataType::Orderbook,
+        ],
+        "paradex" => vec![
+            // Note: Ticker excluded - use ticker report task for complete data via REST API
+            StreamDataType::Trade,
+            StreamDataType::Orderbook,
+            StreamDataType::FundingRate,
+        ],
+        _ => vec![],
+    }
+}
+
+/// Spawn WebSocket streaming task for a specific exchange
+async fn spawn_streaming_task(
+    exchange: String,
+    symbols: Vec<String>,
+    batch_size: usize,
+    klines_timeframe: Option<String>,
+    repository: Arc<Mutex<PostgresRepository>>,
+    shutdown: Arc<AtomicBool>,
+    max_reconnect_attempts: usize,
+    reconnect_delay_seconds: u64,
+    max_reconnect_delay_seconds: u64,
+) -> Result<tokio::task::JoinHandle<Result<()>>> {
+    Ok(tokio::spawn(async move {
+        tracing::info!("Starting WebSocket streaming task for exchange: {} (auto-reconnect enabled)", exchange);
+
+        // Parse symbols to exchange-specific format (done once, reused across reconnections)
+        let rest_client = factory::get_exchange(&exchange)?;
+        let parsed_symbols: Vec<String> = symbols
+            .iter()
+            .map(|s| {
+                let normalized = rest_client.parse_symbol(s);
+                // Remove hyphens for exchanges that don't use them in WebSocket
+                match exchange.as_str() {
+                    "binance" | "bybit" => normalized.replace("-", ""),
+                    _ => normalized,
+                }
+            })
+            .collect();
+
+        tracing::info!("Streaming symbols: {:?}", parsed_symbols);
+
+        // Get exchange-specific supported data types (done once)
+        use perps_core::streaming::{IPerpsStream, StreamConfig, StreamDataType};
+        let mut data_types = get_supported_data_types(&exchange);
+
+        // For KuCoin, add klines to WebSocket streaming (no REST API available)
+        let kline_interval = if exchange == "kucoin" && klines_timeframe.is_some() {
+            data_types.push(StreamDataType::Kline);
+            klines_timeframe.clone()
+        } else {
+            None
+        };
+
+        // Reconnection loop
+        let mut reconnect_attempt = 0;
+        let mut current_delay = reconnect_delay_seconds;
+        let mut total_events = 0u64;
+
+        loop {
+            // Check shutdown signal before attempting connection
+            if shutdown.load(Ordering::Relaxed) {
+                tracing::info!("Shutdown signal received before connection attempt for exchange {}", exchange);
+                break;
+            }
+
+            // Log connection attempt
+            if reconnect_attempt == 0 {
+                tracing::info!("Connecting to {} WebSocket (initial attempt)", exchange);
+            } else {
+                tracing::info!("Reconnecting to {} WebSocket (attempt {}/{})",
+                    exchange,
+                    reconnect_attempt,
+                    if max_reconnect_attempts == 0 { "unlimited".to_string() } else { max_reconnect_attempts.to_string() }
+                );
+            }
+
+            // Create WebSocket stream client
+            let stream_client: Box<dyn IPerpsStream + Send + Sync> = match exchange.as_str() {
+                "binance" => Box::new(perps_exchanges::binance::BinanceWsClient::new()),
+                "hyperliquid" => Box::new(perps_exchanges::hyperliquid::HyperliquidWsClient::new()),
+                "bybit" => Box::new(perps_exchanges::bybit::BybitWsClient::new()),
+                "kucoin" => Box::new(perps_exchanges::kucoin::KuCoinWsClient::new()),
+                "lighter" => Box::new(perps_exchanges::lighter::LighterWsClient::new()),
+                "paradex" => Box::new(perps_exchanges::paradex::ParadexWsClient::new()),
+                _ => anyhow::bail!("Unsupported exchange for streaming: {}", exchange),
+            };
+
+            let config = StreamConfig {
+                symbols: parsed_symbols.clone(),
+                data_types: data_types.clone(),
+                auto_reconnect: true,
+                kline_interval: kline_interval.clone(),
+            };
+
+            // Attempt to establish stream
+            let mut stream = match stream_client.stream_multi(config).await {
+                Ok(s) => {
+                    tracing::info!("Successfully connected to {} WebSocket", exchange);
+                    reconnect_attempt = 0; // Reset on successful connection
+                    current_delay = reconnect_delay_seconds; // Reset backoff
+                    s
+                }
+                Err(e) => {
+                    tracing::error!("Failed to connect to {} WebSocket: {}", exchange, e);
+                    reconnect_attempt += 1;
+
+                    // Check if we should retry
+                    if max_reconnect_attempts > 0 && reconnect_attempt >= max_reconnect_attempts {
+                        tracing::error!("Max reconnection attempts ({}) reached for exchange {}", max_reconnect_attempts, exchange);
+                        return Err(anyhow::anyhow!("Failed to connect after {} attempts", max_reconnect_attempts));
+                    }
+
+                    // Wait before retrying with exponential backoff
+                    tracing::info!("Waiting {} seconds before reconnecting to {}...", current_delay, exchange);
+                    tokio::time::sleep(Duration::from_secs(current_delay)).await;
+
+                    // Exponential backoff with max cap
+                    current_delay = std::cmp::min(current_delay * 2, max_reconnect_delay_seconds);
+
+                    continue; // Retry connection
+                }
+            };
+
+            // Batch buffers (reset on reconnection)
+            let mut ticker_buffer: Vec<Ticker> = Vec::new();
+            let mut trade_buffer: Vec<Trade> = Vec::new();
+            let mut orderbook_buffer: Vec<Orderbook> = Vec::new();
+            let mut funding_rate_buffer: Vec<FundingRate> = Vec::new();
+            let mut kline_buffer: Vec<Kline> = Vec::new();
+
+            let mut event_count = 0u64;
+            let mut stream_active = true;
+
+            // Event processing loop for this connection
+            while stream_active {
+                // Use tokio::select! to handle both stream events and shutdown signal
+                tokio::select! {
+                    maybe_event = stream.next() => {
+                        match maybe_event {
+                    Some(Ok(event)) => {
+                    event_count += 1;
+
+                    match event {
+                        StreamEvent::Ticker(ticker) => {
+                            ticker_buffer.push(ticker);
+                            if ticker_buffer.len() >= batch_size {
+                                let repo = repository.lock().await;
+
+                                // Ensure partitions exist for the ticker timestamp range
+                                if let Some(first_ticker) = ticker_buffer.first() {
+                                    if let Some(last_ticker) = ticker_buffer.last() {
+                                        repo.ensure_partitions_for_range(
+                                            "tickers",
+                                            first_ticker.timestamp,
+                                            last_ticker.timestamp,
+                                        ).await?;
+                                    }
+                                }
+
+                                repo.store_tickers_with_exchange(&exchange, &ticker_buffer).await?;
+                                tracing::debug!("Stored {} tickers for exchange {}", ticker_buffer.len(), exchange);
+                                ticker_buffer.clear();
+                            }
+                        }
+                        StreamEvent::Trade(trade) => {
+                            trade_buffer.push(trade);
+                            if trade_buffer.len() >= batch_size {
+                                let repo = repository.lock().await;
+
+                                // Ensure partitions exist for the trade timestamp range
+                                if let Some(first_trade) = trade_buffer.first() {
+                                    if let Some(last_trade) = trade_buffer.last() {
+                                        repo.ensure_partitions_for_range(
+                                            "trades",
+                                            first_trade.timestamp,
+                                            last_trade.timestamp,
+                                        ).await?;
+                                    }
+                                }
+
+                                repo.store_trades_with_exchange(&exchange, &trade_buffer).await?;
+                                tracing::debug!("Stored {} trades for exchange {}", trade_buffer.len(), exchange);
+                                trade_buffer.clear();
+                            }
+                        }
+                        StreamEvent::Orderbook(orderbook) => {
+                            orderbook_buffer.push(orderbook);
+                            if orderbook_buffer.len() >= batch_size {
+                                let repo = repository.lock().await;
+
+                                // Ensure partitions exist for the orderbook timestamp range
+                                if let Some(first_orderbook) = orderbook_buffer.first() {
+                                    if let Some(last_orderbook) = orderbook_buffer.last() {
+                                        repo.ensure_partitions_for_range(
+                                            "orderbooks",
+                                            first_orderbook.timestamp,
+                                            last_orderbook.timestamp,
+                                        ).await?;
+                                    }
+                                }
+
+                                repo.store_orderbooks_with_exchange(&exchange, &orderbook_buffer).await?;
+                                tracing::debug!("Stored {} orderbooks for exchange {}", orderbook_buffer.len(), exchange);
+                                orderbook_buffer.clear();
+                            }
+                        }
+                        StreamEvent::FundingRate(funding_rate) => {
+                            funding_rate_buffer.push(funding_rate);
+                            if funding_rate_buffer.len() >= batch_size {
+                                let repo = repository.lock().await;
+
+                                // Ensure partitions exist for the funding rate timestamp range
+                                if let Some(first_rate) = funding_rate_buffer.first() {
+                                    if let Some(last_rate) = funding_rate_buffer.last() {
+                                        repo.ensure_partitions_for_range(
+                                            "funding_rates",
+                                            first_rate.funding_time,
+                                            last_rate.funding_time,
+                                        ).await?;
+                                    }
+                                }
+
+                                repo.store_funding_rates_with_exchange(&exchange, &funding_rate_buffer).await?;
+                                tracing::debug!("Stored {} funding rates for exchange {}", funding_rate_buffer.len(), exchange);
+                                funding_rate_buffer.clear();
+                            }
+                        }
+                        StreamEvent::Kline(kline) => {
+                            // Store klines from WebSocket (KuCoin only)
+                            kline_buffer.push(kline);
+                            if kline_buffer.len() >= batch_size {
+                                let repo = repository.lock().await;
+
+                                // Ensure partitions exist for the klines date range
+                                if let Some(first_kline) = kline_buffer.first() {
+                                    if let Some(last_kline) = kline_buffer.last() {
+                                        repo.ensure_partitions_for_range(
+                                            "klines",
+                                            first_kline.open_time,
+                                            last_kline.open_time,
+                                        ).await?;
+                                    }
+                                }
+
+                                repo.store_klines_with_exchange(&exchange, &kline_buffer).await?;
+                                tracing::debug!("Stored {} klines for exchange {}", kline_buffer.len(), exchange);
+                                kline_buffer.clear();
+                            }
+                        }
+                    }
+
+                    if event_count % 100 == 0 {
+                        tracing::info!("Exchange {}: Processed {} events (total: {})", exchange, event_count, total_events + event_count);
+                    }
+                }
+                Some(Err(e)) => {
+                    tracing::error!("Exchange {} stream error: {}", exchange, e);
+                    // Flush buffers before reconnecting
+                    if !ticker_buffer.is_empty() {
+                        let repo = repository.lock().await;
+                        if let Some(first) = ticker_buffer.first() {
+                            if let Some(last) = ticker_buffer.last() {
+                                if let Err(e) = repo.ensure_partitions_for_range("tickers", first.timestamp, last.timestamp).await {
+                                    tracing::error!("Failed to ensure partitions: {}", e);
+                                }
+                            }
+                        }
+                        if let Err(e) = repo.store_tickers_with_exchange(&exchange, &ticker_buffer).await {
+                            tracing::error!("Failed to flush ticker buffer: {}", e);
+                        }
+                        ticker_buffer.clear();
+                    }
+                    if !trade_buffer.is_empty() {
+                        let repo = repository.lock().await;
+                        if let Some(first) = trade_buffer.first() {
+                            if let Some(last) = trade_buffer.last() {
+                                if let Err(e) = repo.ensure_partitions_for_range("trades", first.timestamp, last.timestamp).await {
+                                    tracing::error!("Failed to ensure partitions: {}", e);
+                                }
+                            }
+                        }
+                        if let Err(e) = repo.store_trades_with_exchange(&exchange, &trade_buffer).await {
+                            tracing::error!("Failed to flush trade buffer: {}", e);
+                        }
+                        trade_buffer.clear();
+                    }
+                    if !orderbook_buffer.is_empty() {
+                        let repo = repository.lock().await;
+                        if let Some(first) = orderbook_buffer.first() {
+                            if let Some(last) = orderbook_buffer.last() {
+                                if let Err(e) = repo.ensure_partitions_for_range("orderbooks", first.timestamp, last.timestamp).await {
+                                    tracing::error!("Failed to ensure partitions: {}", e);
+                                }
+                            }
+                        }
+                        if let Err(e) = repo.store_orderbooks_with_exchange(&exchange, &orderbook_buffer).await {
+                            tracing::error!("Failed to flush orderbook buffer: {}", e);
+                        }
+                        orderbook_buffer.clear();
+                    }
+                    if !funding_rate_buffer.is_empty() {
+                        let repo = repository.lock().await;
+                        if let Some(first) = funding_rate_buffer.first() {
+                            if let Some(last) = funding_rate_buffer.last() {
+                                if let Err(e) = repo.ensure_partitions_for_range("funding_rates", first.funding_time, last.funding_time).await {
+                                    tracing::error!("Failed to ensure partitions: {}", e);
+                                }
+                            }
+                        }
+                        if let Err(e) = repo.store_funding_rates_with_exchange(&exchange, &funding_rate_buffer).await {
+                            tracing::error!("Failed to flush funding rate buffer: {}", e);
+                        }
+                        funding_rate_buffer.clear();
+                    }
+                    if !kline_buffer.is_empty() {
+                        let repo = repository.lock().await;
+                        if let Some(first_kline) = kline_buffer.first() {
+                            if let Some(last_kline) = kline_buffer.last() {
+                                if let Err(e) = repo.ensure_partitions_for_range("klines", first_kline.open_time, last_kline.open_time).await {
+                                    tracing::error!("Failed to ensure partitions: {}", e);
+                                }
+                            }
+                        }
+                        if let Err(e) = repo.store_klines_with_exchange(&exchange, &kline_buffer).await {
+                            tracing::error!("Failed to flush kline buffer: {}", e);
+                        }
+                        kline_buffer.clear();
+                    }
+
+                    // Update total events and trigger reconnection
+                    total_events += event_count;
+                    reconnect_attempt += 1;
+                    stream_active = false; // Exit stream loop to trigger reconnection
+                }
+                None => {
+                    tracing::warn!("Exchange {} stream ended unexpectedly", exchange);
+                    total_events += event_count;
+                    reconnect_attempt += 1;
+                    stream_active = false; // Exit stream loop to trigger reconnection
+                }
+                        }
+                    }
+                    _ = tokio::time::sleep(Duration::from_millis(100)) => {
+                        // Check shutdown signal periodically
+                        if shutdown.load(Ordering::Relaxed) {
+                            tracing::info!("Shutdown signal received for exchange {}, flushing buffers...", exchange);
+                            stream_active = false; // Exit stream loop
+                        }
+                    }
+                }
+            }
+
+            // Final flush for this connection before reconnecting
+            let repo = repository.lock().await;
+            if !ticker_buffer.is_empty() {
+                if let Some(first) = ticker_buffer.first() {
+                    if let Some(last) = ticker_buffer.last() {
+                        if let Err(e) = repo.ensure_partitions_for_range("tickers", first.timestamp, last.timestamp).await {
+                            tracing::error!("Failed to ensure partitions: {}", e);
+                        }
+                    }
+                }
+                if let Err(e) = repo.store_tickers_with_exchange(&exchange, &ticker_buffer).await {
+                    tracing::error!("Failed to flush ticker buffer: {}", e);
+                }
+            }
+            if !trade_buffer.is_empty() {
+                if let Some(first) = trade_buffer.first() {
+                    if let Some(last) = trade_buffer.last() {
+                        if let Err(e) = repo.ensure_partitions_for_range("trades", first.timestamp, last.timestamp).await {
+                            tracing::error!("Failed to ensure partitions: {}", e);
+                        }
+                    }
+                }
+                if let Err(e) = repo.store_trades_with_exchange(&exchange, &trade_buffer).await {
+                    tracing::error!("Failed to flush trade buffer: {}", e);
+                }
+            }
+            if !orderbook_buffer.is_empty() {
+                if let Some(first) = orderbook_buffer.first() {
+                    if let Some(last) = orderbook_buffer.last() {
+                        if let Err(e) = repo.ensure_partitions_for_range("orderbooks", first.timestamp, last.timestamp).await {
+                            tracing::error!("Failed to ensure partitions: {}", e);
+                        }
+                    }
+                }
+                if let Err(e) = repo.store_orderbooks_with_exchange(&exchange, &orderbook_buffer).await {
+                    tracing::error!("Failed to flush orderbook buffer: {}", e);
+                }
+            }
+            if !funding_rate_buffer.is_empty() {
+                if let Some(first) = funding_rate_buffer.first() {
+                    if let Some(last) = funding_rate_buffer.last() {
+                        if let Err(e) = repo.ensure_partitions_for_range("funding_rates", first.funding_time, last.funding_time).await {
+                            tracing::error!("Failed to ensure partitions: {}", e);
+                        }
+                    }
+                }
+                if let Err(e) = repo.store_funding_rates_with_exchange(&exchange, &funding_rate_buffer).await {
+                    tracing::error!("Failed to flush funding rate buffer: {}", e);
+                }
+            }
+            if !kline_buffer.is_empty() {
+                if let Some(first_kline) = kline_buffer.first() {
+                    if let Some(last_kline) = kline_buffer.last() {
+                        if let Err(e) = repo.ensure_partitions_for_range("klines", first_kline.open_time, last_kline.open_time).await {
+                            tracing::error!("Failed to ensure partitions: {}", e);
+                        }
+                    }
+                }
+                if let Err(e) = repo.store_klines_with_exchange(&exchange, &kline_buffer).await {
+                    tracing::error!("Failed to flush kline buffer: {}", e);
+                }
+            }
+
+            // Check if we should exit (shutdown signal)
+            if shutdown.load(Ordering::Relaxed) {
+                tracing::info!("Exchange {} streaming task stopped due to shutdown signal. Total events: {}", exchange, total_events);
+                break; // Exit reconnection loop
+            }
+
+            // Check reconnection limit
+            if max_reconnect_attempts > 0 && reconnect_attempt >= max_reconnect_attempts {
+                tracing::error!("Max reconnection attempts ({}) reached for exchange {}", max_reconnect_attempts, exchange);
+                return Err(anyhow::anyhow!("Failed to maintain connection after {} attempts", max_reconnect_attempts));
+            }
+
+            // Wait before reconnecting with exponential backoff
+            if reconnect_attempt > 0 {
+                tracing::info!("Waiting {} seconds before reconnecting to {}...", current_delay, exchange);
+                tokio::time::sleep(Duration::from_secs(current_delay)).await;
+
+                // Exponential backoff with max cap
+                current_delay = std::cmp::min(current_delay * 2, max_reconnect_delay_seconds);
+            }
+
+            // Loop back to reconnect
+        }
+
+        tracing::info!("Exchange {} streaming task completed. Total events: {}", exchange, total_events);
+        Ok(())
+    }))
+}
+
+/// Spawn klines fetching task for a specific exchange
+async fn spawn_klines_task(
+    exchange: String,
+    symbols: Vec<String>,
+    klines_interval: u64,
+    klines_timeframe: String,
+    repository: Arc<Mutex<PostgresRepository>>,
+    shutdown: Arc<AtomicBool>,
+) -> Result<tokio::task::JoinHandle<Result<()>>> {
+    Ok(tokio::spawn(async move {
+        tracing::info!("Starting klines fetching task for exchange: {} (interval: {}s, timeframe: {})",
+                      exchange, klines_interval, klines_timeframe);
+
+        let client = factory::get_exchange(&exchange)?;
+        let mut ticker = interval(Duration::from_secs(klines_interval));
+
+        loop {
+            // Use tokio::select! to check shutdown signal while waiting for next tick
+            tokio::select! {
+                _ = ticker.tick() => {
+                    // Continue with klines fetch
+                }
+                _ = tokio::time::sleep(Duration::from_millis(100)) => {
+                    // Check shutdown signal periodically
+                    if shutdown.load(Ordering::Relaxed) {
+                        tracing::info!("Shutdown signal received for klines task ({})", exchange);
+                        break;
+                    }
+                    continue; // Wait for next tick or shutdown check
+                }
+            }
+
+            tracing::debug!("Fetching klines for exchange {} ({} symbols)", exchange, symbols.len());
+
+            // Calculate time range for klines fetch
+            // For exchanges like Lighter that require start_timestamp, fetch recent data
+            let now = chrono::Utc::now();
+            let start_time = now - chrono::Duration::days(1); // Last 24 hours
+
+            for symbol in &symbols {
+                // Parse symbol to exchange-specific format
+                let parsed_symbol = client.parse_symbol(symbol);
+
+                // Lighter requires start_timestamp, so provide time range
+                let (start, end, limit) = if exchange == "lighter" {
+                    (Some(start_time), Some(now), Some(500))
+                } else {
+                    // Other exchanges can work without time range
+                    (None, None, None)
+                };
+
+                match client.get_klines(&parsed_symbol, &klines_timeframe, start, end, limit).await {
+                    Ok(klines) => {
+                        if !klines.is_empty() {
+                            let repo = repository.lock().await;
+
+                            // Ensure partitions exist for the klines date range
+                            // This prevents insertion failures due to missing partitions
+                            if let Some(first_kline) = klines.first() {
+                                if let Some(last_kline) = klines.last() {
+                                    // Create partitions for the full range of klines
+                                    match repo.ensure_partitions_for_range(
+                                        "klines",
+                                        first_kline.open_time,
+                                        last_kline.open_time,
+                                    ).await {
+                                        Ok(_) => {
+                                            tracing::debug!("Ensured partitions exist for klines range: {} to {}",
+                                                          first_kline.open_time, last_kline.open_time);
+                                        }
+                                        Err(e) => {
+                                            tracing::error!("Failed to ensure partitions for {}/{}: {}", exchange, symbol, e);
+                                            continue; // Skip storing if partition creation fails
+                                        }
+                                    }
+                                }
+                            }
+
+                            match repo.store_klines_with_exchange(&exchange, &klines).await {
+                                Ok(_) => {
+                                    tracing::debug!("Stored {} klines for {}/{}", klines.len(), exchange, symbol);
+                                }
+                                Err(e) => {
+                                    tracing::error!("Failed to store klines for {}/{}: {}", exchange, symbol, e);
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        // Check if this is an expected "not available" error (e.g., KuCoin doesn't provide klines)
+                        let error_msg = e.to_string();
+                        if error_msg.contains("not available") || error_msg.contains("not implemented") {
+                            tracing::warn!("Klines not available for {}/{}: {}", exchange, symbol, e);
+                        } else {
+                            tracing::error!("Failed to fetch klines for {}/{}: {}", exchange, symbol, e);
+                        }
+                    }
+                }
+            }
+
+            tracing::info!("Exchange {}: Completed klines fetch cycle", exchange);
+        }
+
+        tracing::info!("Klines fetching task for {} stopped", exchange);
+        Ok(())
+    }))
+}
+
+/// Spawn liquidity depth report generation task
+async fn spawn_liquidity_report_task(
+    exchanges: Vec<String>,
+    symbols: Vec<String>,
+    report_interval: u64,
+    repository: Arc<Mutex<PostgresRepository>>,
+    shutdown: Arc<AtomicBool>,
+) -> Result<tokio::task::JoinHandle<Result<()>>> {
+    Ok(tokio::spawn(async move {
+        tracing::info!("Starting liquidity depth report generation task (interval: {}s)", report_interval);
+
+        let mut ticker = interval(Duration::from_secs(report_interval));
+        let aggregator = Aggregator::new();
+
+        // Create REST API clients for each exchange
+        let mut clients: HashMap<String, Box<dyn perps_core::IPerps + Send + Sync>> = HashMap::new();
+        for exchange in &exchanges {
+            match factory::get_exchange(exchange) {
+                Ok(client) => {
+                    clients.insert(exchange.clone(), client);
+                    tracing::debug!("Initialized REST client for exchange: {}", exchange);
+                }
+                Err(e) => {
+                    tracing::error!("Failed to initialize REST client for {}: {}", exchange, e);
+                }
+            }
+        }
+
+        loop {
+            // Use tokio::select! to check shutdown signal while waiting for next tick
+            tokio::select! {
+                _ = ticker.tick() => {
+                    // Continue with report generation
+                }
+                _ = tokio::time::sleep(Duration::from_millis(100)) => {
+                    // Check shutdown signal periodically
+                    if shutdown.load(Ordering::Relaxed) {
+                        tracing::info!("Shutdown signal received for report generation task");
+                        break;
+                    }
+                    continue; // Wait for next tick or shutdown check
+                }
+            }
+
+            tracing::info!("Generating liquidity depth report for {} symbols across {} exchanges",
+                          symbols.len(), exchanges.len());
+
+            for exchange in &exchanges {
+                // Get REST client for this exchange
+                let client = match clients.get(exchange) {
+                    Some(c) => c,
+                    None => {
+                        tracing::error!("No REST client available for exchange: {}", exchange);
+                        continue;
+                    }
+                };
+
+                for symbol in &symbols {
+                    // Parse symbol to exchange-specific format
+                    let parsed_symbol = client.parse_symbol(symbol);
+
+                    // Fetch orderbook and calculate liquidity depth using common helper
+                    match common::fetch_and_calculate_liquidity(
+                        client.as_ref(),
+                        &aggregator,
+                        &parsed_symbol,
+                        symbol,
+                        exchange,
+                        1000,
+                    ).await {
+                        Ok(depth_stats) => {
+                            // Store liquidity depth
+                            let repo = repository.lock().await;
+
+                            // Ensure partition exists for liquidity depth timestamp
+                            if let Err(e) = repo.ensure_partitions_for_range(
+                                "liquidity_depth",
+                                depth_stats.timestamp,
+                                depth_stats.timestamp,
+                            ).await {
+                                tracing::error!("Failed to ensure partition for liquidity depth {}/{}: {}", exchange, symbol, e);
+                                continue;
+                            }
+
+                            match repo.store_liquidity_depth(&[depth_stats]).await {
+                                Ok(_) => {
+                                    tracing::debug!("Stored liquidity depth for {}/{}", exchange, symbol);
+                                }
+                                Err(e) => {
+                                    tracing::error!("Failed to store liquidity depth for {}/{}: {}",
+                                                  exchange, symbol, e);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to fetch and calculate liquidity depth for {}/{}: {}",
+                                          exchange, symbol, e);
+                        }
+                    }
+                }
+            }
+
+            tracing::info!("Completed liquidity depth report generation");
+        }
+
+        tracing::info!("Liquidity depth report generation task stopped");
+        Ok(())
+    }))
+}
+
+/// Spawn ticker report generation task
+async fn spawn_ticker_report_task(
+    exchanges: Vec<String>,
+    symbols: Vec<String>,
+    report_interval: u64,
+    repository: Arc<Mutex<PostgresRepository>>,
+    shutdown: Arc<AtomicBool>,
+) -> Result<tokio::task::JoinHandle<Result<()>>> {
+    Ok(tokio::spawn(async move {
+        tracing::info!("Starting ticker report generation task (interval: {}s)", report_interval);
+
+        let mut ticker_interval = interval(Duration::from_secs(report_interval));
+
+        // Create REST API clients for each exchange
+        let mut clients: HashMap<String, Box<dyn perps_core::IPerps + Send + Sync>> = HashMap::new();
+        for exchange in &exchanges {
+            match factory::get_exchange(exchange) {
+                Ok(client) => {
+                    clients.insert(exchange.clone(), client);
+                    tracing::debug!("Initialized REST client for exchange: {}", exchange);
+                }
+                Err(e) => {
+                    tracing::error!("Failed to initialize REST client for {}: {}", exchange, e);
+                }
+            }
+        }
+
+        loop {
+            // Use tokio::select! to check shutdown signal while waiting for next tick
+            tokio::select! {
+                _ = ticker_interval.tick() => {
+                    // Continue with ticker report generation
+                }
+                _ = tokio::time::sleep(Duration::from_millis(100)) => {
+                    // Check shutdown signal periodically
+                    if shutdown.load(Ordering::Relaxed) {
+                        tracing::info!("Shutdown signal received for ticker report generation task");
+                        break;
+                    }
+                    continue; // Wait for next tick or shutdown check
+                }
+            }
+
+            tracing::info!("Generating ticker report for {} symbols across {} exchanges",
+                          symbols.len(), exchanges.len());
+
+            let mut ticker_batch: Vec<Ticker> = Vec::new();
+
+            for exchange in &exchanges {
+                // Get REST client for this exchange
+                let client = match clients.get(exchange) {
+                    Some(c) => c,
+                    None => {
+                        tracing::error!("No REST client available for exchange: {}", exchange);
+                        continue;
+                    }
+                };
+
+                for symbol in &symbols {
+                    // Parse symbol to exchange-specific format
+                    let parsed_symbol = client.parse_symbol(symbol);
+
+                    // Fetch ticker from REST API
+                    match client.get_ticker(&parsed_symbol).await {
+                        Ok(ticker) => {
+                            if !ticker.is_empty() {
+                                ticker_batch.push(ticker);
+                            } else {
+                                tracing::error!("Ticker {} empty for exchange {}", symbol, exchange);
+                            }
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to fetch ticker for {}/{}: {}", exchange, symbol, e);
+                        }
+                    }
+                }
+            }
+
+            // Store all tickers in batch
+            if !ticker_batch.is_empty() {
+                let repo = repository.lock().await;
+
+                // Group tickers by exchange for storage
+                let mut tickers_by_exchange: HashMap<String, Vec<Ticker>> = HashMap::new();
+                for (i, ticker) in ticker_batch.iter().enumerate() {
+                    let exchange = &exchanges[i / symbols.len()];
+                    tickers_by_exchange.entry(exchange.clone()).or_insert_with(Vec::new).push(ticker.clone());
+                }
+
+                // Store tickers for each exchange
+                for (exchange, tickers) in tickers_by_exchange {
+                    // Ensure partitions exist for ticker timestamp range
+                    if let Some(first) = tickers.first() {
+                        if let Some(last) = tickers.last() {
+                            if let Err(e) = repo.ensure_partitions_for_range(
+                                "tickers",
+                                first.timestamp,
+                                last.timestamp,
+                            ).await {
+                                tracing::error!("Failed to ensure partition for tickers {}: {}", exchange, e);
+                                continue;
+                            }
+                        }
+                    }
+
+                    match repo.store_tickers_with_exchange(&exchange, &tickers).await {
+                        Ok(_) => {
+                            tracing::debug!("Stored {} tickers for exchange {}", tickers.len(), exchange);
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to store tickers for exchange {}: {}", exchange, e);
+                        }
+                    }
+                }
+            }
+
+            tracing::info!("Completed ticker report generation");
+        }
+
+        tracing::info!("Ticker report generation task stopped");
+        Ok(())
+    }))
+}
+
+/// Spawn partition cleanup task
+async fn spawn_cleanup_task(
+    retention_days: i64,
+    cleanup_interval: u64,
+    repository: Arc<Mutex<PostgresRepository>>,
+    shutdown: Arc<AtomicBool>,
+) -> Result<tokio::task::JoinHandle<Result<()>>> {
+    Ok(tokio::spawn(async move {
+        tracing::info!("Starting partition cleanup task (retention: {} days, interval: {}s)",
+                      retention_days, cleanup_interval);
+
+        let mut ticker = interval(Duration::from_secs(cleanup_interval));
+
+        loop {
+            // Use tokio::select! to check shutdown signal while waiting for next tick
+            tokio::select! {
+                _ = ticker.tick() => {
+                    // Continue with cleanup
+                }
+                _ = tokio::time::sleep(Duration::from_millis(100)) => {
+                    // Check shutdown signal periodically
+                    if shutdown.load(Ordering::Relaxed) {
+                        tracing::info!("Shutdown signal received for cleanup task");
+                        break;
+                    }
+                    continue; // Wait for next tick or shutdown check
+                }
+            }
+
+            tracing::info!("Running partition cleanup for data older than {} days", retention_days);
+
+            // Get partition statistics before cleanup
+            let repo = repository.lock().await;
+            match repo.get_partition_stats().await {
+                Ok(stats_before) => {
+                    tracing::info!("Partition counts before cleanup:");
+                    for (table, count) in &stats_before {
+                        tracing::info!("  {}: {} partitions", table, count);
+                    }
+
+                    // Perform cleanup
+                    match repo.cleanup_old_partitions(retention_days).await {
+                        Ok(dropped_count) => {
+                            if dropped_count > 0 {
+                                tracing::info!("Dropped {} old partitions", dropped_count);
+
+                                // Get statistics after cleanup
+                                match repo.get_partition_stats().await {
+                                    Ok(stats_after) => {
+                                        tracing::info!("Partition counts after cleanup:");
+                                        for (table, count) in &stats_after {
+                                            tracing::info!("  {}: {} partitions", table, count);
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::error!("Failed to get partition stats after cleanup: {}", e);
+                                    }
+                                }
+                            } else {
+                                tracing::info!("No old partitions to drop");
+                            }
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to cleanup old partitions: {}", e);
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("Failed to get partition stats: {}", e);
+                }
+            }
+
+            tracing::info!("Completed partition cleanup cycle");
+        }
+
+        tracing::info!("Partition cleanup task stopped");
+        Ok(())
+    }))
+}
+
+pub async fn execute(args: StartArgs) -> Result<()> {
+    tracing::info!("Starting unified data collection service");
+
+    // Determine which exchanges to use
+    let supported_exchanges = vec!["binance", "hyperliquid", "bybit", "kucoin", "lighter", "paradex"];
+    let exchanges = match args.exchanges {
+        Some(ref exs) if !exs.is_empty() => {
+            // Validate provided exchanges
+            for exchange in exs {
+                if !supported_exchanges.contains(&exchange.as_str()) {
+                    anyhow::bail!("Unsupported exchange: {}. Supported: {:?}", exchange, supported_exchanges);
+                }
+            }
+            exs.clone()
+        }
+        _ => {
+            tracing::info!("No exchanges specified, using all supported exchanges");
+            supported_exchanges.iter().map(|&s| s.to_string()).collect()
+        }
+    };
+
+    tracing::info!("Exchanges: {:?}", exchanges);
+    tracing::info!("Symbols file: {}", args.symbols_file);
+    tracing::info!("Batch size: {}", args.batch_size);
+    tracing::info!("Klines interval: {}s (timeframe: {})", args.klines_interval, args.klines_timeframe);
+    tracing::info!("Report interval: {}s", args.report_interval);
+
+    // Load symbols from file
+    tracing::info!("Loading symbols from file: {}", args.symbols_file);
+    let symbols = load_symbols(&args.symbols_file).await?;
+    tracing::info!("Loaded {} symbols: {:?}", symbols.len(), symbols);
+
+    if symbols.is_empty() {
+        anyhow::bail!("No symbols found in file: {}", args.symbols_file);
+    }
+
+    // Validate symbols for each exchange
+    let mut exchange_symbols: HashMap<String, Vec<String>> = HashMap::new();
+    for exchange in &exchanges {
+        let valid_symbols = validate_symbols(exchange, &symbols).await?;
+        if valid_symbols.is_empty() {
+            tracing::warn!("No valid symbols found for exchange: {}", exchange);
+        } else {
+            exchange_symbols.insert(exchange.clone(), valid_symbols);
+        }
+    }
+
+    if exchange_symbols.is_empty() {
+        anyhow::bail!("No valid symbols found for any exchange");
+    }
+
+    // Initialize database connection
+    tracing::info!("Connecting to database: {}", args.database_url);
+    let pool = PgPool::connect(&args.database_url).await?;
+    let repository = Arc::new(Mutex::new(PostgresRepository::new(pool)));
+
+    // Create shutdown signal
+    let shutdown = Arc::new(AtomicBool::new(false));
+
+    // Spawn tasks
+    let mut tasks = Vec::new();
+
+    // Spawn WebSocket streaming tasks (one per exchange)
+    // For KuCoin, pass klines_timeframe to enable WebSocket klines
+    for (exchange, symbols) in &exchange_symbols {
+        let klines_timeframe_for_exchange = if exchange == "kucoin" {
+            Some(args.klines_timeframe.clone())
+        } else {
+            None
+        };
+
+        let task = spawn_streaming_task(
+            exchange.clone(),
+            symbols.clone(),
+            args.batch_size,
+            klines_timeframe_for_exchange,
+            repository.clone(),
+            shutdown.clone(),
+            args.max_reconnect_attempts,
+            args.reconnect_delay_seconds,
+            args.max_reconnect_delay_seconds,
+        ).await?;
+        tasks.push(task);
+    }
+
+    // Spawn klines fetching tasks (one per exchange, except KuCoin which uses WebSocket)
+    for (exchange, symbols) in &exchange_symbols {
+        // Skip KuCoin - it uses WebSocket for klines instead
+        if exchange == "kucoin" {
+            tracing::info!("Skipping REST API klines task for KuCoin (using WebSocket instead)");
+            continue;
+        }
+
+        let task = spawn_klines_task(
+            exchange.clone(),
+            symbols.clone(),
+            args.klines_interval,
+            args.klines_timeframe.clone(),
+            repository.clone(),
+            shutdown.clone(),
+        ).await?;
+        tasks.push(task);
+    }
+
+    // Spawn liquidity depth report generation task (single task for all exchanges)
+    let liquidity_report_task = spawn_liquidity_report_task(
+        exchanges.clone(),
+        symbols.clone(),
+        args.report_interval,
+        repository.clone(),
+        shutdown.clone(),
+    ).await?;
+    tasks.push(liquidity_report_task);
+
+    // Spawn ticker report generation task (single task for all exchanges)
+    let ticker_report_task = spawn_ticker_report_task(
+        exchanges.clone(),
+        symbols.clone(),
+        args.report_interval,
+        repository.clone(),
+        shutdown.clone(),
+    ).await?;
+    tasks.push(ticker_report_task);
+
+    // Spawn partition cleanup task (if enabled)
+    if args.enable_partition_cleanup {
+        tracing::info!("Partition cleanup enabled (retention: {} days, interval: {}s)",
+                      args.retention_days, args.cleanup_interval);
+        let cleanup_task = spawn_cleanup_task(
+            args.retention_days,
+            args.cleanup_interval,
+            repository.clone(),
+            shutdown.clone(),
+        ).await?;
+        tasks.push(cleanup_task);
+    } else {
+        tracing::info!("Partition cleanup disabled");
+    }
+
+    tracing::info!("All tasks spawned successfully. Running {} tasks total", tasks.len());
+    tracing::info!("Press Ctrl+C to stop");
+
+    // Setup Ctrl+C handler
+    let shutdown_clone = shutdown.clone();
+    tokio::spawn(async move {
+        match signal::ctrl_c().await {
+            Ok(()) => {
+                tracing::info!("Received Ctrl+C, initiating graceful shutdown...");
+                shutdown_clone.store(true, Ordering::Relaxed);
+            }
+            Err(e) => {
+                tracing::error!("Failed to listen for Ctrl+C signal: {}", e);
+            }
+        }
+    });
+
+    // Wait for all tasks to complete
+    let results = futures::future::join_all(tasks).await;
+
+    // Check for errors
+    let mut had_errors = false;
+    for (i, result) in results.iter().enumerate() {
+        match result {
+            Ok(Ok(_)) => {
+                tracing::info!("Task {} completed successfully", i);
+            }
+            Ok(Err(e)) => {
+                tracing::error!("Task {} failed: {}", i, e);
+                had_errors = true;
+            }
+            Err(e) => {
+                tracing::error!("Task {} panicked: {}", i, e);
+                had_errors = true;
+            }
+        }
+    }
+
+    tracing::info!("Unified data collection service stopped");
+
+    if had_errors {
+        anyhow::bail!("One or more tasks failed during execution");
+    }
+
+    Ok(())
+}

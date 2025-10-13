@@ -29,16 +29,14 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Backfill {
-            exchange,
-            symbols,
-            from,
-            to,
-        } => {
-            commands::backfill::execute(exchange, symbols, from, to).await?;
+        Commands::Backfill(args) => {
+            commands::backfill::execute(args).await?;
         }
         Commands::Stream(args) => {
             commands::stream::execute(args).await?;
+        }
+        Commands::Start(args) => {
+            commands::start::execute(args).await?;
         }
         Commands::Serve { host, port } => {
             commands::serve::execute(host, port).await?;

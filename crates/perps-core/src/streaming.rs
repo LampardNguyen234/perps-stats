@@ -13,6 +13,7 @@ pub enum StreamEvent {
     Trade(Trade),
     Orderbook(Orderbook),
     FundingRate(FundingRate),
+    Kline(Kline),
 }
 
 /// Configuration for streaming data from an exchange
@@ -24,6 +25,8 @@ pub struct StreamConfig {
     pub data_types: Vec<StreamDataType>,
     /// Reconnect on disconnect
     pub auto_reconnect: bool,
+    /// Kline interval (e.g., "1h", "5m") - only used when streaming klines
+    pub kline_interval: Option<String>,
 }
 
 /// Types of data that can be streamed
@@ -33,6 +36,7 @@ pub enum StreamDataType {
     Trade,
     Orderbook,
     FundingRate,
+    Kline,
 }
 
 /// Trait for exchanges that support real-time streaming via WebSocket

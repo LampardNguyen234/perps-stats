@@ -29,9 +29,9 @@ pub async fn init(database_url: Option<String>, create_partitions_days: i32) -> 
     sqlx::migrate!("./migrations").run(&pool).await?;
     tracing::info!("✓ Migrations completed successfully");
 
-    // Create partitions for the next N days
+    // Create partitions for past 7 days (for backfilling) and next N days
     tracing::info!(
-        "Creating partitions for the next {} days",
+        "Creating partitions for past 7 days and next {} days",
         create_partitions_days
     );
     create_partitions(&pool, create_partitions_days).await?;
@@ -140,10 +140,13 @@ pub async fn stats(database_url: Option<String>, format: &str) -> Result<()> {
 }
 
 /// Create partitions for partitioned tables
+/// Creates partitions for past days (for backfilling) and future days
 async fn create_partitions(pool: &PgPool, days: i32) -> Result<()> {
-    let tables = vec!["tickers", "orderbooks", "trades", "funding_rates", "liquidity_depth"];
+    let tables = vec!["tickers", "orderbooks", "trades", "funding_rates", "liquidity_depth", "klines"];
 
-    for day_offset in 0..days {
+    // Create partitions for past 7 days (for backfilling/historical data) and future N days
+    let past_days = 7;
+    for day_offset in -past_days..days {
         let date = Utc::now().date_naive() + chrono::Duration::days(day_offset as i64);
         let next_date = date + chrono::Duration::days(1);
 
@@ -182,13 +185,13 @@ async fn create_partitions(pool: &PgPool, days: i32) -> Result<()> {
 async fn truncate_all_tables(pool: &PgPool) -> Result<()> {
     // Order matters due to foreign key constraints
     let tables = vec![
-        "ingest_events",
         "tickers",
         "orderbooks",
         "trades",
         "funding_rates",
         "liquidity_depth",
         "markets",
+        "klines",
         // Don't truncate exchanges as it's a reference table
     ];
 
@@ -204,7 +207,7 @@ async fn truncate_all_tables(pool: &PgPool) -> Result<()> {
 /// Delete data older than N days
 async fn delete_old_data(pool: &PgPool, days: i32) -> Result<()> {
     let cutoff_date = Utc::now() - chrono::Duration::days(days as i64);
-    let tables = vec!["tickers", "orderbooks", "trades", "funding_rates", "liquidity_depth"];
+    let tables = vec!["tickers", "orderbooks", "trades", "funding_rates", "liquidity_depth", "klines"];
 
     for table in tables {
         tracing::info!("Deleting old data from table: {}", table);
@@ -226,7 +229,7 @@ async fn drop_old_partitions(pool: &PgPool, days: i32) -> Result<()> {
 
     // Query to find all partitions
     let partitions: Vec<(String,)> = sqlx::query_as(
-        "SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename ~ '^(tickers|orderbooks|trades|funding_rates|liquidity_depth)_[0-9]{4}_[0-9]{2}_[0-9]{2}$'"
+        "SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename ~ '^(tickers|orderbooks|trades|funding_rates|liquidity_depth|klines)_[0-9]{4}_[0-9]{2}_[0-9]{2}$'"
     )
     .fetch_all(pool)
     .await?;
@@ -265,7 +268,8 @@ async fn fetch_table_stats(pool: &PgPool) -> Result<serde_json::Value> {
         "trades",
         "funding_rates",
         "liquidity_depth",
-        "ingest_events",
+        "klines",
+        "open_interest",
     ];
 
     for table in tables {
@@ -283,14 +287,57 @@ async fn fetch_table_stats(pool: &PgPool) -> Result<serde_json::Value> {
         // Get date range for time-series tables
         let mut min_ts: Option<DateTime<Utc>> = None;
         let mut max_ts: Option<DateTime<Utc>> = None;
+        let mut data_age_minutes: Option<i64> = None;
 
-        if vec!["tickers", "orderbooks", "trades", "funding_rates", "liquidity_depth"]
+        if vec!["tickers", "orderbooks", "trades", "funding_rates", "liquidity_depth", "klines", "open_interest"]
             .contains(&table)
         {
             let ts_query = format!("SELECT MIN(ts), MAX(ts) FROM {}", table);
             if let Ok(row) = sqlx::query(&ts_query).fetch_one(pool).await {
                 min_ts = row.try_get(0).ok();
                 max_ts = row.try_get(1).ok();
+
+                // Calculate data freshness (minutes since last update)
+                if let Some(max_timestamp) = max_ts {
+                    let now = Utc::now();
+                    data_age_minutes = Some((now - max_timestamp).num_minutes());
+                }
+            }
+        }
+
+        // Get per-exchange breakdown for time-series tables
+        let mut exchange_breakdown = json!({});
+        if vec!["tickers", "orderbooks", "trades", "funding_rates", "liquidity_depth", "klines", "open_interest"]
+            .contains(&table)
+        {
+            let breakdown_query = format!(
+                "SELECT e.name, COUNT(*) as count, MIN(t.ts) as min_ts, MAX(t.ts) as max_ts
+                 FROM {} t
+                 JOIN exchanges e ON t.exchange_id = e.id
+                 GROUP BY e.name
+                 ORDER BY count DESC",
+                table
+            );
+
+            if let Ok(rows) = sqlx::query(&breakdown_query).fetch_all(pool).await {
+                for row in rows {
+                    let exchange_name: String = row.get("name");
+                    let exchange_count: i64 = row.get("count");
+                    let exchange_min_ts: Option<DateTime<Utc>> = row.try_get("min_ts").ok();
+                    let exchange_max_ts: Option<DateTime<Utc>> = row.try_get("max_ts").ok();
+
+                    let mut exchange_age_minutes: Option<i64> = None;
+                    if let Some(exchange_max) = exchange_max_ts {
+                        exchange_age_minutes = Some((Utc::now() - exchange_max).num_minutes());
+                    }
+
+                    exchange_breakdown[&exchange_name] = json!({
+                        "count": exchange_count,
+                        "min_timestamp": exchange_min_ts,
+                        "max_timestamp": exchange_max_ts,
+                        "data_age_minutes": exchange_age_minutes,
+                    });
+                }
             }
         }
 
@@ -299,18 +346,44 @@ async fn fetch_table_stats(pool: &PgPool) -> Result<serde_json::Value> {
             "size": size,
             "min_timestamp": min_ts,
             "max_timestamp": max_ts,
+            "data_age_minutes": data_age_minutes,
+            "exchange_breakdown": exchange_breakdown,
         });
     }
 
     // Get partition count
     let partition_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM pg_tables WHERE schemaname = 'public' AND tablename ~ '^(tickers|orderbooks|trades|funding_rates|liquidity_depth)_[0-9]{4}_[0-9]{2}_[0-9]{2}$'"
+        "SELECT COUNT(*) FROM pg_tables WHERE schemaname = 'public' AND tablename ~ '^(tickers|orderbooks|trades|funding_rates|liquidity_depth|klines|open_interest)_[0-9]{4}_[0-9]{2}_[0-9]{2}$'"
     )
     .fetch_one(pool)
     .await?;
 
+    // Get top symbols by activity (across all exchanges)
+    let mut top_symbols = json!([]);
+    if let Ok(rows) = sqlx::query(
+        "SELECT symbol, COUNT(*) as total_count
+         FROM (
+             SELECT symbol FROM tickers
+             UNION ALL SELECT symbol FROM trades
+             UNION ALL SELECT symbol FROM orderbooks
+         ) combined
+         GROUP BY symbol
+         ORDER BY total_count DESC
+         LIMIT 10"
+    ).fetch_all(pool).await {
+        for row in rows {
+            let symbol: String = row.get("symbol");
+            let total_count: i64 = row.get("total_count");
+            top_symbols.as_array_mut().unwrap().push(json!({
+                "symbol": symbol,
+                "total_records": total_count,
+            }));
+        }
+    }
+
     stats["metadata"] = json!({
         "partition_count": partition_count,
+        "top_symbols": top_symbols,
         "fetched_at": Utc::now(),
     });
 
@@ -326,6 +399,7 @@ fn display_stats_table(stats: &serde_json::Value) -> Result<()> {
         Cell::new("Table").with_style(prettytable::Attr::Bold),
         Cell::new("Row Count").with_style(prettytable::Attr::Bold),
         Cell::new("Size").with_style(prettytable::Attr::Bold),
+        Cell::new("Data Age").with_style(prettytable::Attr::Bold),
         Cell::new("Min Timestamp").with_style(prettytable::Attr::Bold),
         Cell::new("Max Timestamp").with_style(prettytable::Attr::Bold),
     ]));
@@ -338,6 +412,8 @@ fn display_stats_table(stats: &serde_json::Value) -> Result<()> {
         "trades",
         "funding_rates",
         "liquidity_depth",
+        "klines",
+        "open_interest",
         "ingest_events",
     ];
 
@@ -345,19 +421,33 @@ fn display_stats_table(stats: &serde_json::Value) -> Result<()> {
         if let Some(table_stats) = stats.get(table_name) {
             let row_count = table_stats["row_count"].as_i64().unwrap_or(0);
             let size = table_stats["size"].as_str().unwrap_or("N/A");
+
+            let data_age = if let Some(age_minutes) = table_stats["data_age_minutes"].as_i64() {
+                if age_minutes < 60 {
+                    format!("{}m", age_minutes)
+                } else if age_minutes < 1440 {
+                    format!("{}h", age_minutes / 60)
+                } else {
+                    format!("{}d", age_minutes / 1440)
+                }
+            } else {
+                "-".to_string()
+            };
+
             let min_ts = table_stats["min_timestamp"]
                 .as_str()
-                .unwrap_or("-")
-                .to_string();
+                .map(|s| s.split('.').next().unwrap_or(s).replace('T', " "))
+                .unwrap_or_else(|| "-".to_string());
             let max_ts = table_stats["max_timestamp"]
                 .as_str()
-                .unwrap_or("-")
-                .to_string();
+                .map(|s| s.split('.').next().unwrap_or(s).replace('T', " "))
+                .unwrap_or_else(|| "-".to_string());
 
             table.add_row(Row::new(vec![
                 Cell::new(table_name),
                 Cell::new_align(&row_count.to_string(), format::Alignment::RIGHT),
                 Cell::new_align(size, format::Alignment::RIGHT),
+                Cell::new_align(&data_age, format::Alignment::RIGHT),
                 Cell::new(&min_ts),
                 Cell::new(&max_ts),
             ]));
@@ -365,15 +455,86 @@ fn display_stats_table(stats: &serde_json::Value) -> Result<()> {
     }
 
     println!();
+    println!("Database Statistics");
+    println!("==================");
     table.printstd();
     println!();
 
+    // Print per-exchange breakdown for key tables
+    let key_tables = vec!["tickers", "trades", "orderbooks", "liquidity_depth"];
+    for table_name in key_tables {
+        if let Some(table_stats) = stats.get(table_name) {
+            if let Some(breakdown) = table_stats.get("exchange_breakdown") {
+                if let Some(breakdown_obj) = breakdown.as_object() {
+                    if !breakdown_obj.is_empty() {
+                        println!("{} - Per Exchange Breakdown:", table_name.to_uppercase());
+                        println!("{}", "─".repeat(80));
+
+                        let mut exchange_table = Table::new();
+                        exchange_table.set_format(*format::consts::FORMAT_NO_LINESEP_WITH_TITLE);
+                        exchange_table.set_titles(Row::new(vec![
+                            Cell::new("Exchange").with_style(prettytable::Attr::Bold),
+                            Cell::new("Count").with_style(prettytable::Attr::Bold),
+                            Cell::new("Data Age").with_style(prettytable::Attr::Bold),
+                            Cell::new("Latest Update").with_style(prettytable::Attr::Bold),
+                        ]));
+
+                        for (exchange, exchange_stats) in breakdown_obj {
+                            let count = exchange_stats["count"].as_i64().unwrap_or(0);
+                            let age = if let Some(age_minutes) = exchange_stats["data_age_minutes"].as_i64() {
+                                if age_minutes < 60 {
+                                    format!("{}m", age_minutes)
+                                } else if age_minutes < 1440 {
+                                    format!("{}h", age_minutes / 60)
+                                } else {
+                                    format!("{}d", age_minutes / 1440)
+                                }
+                            } else {
+                                "-".to_string()
+                            };
+                            let max_ts = exchange_stats["max_timestamp"]
+                                .as_str()
+                                .map(|s| s.split('.').next().unwrap_or(s).replace('T', " "))
+                                .unwrap_or_else(|| "-".to_string());
+
+                            exchange_table.add_row(Row::new(vec![
+                                Cell::new(exchange),
+                                Cell::new_align(&count.to_string(), format::Alignment::RIGHT),
+                                Cell::new_align(&age, format::Alignment::RIGHT),
+                                Cell::new(&max_ts),
+                            ]));
+                        }
+
+                        exchange_table.printstd();
+                        println!();
+                    }
+                }
+            }
+        }
+    }
+
     // Print metadata
     if let Some(metadata) = stats.get("metadata") {
+        println!("Summary");
+        println!("=======");
         let partition_count = metadata["partition_count"].as_i64().unwrap_or(0);
         println!("Total partitions: {}", partition_count);
+
+        if let Some(top_symbols) = metadata.get("top_symbols") {
+            if let Some(symbols_array) = top_symbols.as_array() {
+                if !symbols_array.is_empty() {
+                    println!("\nTop 10 Symbols by Activity:");
+                    for (i, symbol_data) in symbols_array.iter().enumerate() {
+                        let symbol = symbol_data["symbol"].as_str().unwrap_or("N/A");
+                        let count = symbol_data["total_records"].as_i64().unwrap_or(0);
+                        println!("  {}. {} ({} records)", i + 1, symbol, count);
+                    }
+                }
+            }
+        }
+
         println!(
-            "Fetched at: {}",
+            "\nFetched at: {}",
             metadata["fetched_at"].as_str().unwrap_or("N/A")
         );
         println!();

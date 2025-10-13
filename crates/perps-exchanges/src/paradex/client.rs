@@ -170,12 +170,15 @@ impl IPerps for ParadexClient {
         end_time: Option<DateTime<Utc>>,
         _limit: Option<u32>,
     ) -> Result<Vec<Kline>> {
-        let resolution = match interval {
-            "1m" => "60",
-            "5m" => "300",
-            "15m" => "900",
-            "1h" => "3600",
-            _ => "60", // Default to 1m
+        // Paradex expects resolution in minutes: [1, 3, 5, 15, 30, 60]
+        let (resolution, resolution_seconds) = match interval {
+            "1m" => ("1", 60),
+            "3m" => ("3", 180),
+            "5m" => ("5", 300),
+            "15m" => ("15", 900),
+            "30m" => ("30", 1800),
+            "1h" => ("60", 3600),
+            _ => ("1", 60), // Default to 1m
         };
         let start = start_time.unwrap_or_else(|| Utc::now() - chrono::Duration::days(1)).timestamp_millis();
         let end = end_time.unwrap_or_else(Utc::now).timestamp_millis();
@@ -188,12 +191,12 @@ impl IPerps for ParadexClient {
                 symbol: symbol.to_string(),
                 interval: interval.to_string(),
                 open_time: Utc.timestamp_millis_opt(k.0 as i64).unwrap(),
-                close_time: Utc.timestamp_millis_opt(k.0 as i64 + (resolution.parse::<i64>().unwrap_or(60) * 1000)).unwrap(), // Approximate close time
-                open: Decimal::from_str(&k.1)?,
-                high: Decimal::from_str(&k.2)?,
-                low: Decimal::from_str(&k.3)?,
-                close: Decimal::from_str(&k.4)?,
-                volume: Decimal::from_str(&k.5)?,
+                close_time: Utc.timestamp_millis_opt(k.0 as i64 + (resolution_seconds * 1000)).unwrap(),
+                open: Decimal::try_from(k.1).unwrap_or(Decimal::ZERO),
+                high: Decimal::try_from(k.2).unwrap_or(Decimal::ZERO),
+                low: Decimal::try_from(k.3).unwrap_or(Decimal::ZERO),
+                close: Decimal::try_from(k.4).unwrap_or(Decimal::ZERO),
+                volume: Decimal::try_from(k.5).unwrap_or(Decimal::ZERO),
                 turnover: Decimal::ZERO, // Not available
             }))
             .collect::<Result<Vec<_>>>()?;

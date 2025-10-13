@@ -12,26 +12,13 @@ pub struct Cli {
 #[derive(Subcommand)]
 pub enum Commands {
     /// Backfill historical data from exchanges
-    Backfill {
-        /// Exchange name (e.g., kucoin, binance)
-        #[arg(short, long)]
-        exchange: String,
-
-        /// Comma-separated list of symbols (e.g., BTC,ETH)
-        #[arg(short, long)]
-        symbols: String,
-
-        /// Start date (format: YYYY-MM-DD)
-        #[arg(long)]
-        from: Option<String>,
-
-        /// End date (format: YYYY-MM-DD)
-        #[arg(long)]
-        to: Option<String>,
-    },
+    Backfill(crate::commands::backfill::BackfillArgs),
 
     /// Stream real-time data from exchanges
     Stream(crate::commands::stream::StreamArgs),
+
+    /// Start unified data collection service (WebSocket streaming + klines fetching + report generation)
+    Start(crate::commands::start::StartArgs),
 
     /// Start the REST API server
     Serve {
