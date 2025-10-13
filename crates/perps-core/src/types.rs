@@ -167,3 +167,61 @@ pub struct LiquidityDepthStats {
     pub ask_10bps: Decimal,
     pub ask_20bps: Decimal,
 }
+
+/// Slippage calculation for a specific trade amount.
+/// Represents the price impact of executing a market order of a given size.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Slippage {
+    /// Symbol (normalized to global format, e.g., "BTC")
+    pub symbol: String,
+
+    /// Timestamp of calculation
+    pub timestamp: DateTime<Utc>,
+
+    /// Mid price (average of best bid and best ask)
+    pub mid_price: Decimal,
+
+    /// Trade amount in USD notional
+    pub trade_amount: Decimal,
+
+    /// Buy (ask) side metrics - executing a buy order against asks
+    pub buy_avg_price: Option<Decimal>,
+    pub buy_slippage_bps: Option<Decimal>,
+    pub buy_slippage_pct: Option<Decimal>,
+    pub buy_total_cost: Option<Decimal>,
+    pub buy_feasible: bool,
+
+    /// Sell (bid) side metrics - executing a sell order against bids
+    pub sell_avg_price: Option<Decimal>,
+    pub sell_slippage_bps: Option<Decimal>,
+    pub sell_slippage_pct: Option<Decimal>,
+    pub sell_total_cost: Option<Decimal>,
+    pub sell_feasible: bool,
+}
+
+impl Slippage {
+    /// Create a new slippage instance for when orderbook lacks liquidity
+    pub fn infeasible(
+        symbol: String,
+        timestamp: DateTime<Utc>,
+        mid_price: Decimal,
+        trade_amount: Decimal,
+    ) -> Self {
+        Self {
+            symbol,
+            timestamp,
+            mid_price,
+            trade_amount,
+            buy_avg_price: None,
+            buy_slippage_bps: None,
+            buy_slippage_pct: None,
+            buy_total_cost: None,
+            buy_feasible: false,
+            sell_avg_price: None,
+            sell_slippage_bps: None,
+            sell_slippage_pct: None,
+            sell_total_cost: None,
+            sell_feasible: false,
+        }
+    }
+}

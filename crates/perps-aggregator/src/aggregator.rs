@@ -1,11 +1,23 @@
 use async_trait::async_trait;
 use chrono::Utc;
 use futures::future::join_all;
-use perps_core::{FundingRate, IPerps, LiquidityDepthStats, OrderSide, Orderbook, Trade};
+use perps_core::{FundingRate, IPerps, LiquidityDepthStats, OrderSide, Orderbook, Slippage, Trade};
 use rust_decimal::Decimal;
+use rust_decimal_macros::dec;
 use std::time::Instant;
 
 use crate::types::{FundingRateStats, MarketDepth};
+
+/// Fixed trade amounts for slippage calculation (USD notional)
+pub const TRADE_AMOUNTS: [Decimal; 7] = [
+    dec!(1000),
+    dec!(10000),
+    dec!(50000),
+    dec!(100000),
+    dec!(500000),
+    dec!(5000000),
+    dec!(10000000),
+];
 
 /// IAggregator trait defines business logic for calculating market metrics
 #[async_trait]
@@ -51,6 +63,18 @@ pub trait IAggregator: Send + Sync {
         rates: &[FundingRate],
         exchange: &str,
     ) -> anyhow::Result<FundingRateStats>;
+
+    /// Calculate slippage for a specific trade amount.
+    /// Returns slippage metrics for both buy and sell sides.
+    fn calculate_slippage_for_amount(
+        &self,
+        orderbook: &Orderbook,
+        trade_amount: Decimal,
+    ) -> Slippage;
+
+    /// Calculate slippage for all standard trade amounts (1K, 10K, 50K, 100K, 500K, 5M, 10M USD).
+    /// Returns a vector of slippage metrics for each trade amount.
+    fn calculate_all_slippages(&self, orderbook: &Orderbook) -> Vec<Slippage>;
 }
 
 /// Default implementation of the IAggregator trait
@@ -325,6 +349,127 @@ impl IAggregator for Aggregator {
             trend,
         })
     }
+
+    fn calculate_slippage_for_amount(
+        &self,
+        orderbook: &Orderbook,
+        trade_amount: Decimal,
+    ) -> Slippage {
+        // Calculate mid price
+        let mid_price = if !orderbook.bids.is_empty() && !orderbook.asks.is_empty() {
+            (orderbook.bids[0].price + orderbook.asks[0].price) / dec!(2)
+        } else {
+            return Slippage::infeasible(
+                orderbook.symbol.clone(),
+                orderbook.timestamp,
+                Decimal::ZERO,
+                trade_amount,
+            );
+        };
+
+        // Calculate buy slippage (executing against asks)
+        let (buy_avg_price, buy_total_cost, buy_feasible) =
+            calculate_execution_price(&orderbook.asks, trade_amount);
+
+        let (buy_slippage_bps, buy_slippage_pct) = if buy_feasible {
+            let slippage = (buy_avg_price.unwrap() - mid_price) / mid_price;
+            (
+                Some(slippage * dec!(10000)), // Convert to bps
+                Some(slippage * dec!(100)),    // Convert to percentage
+            )
+        } else {
+            (None, None)
+        };
+
+        // Calculate sell slippage (executing against bids)
+        let (sell_avg_price, sell_total_cost, sell_feasible) =
+            calculate_execution_price(&orderbook.bids, trade_amount);
+
+        let (sell_slippage_bps, sell_slippage_pct) = if sell_feasible {
+            let slippage = (mid_price - sell_avg_price.unwrap()) / mid_price;
+            (
+                Some(slippage * dec!(10000)), // Convert to bps
+                Some(slippage * dec!(100)),    // Convert to percentage
+            )
+        } else {
+            (None, None)
+        };
+
+        Slippage {
+            symbol: orderbook.symbol.clone(),
+            timestamp: orderbook.timestamp,
+            mid_price,
+            trade_amount,
+            buy_avg_price,
+            buy_slippage_bps,
+            buy_slippage_pct,
+            buy_total_cost,
+            buy_feasible,
+            sell_avg_price,
+            sell_slippage_bps,
+            sell_slippage_pct,
+            sell_total_cost,
+            sell_feasible,
+        }
+    }
+
+    fn calculate_all_slippages(&self, orderbook: &Orderbook) -> Vec<Slippage> {
+        TRADE_AMOUNTS
+            .iter()
+            .map(|&amount| self.calculate_slippage_for_amount(orderbook, amount))
+            .collect()
+    }
+}
+
+/// Helper function to calculate execution price for a given trade amount
+///
+/// # Arguments
+/// * `levels` - Order book levels (bids or asks), where each level is (price, quantity)
+/// * `trade_amount` - Trade size in USD notional
+///
+/// # Returns
+/// * `(avg_price, total_cost, feasible)` - Average execution price, total cost, and feasibility
+fn calculate_execution_price(
+    levels: &[perps_core::OrderbookLevel],
+    trade_amount: Decimal,
+) -> (Option<Decimal>, Option<Decimal>, bool) {
+    let mut remaining_notional = trade_amount;
+    let mut total_base_qty = Decimal::ZERO;
+    let mut total_cost = Decimal::ZERO;
+
+    for level in levels {
+        if remaining_notional <= Decimal::ZERO {
+            break;
+        }
+
+        // Notional available at this level
+        let level_notional = level.price * level.quantity;
+
+        if level_notional >= remaining_notional {
+            // This level can fill the remaining order
+            let base_qty_needed = remaining_notional / level.price;
+            total_base_qty += base_qty_needed;
+            total_cost += remaining_notional;
+            remaining_notional = Decimal::ZERO;
+            break;
+        } else {
+            // Consume entire level
+            total_base_qty += level.quantity;
+            total_cost += level_notional;
+            remaining_notional -= level_notional;
+        }
+    }
+
+    // Check if trade is feasible
+    if remaining_notional > Decimal::ZERO {
+        // Insufficient liquidity
+        return (None, None, false);
+    }
+
+    // Calculate average execution price
+    let avg_price = total_cost / total_base_qty;
+
+    (Some(avg_price), Some(total_cost), true)
 }
 
 #[cfg(test)]
@@ -494,5 +639,292 @@ mod tests {
         assert_eq!(stats.max_rate, dec!(0.0001));
         assert_eq!(stats.std_dev, Decimal::ZERO);
         assert_eq!(stats.trend, Decimal::ZERO); // No trend with single data point
+    }
+
+    #[test]
+    fn test_calculate_slippage_for_amount_with_sufficient_liquidity() {
+        let aggregator = Aggregator::new();
+        let now = Utc::now();
+
+        // Create orderbook with sufficient liquidity for $10,000 trade
+        // Mid price = 100,000
+        let orderbook = Orderbook {
+            symbol: "BTC".to_string(),
+            timestamp: now,
+            bids: vec![
+                OrderbookLevel { price: dec!(100000), quantity: dec!(0.1) }, // $10,000
+                OrderbookLevel { price: dec!(99900), quantity: dec!(0.1) },  // $9,990
+                OrderbookLevel { price: dec!(99800), quantity: dec!(0.1) },  // $9,980
+            ],
+            asks: vec![
+                OrderbookLevel { price: dec!(100100), quantity: dec!(0.1) }, // $10,010
+                OrderbookLevel { price: dec!(100200), quantity: dec!(0.1) }, // $10,020
+                OrderbookLevel { price: dec!(100300), quantity: dec!(0.1) }, // $10,030
+            ],
+        };
+
+        let slippage = aggregator.calculate_slippage_for_amount(&orderbook, dec!(10000));
+
+        assert_eq!(slippage.symbol, "BTC");
+        assert_eq!(slippage.trade_amount, dec!(10000));
+        assert_eq!(slippage.mid_price, dec!(100050)); // (100000 + 100100) / 2
+
+        // Buy side (asks): Should be feasible with $10,000
+        assert!(slippage.buy_feasible);
+        assert!(slippage.buy_avg_price.is_some());
+        assert!(slippage.buy_slippage_bps.is_some());
+        assert!(slippage.buy_slippage_pct.is_some());
+        assert!(slippage.buy_total_cost.is_some());
+        assert_eq!(slippage.buy_total_cost.unwrap(), dec!(10000));
+
+        // Sell side (bids): Should be feasible with $10,000
+        assert!(slippage.sell_feasible);
+        assert!(slippage.sell_avg_price.is_some());
+        assert!(slippage.sell_slippage_bps.is_some());
+        assert!(slippage.sell_slippage_pct.is_some());
+        assert!(slippage.sell_total_cost.is_some());
+        assert_eq!(slippage.sell_total_cost.unwrap(), dec!(10000));
+
+        // Buy slippage should be positive (paying more than mid)
+        assert!(slippage.buy_slippage_bps.unwrap() > Decimal::ZERO);
+        assert!(slippage.buy_slippage_pct.unwrap() > Decimal::ZERO);
+
+        // Sell slippage should be positive (receiving less than mid)
+        assert!(slippage.sell_slippage_bps.unwrap() > Decimal::ZERO);
+        assert!(slippage.sell_slippage_pct.unwrap() > Decimal::ZERO);
+    }
+
+    #[test]
+    fn test_calculate_slippage_for_amount_with_insufficient_liquidity() {
+        let aggregator = Aggregator::new();
+        let now = Utc::now();
+
+        // Create orderbook with insufficient liquidity for $100,000 trade
+        // Only $10,000 available on each side
+        let orderbook = Orderbook {
+            symbol: "BTC".to_string(),
+            timestamp: now,
+            bids: vec![
+                OrderbookLevel { price: dec!(100000), quantity: dec!(0.1) }, // $10,000
+            ],
+            asks: vec![
+                OrderbookLevel { price: dec!(100100), quantity: dec!(0.1) }, // $10,010
+            ],
+        };
+
+        let slippage = aggregator.calculate_slippage_for_amount(&orderbook, dec!(100000));
+
+        assert_eq!(slippage.symbol, "BTC");
+        assert_eq!(slippage.trade_amount, dec!(100000));
+
+        // Both sides should be infeasible
+        assert!(!slippage.buy_feasible);
+        assert!(slippage.buy_avg_price.is_none());
+        assert!(slippage.buy_slippage_bps.is_none());
+        assert!(slippage.buy_slippage_pct.is_none());
+        assert!(slippage.buy_total_cost.is_none());
+
+        assert!(!slippage.sell_feasible);
+        assert!(slippage.sell_avg_price.is_none());
+        assert!(slippage.sell_slippage_bps.is_none());
+        assert!(slippage.sell_slippage_pct.is_none());
+        assert!(slippage.sell_total_cost.is_none());
+    }
+
+    #[test]
+    fn test_calculate_slippage_for_amount_with_multiple_levels() {
+        let aggregator = Aggregator::new();
+        let now = Utc::now();
+
+        // Create orderbook where trade will span multiple levels
+        // Mid price = 100,050
+        let orderbook = Orderbook {
+            symbol: "BTC".to_string(),
+            timestamp: now,
+            bids: vec![
+                OrderbookLevel { price: dec!(100000), quantity: dec!(0.05) }, // $5,000
+                OrderbookLevel { price: dec!(99900), quantity: dec!(0.05) },  // $4,995
+                OrderbookLevel { price: dec!(99800), quantity: dec!(0.05) },  // $4,990
+            ],
+            asks: vec![
+                OrderbookLevel { price: dec!(100100), quantity: dec!(0.05) }, // $5,005
+                OrderbookLevel { price: dec!(100200), quantity: dec!(0.05) }, // $5,010
+                OrderbookLevel { price: dec!(100300), quantity: dec!(0.05) }, // $5,015
+            ],
+        };
+
+        let slippage = aggregator.calculate_slippage_for_amount(&orderbook, dec!(10000));
+
+        assert_eq!(slippage.symbol, "BTC");
+        assert_eq!(slippage.trade_amount, dec!(10000));
+
+        // Both sides should be feasible but require multiple levels
+        assert!(slippage.buy_feasible);
+        assert!(slippage.sell_feasible);
+
+        // Buy side should use first two ask levels (5005 + 4995 = 10000)
+        assert!(slippage.buy_avg_price.is_some());
+        let buy_avg = slippage.buy_avg_price.unwrap();
+        // Average should be between 100100 and 100200
+        assert!(buy_avg > dec!(100100));
+        assert!(buy_avg < dec!(100200));
+
+        // Sell side should use first two bid levels (5000 + 4995 = 9995, then partial third)
+        assert!(slippage.sell_avg_price.is_some());
+        let sell_avg = slippage.sell_avg_price.unwrap();
+        // Average should be between 99800 and 100000
+        assert!(sell_avg > dec!(99800));
+        assert!(sell_avg < dec!(100000));
+
+        // Slippage should be positive
+        assert!(slippage.buy_slippage_bps.unwrap() > Decimal::ZERO);
+        assert!(slippage.sell_slippage_bps.unwrap() > Decimal::ZERO);
+    }
+
+    #[test]
+    fn test_calculate_slippage_empty_orderbook() {
+        let aggregator = Aggregator::new();
+        let now = Utc::now();
+
+        // Empty orderbook
+        let orderbook = Orderbook {
+            symbol: "BTC".to_string(),
+            timestamp: now,
+            bids: vec![],
+            asks: vec![],
+        };
+
+        let slippage = aggregator.calculate_slippage_for_amount(&orderbook, dec!(10000));
+
+        // Should return infeasible slippage
+        assert_eq!(slippage.mid_price, Decimal::ZERO);
+        assert!(!slippage.buy_feasible);
+        assert!(!slippage.sell_feasible);
+        assert!(slippage.buy_avg_price.is_none());
+        assert!(slippage.sell_avg_price.is_none());
+    }
+
+    #[test]
+    fn test_calculate_all_slippages() {
+        let aggregator = Aggregator::new();
+        let now = Utc::now();
+
+        // Create orderbook with sufficient liquidity for all standard amounts
+        let orderbook = Orderbook {
+            symbol: "BTC".to_string(),
+            timestamp: now,
+            bids: vec![
+                OrderbookLevel { price: dec!(100000), quantity: dec!(10) }, // $1,000,000
+            ],
+            asks: vec![
+                OrderbookLevel { price: dec!(100100), quantity: dec!(10) }, // $1,001,000
+            ],
+        };
+
+        let slippages = aggregator.calculate_all_slippages(&orderbook);
+
+        // Should return 5 slippage entries
+        assert_eq!(slippages.len(), 5);
+
+        // Check each trade amount
+        assert_eq!(slippages[0].trade_amount, dec!(1000));
+        assert_eq!(slippages[1].trade_amount, dec!(10000));
+        assert_eq!(slippages[2].trade_amount, dec!(50000));
+        assert_eq!(slippages[3].trade_amount, dec!(100000));
+        assert_eq!(slippages[4].trade_amount, dec!(500000));
+
+        // All should be feasible
+        for slippage in &slippages {
+            assert!(slippage.buy_feasible);
+            assert!(slippage.sell_feasible);
+            assert_eq!(slippage.symbol, "BTC");
+        }
+    }
+
+    #[test]
+    fn test_calculate_all_slippages_partial_feasibility() {
+        let aggregator = Aggregator::new();
+        let now = Utc::now();
+
+        // Create orderbook with limited liquidity
+        // Only enough for first 3 standard amounts (1K, 10K, 50K)
+        let orderbook = Orderbook {
+            symbol: "BTC".to_string(),
+            timestamp: now,
+            bids: vec![
+                OrderbookLevel { price: dec!(100000), quantity: dec!(0.6) }, // $60,000
+            ],
+            asks: vec![
+                OrderbookLevel { price: dec!(100100), quantity: dec!(0.6) }, // $60,060
+            ],
+        };
+
+        let slippages = aggregator.calculate_all_slippages(&orderbook);
+
+        assert_eq!(slippages.len(), 5);
+
+        // First 3 should be feasible
+        assert!(slippages[0].buy_feasible); // $1,000
+        assert!(slippages[1].buy_feasible); // $10,000
+        assert!(slippages[2].buy_feasible); // $50,000
+
+        // Last 2 should be infeasible
+        assert!(!slippages[3].buy_feasible); // $100,000
+        assert!(!slippages[4].buy_feasible); // $500,000
+    }
+
+    #[test]
+    fn test_calculate_execution_price_single_level() {
+        // Test helper function directly with single level
+        let levels = vec![
+            OrderbookLevel { price: dec!(100), quantity: dec!(10) },
+        ];
+
+        let (avg_price, total_cost, feasible) = calculate_execution_price(&levels, dec!(500));
+
+        assert!(feasible);
+        assert_eq!(avg_price.unwrap(), dec!(100));
+        assert_eq!(total_cost.unwrap(), dec!(500));
+    }
+
+    #[test]
+    fn test_calculate_execution_price_multiple_levels() {
+        // Test helper function with multiple levels
+        let levels = vec![
+            OrderbookLevel { price: dec!(100), quantity: dec!(5) },  // $500
+            OrderbookLevel { price: dec!(101), quantity: dec!(5) },  // $505
+            OrderbookLevel { price: dec!(102), quantity: dec!(5) },  // $510
+        ];
+
+        // Need $1000, will use first two levels fully ($500 + $505 = $1005)
+        // and part of third level
+        let (avg_price, total_cost, feasible) = calculate_execution_price(&levels, dec!(1000));
+
+        assert!(feasible);
+        assert_eq!(total_cost.unwrap(), dec!(1000));
+        // VWAP = total_cost / total_base_qty
+        // First level: 5 units at 100 = $500
+        // Second level: 5 units at 101 = $505 (total $1005, but we only need $1000)
+        // Actually need: $500 from level 1, $500 from level 2
+        // $500 / 101 = ~4.95049505 units from level 2
+        // Total units = 5 + 4.95049505 = 9.95049505
+        // VWAP = 1000 / 9.95049505 = ~100.497512...
+        let avg = avg_price.unwrap();
+        assert!(avg > dec!(100));
+        assert!(avg < dec!(101));
+    }
+
+    #[test]
+    fn test_calculate_execution_price_insufficient_liquidity() {
+        // Test helper function with insufficient liquidity
+        let levels = vec![
+            OrderbookLevel { price: dec!(100), quantity: dec!(5) }, // $500
+        ];
+
+        let (avg_price, total_cost, feasible) = calculate_execution_price(&levels, dec!(1000));
+
+        assert!(!feasible);
+        assert!(avg_price.is_none());
+        assert!(total_cost.is_none());
     }
 }

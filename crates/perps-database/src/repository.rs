@@ -139,6 +139,22 @@ pub trait Repository: Send + Sync {
 
     /// Get latest open interest for a symbol from a specific exchange
     async fn get_latest_open_interest(&self, exchange: &str, symbol: &str) -> anyhow::Result<Option<OpenInterest>>;
+
+    /// Store slippage data with exchange information
+    async fn store_slippage_with_exchange(&self, exchange: &str, slippages: &[Slippage]) -> anyhow::Result<()>;
+
+    /// Get slippage data for a symbol from a specific exchange within a time range
+    async fn get_slippage(
+        &self,
+        exchange: &str,
+        symbol: &str,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+        limit: Option<i64>,
+    ) -> anyhow::Result<Vec<Slippage>>;
+
+    /// Get latest slippage for a symbol from a specific exchange (all trade amounts)
+    async fn get_latest_slippage(&self, exchange: &str, symbol: &str) -> anyhow::Result<Option<Vec<Slippage>>>;
 }
 
 /// PostgreSQL implementation of the Repository trait
@@ -1252,5 +1268,149 @@ impl Repository for PostgresRepository {
             open_value: r.get("open_value"),
             timestamp: r.get("ts"),
         }))
+    }
+
+    async fn store_slippage_with_exchange(&self, exchange: &str, slippages: &[Slippage]) -> anyhow::Result<()> {
+        if slippages.is_empty() {
+            return Ok(());
+        }
+
+        let exchange_id = self.get_exchange_id(exchange).await?;
+        let mut tx = self.pool.begin().await?;
+
+        for slippage in slippages {
+            // Normalize symbol to global format
+            let normalized_symbol = extract_base_symbol(&slippage.symbol);
+
+            sqlx::query(
+                r#"
+                INSERT INTO slippage (
+                    exchange_id, symbol, mid_price, trade_amount,
+                    buy_avg_price, buy_slippage_bps, buy_slippage_pct, buy_total_cost, buy_feasible,
+                    sell_avg_price, sell_slippage_bps, sell_slippage_pct, sell_total_cost, sell_feasible,
+                    ts
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+                ON CONFLICT (exchange_id, symbol, ts, trade_amount) DO NOTHING
+                "#
+            )
+            .bind(exchange_id)
+            .bind(&normalized_symbol)
+            .bind(slippage.mid_price)
+            .bind(slippage.trade_amount)
+            .bind(slippage.buy_avg_price)
+            .bind(slippage.buy_slippage_bps)
+            .bind(slippage.buy_slippage_pct)
+            .bind(slippage.buy_total_cost)
+            .bind(slippage.buy_feasible)
+            .bind(slippage.sell_avg_price)
+            .bind(slippage.sell_slippage_bps)
+            .bind(slippage.sell_slippage_pct)
+            .bind(slippage.sell_total_cost)
+            .bind(slippage.sell_feasible)
+            .bind(slippage.timestamp)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        tx.commit().await?;
+        tracing::info!("✓ Stored {} slippage records to database for exchange {}", slippages.len(), exchange);
+        Ok(())
+    }
+
+    async fn get_slippage(
+        &self,
+        exchange: &str,
+        symbol: &str,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+        limit: Option<i64>,
+    ) -> anyhow::Result<Vec<Slippage>> {
+        let exchange_id = self.get_exchange_id(exchange).await?;
+        let normalized_symbol = extract_base_symbol(symbol);
+
+        let query = if let Some(limit_val) = limit {
+            format!(
+                r#"
+                SELECT mid_price, trade_amount,
+                       buy_avg_price, buy_slippage_bps, buy_slippage_pct, buy_total_cost, buy_feasible,
+                       sell_avg_price, sell_slippage_bps, sell_slippage_pct, sell_total_cost, sell_feasible,
+                       ts
+                FROM slippage
+                WHERE exchange_id = $1 AND symbol = $2 AND ts >= $3 AND ts <= $4
+                ORDER BY ts DESC, trade_amount ASC
+                LIMIT {}
+                "#,
+                limit_val
+            )
+        } else {
+            r#"
+            SELECT mid_price, trade_amount,
+                   buy_avg_price, buy_slippage_bps, buy_slippage_pct, buy_total_cost, buy_feasible,
+                   sell_avg_price, sell_slippage_bps, sell_slippage_pct, sell_total_cost, sell_feasible,
+                   ts
+            FROM slippage
+            WHERE exchange_id = $1 AND symbol = $2 AND ts >= $3 AND ts <= $4
+            ORDER BY ts DESC, trade_amount ASC
+            "#
+            .to_string()
+        };
+
+        let rows = sqlx::query(&query)
+            .bind(exchange_id)
+            .bind(&normalized_symbol)
+            .bind(start)
+            .bind(end)
+            .fetch_all(&self.pool)
+            .await?;
+
+        let mut slippages = Vec::new();
+        for row in rows {
+            slippages.push(Slippage {
+                symbol: symbol.to_string(),
+                timestamp: row.get("ts"),
+                mid_price: row.get("mid_price"),
+                trade_amount: row.get("trade_amount"),
+                buy_avg_price: row.get("buy_avg_price"),
+                buy_slippage_bps: row.get("buy_slippage_bps"),
+                buy_slippage_pct: row.get("buy_slippage_pct"),
+                buy_total_cost: row.get("buy_total_cost"),
+                buy_feasible: row.get("buy_feasible"),
+                sell_avg_price: row.get("sell_avg_price"),
+                sell_slippage_bps: row.get("sell_slippage_bps"),
+                sell_slippage_pct: row.get("sell_slippage_pct"),
+                sell_total_cost: row.get("sell_total_cost"),
+                sell_feasible: row.get("sell_feasible"),
+            });
+        }
+
+        Ok(slippages)
+    }
+
+    async fn get_latest_slippage(&self, exchange: &str, symbol: &str) -> anyhow::Result<Option<Vec<Slippage>>> {
+        let exchange_id = self.get_exchange_id(exchange).await?;
+        let normalized_symbol = extract_base_symbol(symbol);
+
+        // Get the latest timestamp
+        let latest_ts: Option<DateTime<Utc>> = sqlx::query_scalar(
+            r#"
+            SELECT MAX(ts)
+            FROM slippage
+            WHERE exchange_id = $1 AND symbol = $2
+            "#
+        )
+        .bind(exchange_id)
+        .bind(&normalized_symbol)
+        .fetch_optional(&self.pool)
+        .await?
+        .flatten();
+
+        if let Some(ts) = latest_ts {
+            // Get all slippages for that timestamp (all trade amounts)
+            let slippages = self.get_slippage(exchange, symbol, ts, ts, None).await?;
+            Ok(Some(slippages))
+        } else {
+            Ok(None)
+        }
     }
 }

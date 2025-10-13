@@ -5,7 +5,7 @@ use perps_core::types::{FundingRate, Kline, Orderbook, Ticker, Trade};
 use perps_core::streaming::StreamEvent;
 use perps_database::{PostgresRepository, Repository};
 use perps_exchanges::factory;
-use perps_aggregator::Aggregator;
+use perps_aggregator::{Aggregator, IAggregator};
 use sqlx::PgPool;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -14,8 +14,6 @@ use tokio::sync::Mutex;
 use tokio::time::{interval, Duration};
 use futures::StreamExt as _;
 use tokio::signal;
-
-use crate::commands::common;
 
 #[derive(Args)]
 pub struct StartArgs {
@@ -743,30 +741,49 @@ async fn spawn_liquidity_report_task(
                     // Parse symbol to exchange-specific format
                     let parsed_symbol = client.parse_symbol(symbol);
 
-                    // Fetch orderbook and calculate liquidity depth using common helper
-                    match common::fetch_and_calculate_liquidity(
-                        client.as_ref(),
-                        &aggregator,
-                        &parsed_symbol,
-                        symbol,
-                        exchange,
-                        1000,
-                    ).await {
-                        Ok(depth_stats) => {
-                            // Store liquidity depth
-                            let repo = repository.lock().await;
-                            match repo.store_liquidity_depth(&[depth_stats]).await {
-                                Ok(_) => {
-                                    tracing::debug!("Stored liquidity depth for {}/{}", exchange, symbol);
+                    // Fetch orderbook once and calculate both liquidity depth and slippage
+                    match client.get_orderbook(&parsed_symbol, 1000).await {
+                        Ok(orderbook) => {
+                            // Calculate liquidity depth
+                            match aggregator.calculate_liquidity_depth(&orderbook, exchange, symbol).await {
+                                Ok(depth_stats) => {
+                                    // Store liquidity depth
+                                    let repo = repository.lock().await;
+                                    match repo.store_liquidity_depth(&[depth_stats]).await {
+                                        Ok(_) => {
+                                            tracing::debug!("Stored liquidity depth for {}/{}", exchange, symbol);
+                                        }
+                                        Err(e) => {
+                                            tracing::error!("Failed to store liquidity depth for {}/{}: {}",
+                                                          exchange, symbol, e);
+                                        }
+                                    }
+                                    drop(repo);
                                 }
                                 Err(e) => {
-                                    tracing::error!("Failed to store liquidity depth for {}/{}: {}",
+                                    tracing::error!("Failed to calculate liquidity depth for {}/{}: {}",
+                                                  exchange, symbol, e);
+                                }
+                            }
+
+                            // Calculate slippage for all trade amounts
+                            let slippages = aggregator.calculate_all_slippages(&orderbook);
+
+                            // Store slippage
+                            let repo = repository.lock().await;
+                            match repo.store_slippage_with_exchange(exchange, &slippages).await {
+                                Ok(_) => {
+                                    tracing::debug!("Stored {} slippage entries for {}/{}",
+                                                  slippages.len(), exchange, symbol);
+                                }
+                                Err(e) => {
+                                    tracing::error!("Failed to store slippage for {}/{}: {}",
                                                   exchange, symbol, e);
                                 }
                             }
                         }
                         Err(e) => {
-                            tracing::error!("Failed to fetch and calculate liquidity depth for {}/{}: {}",
+                            tracing::error!("Failed to fetch orderbook for {}/{}: {}",
                                           exchange, symbol, e);
                         }
                     }

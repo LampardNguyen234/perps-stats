@@ -9,6 +9,7 @@ perps-core = { path = "../perps-core" }
 
 # Decimal precision
 rust_decimal = "1.37"
+rust_decimal_macros = "1.37"
 
 # Date and time
 chrono = "0.4"
