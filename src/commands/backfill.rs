@@ -6,6 +6,7 @@ use perps_core::IPerps;
 use perps_database::{PostgresRepository, Repository};
 use perps_exchanges::factory;
 use sqlx::PgPool;
+use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::time::sleep;
@@ -248,113 +249,174 @@ async fn backfill_klines(
 
         tracing::info!("Symbol {}: {} intervals to backfill ({})", symbol, total_intervals, interval);
 
-        // If skip_existing is enabled, check for existing data
-        let actual_start_date = if skip_existing {
+        // Query all existing klines for gap detection
+        let existing_timestamps: HashSet<DateTime<Utc>> = if skip_existing {
+            tracing::info!("Loading existing klines from database for gap detection...");
             let repo = repository.lock().await;
-            match repo.get_klines(exchange, symbol, interval, start_date, end_date, Some(1)).await {
-                Ok(klines) if !klines.is_empty() => {
-                    let latest_kline = &klines[0];
-                    tracing::info!("Found existing data up to {}, resuming from there", latest_kline.open_time);
-                    latest_kline.open_time + Duration::milliseconds(interval_ms)
+            match repo.get_klines(exchange, symbol, interval, start_date, end_date, None).await {
+                Ok(klines) => {
+                    let count = klines.len();
+                    let timestamps: HashSet<DateTime<Utc>> = klines.iter().map(|k| k.open_time).collect();
+                    tracing::info!("Found {} existing klines, will skip these timestamps", count);
+                    timestamps
                 }
-                _ => start_date,
+                Err(e) => {
+                    tracing::warn!("Failed to load existing klines: {}, will fetch all data", e);
+                    HashSet::new()
+                }
             }
         } else {
-            start_date
+            HashSet::new()
         };
 
-        if actual_start_date >= end_date {
+        // Generate expected timestamps for the entire range
+        let mut expected_timestamps = Vec::new();
+        let mut current_ts = start_date;
+        while current_ts < end_date {
+            expected_timestamps.push(current_ts);
+            current_ts = current_ts + Duration::milliseconds(interval_ms);
+        }
+
+        // Identify missing timestamps (gaps)
+        let missing_timestamps: Vec<DateTime<Utc>> = if skip_existing && !existing_timestamps.is_empty() {
+            expected_timestamps
+                .into_iter()
+                .filter(|ts| !existing_timestamps.contains(ts))
+                .collect()
+        } else {
+            expected_timestamps
+        };
+
+        if missing_timestamps.is_empty() {
             tracing::info!("Symbol {}: All data already exists, skipping", symbol);
             continue;
         }
 
-        // Fetch klines in chunks
-        let mut current_time = actual_start_date;
+        tracing::info!("Symbol {}: {} missing intervals to fetch", symbol, missing_timestamps.len());
+
+        // Group consecutive missing timestamps into ranges for efficient fetching
+        let mut fetch_ranges: Vec<(DateTime<Utc>, DateTime<Utc>)> = Vec::new();
+        if !missing_timestamps.is_empty() {
+            let mut range_start = missing_timestamps[0];
+            let mut range_end = missing_timestamps[0];
+
+            for i in 1..missing_timestamps.len() {
+                let expected_next = range_end + Duration::milliseconds(interval_ms);
+                if missing_timestamps[i] == expected_next {
+                    // Consecutive, extend range
+                    range_end = missing_timestamps[i];
+                } else {
+                    // Gap detected, close current range and start new one
+                    fetch_ranges.push((range_start, range_end + Duration::milliseconds(interval_ms)));
+                    range_start = missing_timestamps[i];
+                    range_end = missing_timestamps[i];
+                }
+            }
+            // Close the last range
+            fetch_ranges.push((range_start, range_end + Duration::milliseconds(interval_ms)));
+        }
+
+        tracing::info!("Symbol {}: Identified {} continuous ranges to fetch", symbol, fetch_ranges.len());
+
+        // Fetch klines for each missing range
         let mut symbol_klines_count = 0usize;
         let mut buffer: Vec<Kline> = Vec::new();
 
-        while current_time < end_date {
-            // Calculate chunk end time
-            let chunk_duration = Duration::milliseconds(interval_ms * chunk_size as i64);
-            let chunk_end_time = (current_time + chunk_duration).min(end_date);
-
-            // Fetch klines for this chunk
+        for (range_idx, (range_start, range_end)) in fetch_ranges.iter().enumerate() {
             tracing::info!(
-                "Fetching klines for {} from {} to {} (limit: {})",
+                "Symbol {}: Fetching range [{}/{}] from {} to {}",
                 symbol,
-                current_time,
-                chunk_end_time,
-                chunk_size
+                range_idx + 1,
+                fetch_ranges.len(),
+                range_start,
+                range_end
             );
 
-            match client
-                .get_klines(
-                    &parsed_symbol,
-                    interval,
-                    Some(current_time),
-                    Some(chunk_end_time),
-                    Some(chunk_size as u32),
-                )
-                .await
-            {
-                Ok(klines) => {
-                    total_api_calls += 1;
+            let mut current_time = *range_start;
 
-                    if klines.is_empty() {
-                        tracing::debug!("No klines returned for {} in range {} to {}", symbol, current_time, chunk_end_time);
-                        // No data returned, move to next chunk to avoid infinite loop
-                        current_time = chunk_end_time;
-                        continue;
-                    }
+            while current_time < *range_end {
+                // Calculate chunk end time
+                let chunk_duration = Duration::milliseconds(interval_ms * chunk_size as i64);
+                let chunk_end_time = (current_time + chunk_duration).min(*range_end);
 
-                    tracing::debug!("Fetched {} klines for {} (requested up to {})", klines.len(), symbol, chunk_size);
+                // Fetch klines for this chunk
+                tracing::debug!(
+                    "Fetching klines for {} from {} to {} (limit: {})",
+                    symbol,
+                    current_time,
+                    chunk_end_time,
+                    chunk_size
+                );
 
-                    // Get the latest timestamp from the fetched klines to advance current_time
-                    let latest_kline_time = klines.iter().map(|k| k.open_time).max().unwrap();
+                match client
+                    .get_klines(
+                        &parsed_symbol,
+                        interval,
+                        Some(current_time),
+                        Some(chunk_end_time),
+                        Some(chunk_size as u32),
+                    )
+                    .await
+                {
+                    Ok(klines) => {
+                        total_api_calls += 1;
 
-                    // Add to buffer
-                    buffer.extend(klines);
+                        if klines.is_empty() {
+                            tracing::debug!("No klines returned for {} in range {} to {}", symbol, current_time, chunk_end_time);
+                            // No data returned, move to next chunk to avoid infinite loop
+                            current_time = chunk_end_time;
+                            continue;
+                        }
 
-                    // Store when buffer is full
-                    if buffer.len() >= batch_size {
-                        let repo = repository.lock().await;
-                        match repo.store_klines_with_exchange(exchange, &buffer).await {
-                            Ok(_) => {
-                                symbol_klines_count += buffer.len();
-                                total_klines_stored += buffer.len();
-                                tracing::info!(
-                                    "Symbol {}: Stored {} klines (total: {})",
-                                    symbol,
-                                    buffer.len(),
-                                    symbol_klines_count
-                                );
-                                buffer.clear();
-                            }
-                            Err(e) => {
-                                tracing::error!("Failed to store klines for {}: {}", symbol, e);
-                                return Err(e);
+                        tracing::debug!("Fetched {} klines for {} (requested up to {})", klines.len(), symbol, chunk_size);
+
+                        // Get the latest timestamp from the fetched klines to advance current_time
+                        let latest_kline_time = klines.iter().map(|k| k.open_time).max().unwrap();
+
+                        // Add to buffer
+                        buffer.extend(klines);
+
+                        // Store when buffer is full
+                        if buffer.len() >= batch_size {
+                            let repo = repository.lock().await;
+                            match repo.store_klines_with_exchange(exchange, &buffer).await {
+                                Ok(_) => {
+                                    symbol_klines_count += buffer.len();
+                                    total_klines_stored += buffer.len();
+                                    tracing::info!(
+                                        "Symbol {}: Stored {} klines (total: {})",
+                                        symbol,
+                                        buffer.len(),
+                                        symbol_klines_count
+                                    );
+                                    buffer.clear();
+                                }
+                                Err(e) => {
+                                    tracing::error!("Failed to store klines for {}: {}", symbol, e);
+                                    return Err(e);
+                                }
                             }
                         }
+
+                        // Move to the next interval after the latest fetched kline
+                        // This ensures we don't skip data or get stuck in an infinite loop
+                        current_time = latest_kline_time + Duration::milliseconds(interval_ms);
+
+                        // If we've reached or passed the chunk_end_time, move to end_date check
+                        if current_time >= chunk_end_time {
+                            current_time = chunk_end_time;
+                        }
+
+                        // Rate limiting
+                        if rate_limit_ms > 0 {
+                            sleep(tokio::time::Duration::from_millis(rate_limit_ms)).await;
+                        }
                     }
-
-                    // Move to the next interval after the latest fetched kline
-                    // This ensures we don't skip data or get stuck in an infinite loop
-                    current_time = latest_kline_time + Duration::milliseconds(interval_ms);
-
-                    // If we've reached or passed the chunk_end_time, move to end_date check
-                    if current_time >= chunk_end_time {
+                    Err(e) => {
+                        tracing::error!("Failed to fetch klines for {} at {}: {}", symbol, current_time, e);
+                        // On error, skip to next chunk to avoid getting stuck
                         current_time = chunk_end_time;
                     }
-
-                    // Rate limiting
-                    if rate_limit_ms > 0 {
-                        sleep(tokio::time::Duration::from_millis(rate_limit_ms)).await;
-                    }
-                }
-                Err(e) => {
-                    tracing::error!("Failed to fetch klines for {} at {}: {}", symbol, current_time, e);
-                    // On error, skip to next chunk to avoid getting stuck
-                    current_time = chunk_end_time;
                 }
             }
         }

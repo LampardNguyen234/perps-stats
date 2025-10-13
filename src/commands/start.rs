@@ -47,18 +47,6 @@ pub struct StartArgs {
     #[arg(long, default_value = "1h")]
     pub klines_timeframe: String,
 
-    /// Enable automatic partition cleanup (drops old partitions)
-    #[arg(long, default_value = "false")]
-    pub enable_partition_cleanup: bool,
-
-    /// Retention period in days for partition cleanup (partitions older than this will be dropped)
-    #[arg(long, default_value = "30")]
-    pub retention_days: i64,
-
-    /// Partition cleanup interval in seconds (how often to check for old partitions)
-    #[arg(long, default_value = "3600")]
-    pub cleanup_interval: u64,
-
     /// Maximum number of reconnection attempts (0 = unlimited)
     #[arg(long, default_value = "0")]
     pub max_reconnect_attempts: usize,
@@ -305,18 +293,6 @@ async fn spawn_streaming_task(
                             ticker_buffer.push(ticker);
                             if ticker_buffer.len() >= batch_size {
                                 let repo = repository.lock().await;
-
-                                // Ensure partitions exist for the ticker timestamp range
-                                if let Some(first_ticker) = ticker_buffer.first() {
-                                    if let Some(last_ticker) = ticker_buffer.last() {
-                                        repo.ensure_partitions_for_range(
-                                            "tickers",
-                                            first_ticker.timestamp,
-                                            last_ticker.timestamp,
-                                        ).await?;
-                                    }
-                                }
-
                                 repo.store_tickers_with_exchange(&exchange, &ticker_buffer).await?;
                                 tracing::debug!("Stored {} tickers for exchange {}", ticker_buffer.len(), exchange);
                                 ticker_buffer.clear();
@@ -326,18 +302,6 @@ async fn spawn_streaming_task(
                             trade_buffer.push(trade);
                             if trade_buffer.len() >= batch_size {
                                 let repo = repository.lock().await;
-
-                                // Ensure partitions exist for the trade timestamp range
-                                if let Some(first_trade) = trade_buffer.first() {
-                                    if let Some(last_trade) = trade_buffer.last() {
-                                        repo.ensure_partitions_for_range(
-                                            "trades",
-                                            first_trade.timestamp,
-                                            last_trade.timestamp,
-                                        ).await?;
-                                    }
-                                }
-
                                 repo.store_trades_with_exchange(&exchange, &trade_buffer).await?;
                                 tracing::debug!("Stored {} trades for exchange {}", trade_buffer.len(), exchange);
                                 trade_buffer.clear();
@@ -347,18 +311,6 @@ async fn spawn_streaming_task(
                             orderbook_buffer.push(orderbook);
                             if orderbook_buffer.len() >= batch_size {
                                 let repo = repository.lock().await;
-
-                                // Ensure partitions exist for the orderbook timestamp range
-                                if let Some(first_orderbook) = orderbook_buffer.first() {
-                                    if let Some(last_orderbook) = orderbook_buffer.last() {
-                                        repo.ensure_partitions_for_range(
-                                            "orderbooks",
-                                            first_orderbook.timestamp,
-                                            last_orderbook.timestamp,
-                                        ).await?;
-                                    }
-                                }
-
                                 repo.store_orderbooks_with_exchange(&exchange, &orderbook_buffer).await?;
                                 tracing::debug!("Stored {} orderbooks for exchange {}", orderbook_buffer.len(), exchange);
                                 orderbook_buffer.clear();
@@ -368,18 +320,6 @@ async fn spawn_streaming_task(
                             funding_rate_buffer.push(funding_rate);
                             if funding_rate_buffer.len() >= batch_size {
                                 let repo = repository.lock().await;
-
-                                // Ensure partitions exist for the funding rate timestamp range
-                                if let Some(first_rate) = funding_rate_buffer.first() {
-                                    if let Some(last_rate) = funding_rate_buffer.last() {
-                                        repo.ensure_partitions_for_range(
-                                            "funding_rates",
-                                            first_rate.funding_time,
-                                            last_rate.funding_time,
-                                        ).await?;
-                                    }
-                                }
-
                                 repo.store_funding_rates_with_exchange(&exchange, &funding_rate_buffer).await?;
                                 tracing::debug!("Stored {} funding rates for exchange {}", funding_rate_buffer.len(), exchange);
                                 funding_rate_buffer.clear();
@@ -390,18 +330,6 @@ async fn spawn_streaming_task(
                             kline_buffer.push(kline);
                             if kline_buffer.len() >= batch_size {
                                 let repo = repository.lock().await;
-
-                                // Ensure partitions exist for the klines date range
-                                if let Some(first_kline) = kline_buffer.first() {
-                                    if let Some(last_kline) = kline_buffer.last() {
-                                        repo.ensure_partitions_for_range(
-                                            "klines",
-                                            first_kline.open_time,
-                                            last_kline.open_time,
-                                        ).await?;
-                                    }
-                                }
-
                                 repo.store_klines_with_exchange(&exchange, &kline_buffer).await?;
                                 tracing::debug!("Stored {} klines for exchange {}", kline_buffer.len(), exchange);
                                 kline_buffer.clear();
@@ -416,71 +344,32 @@ async fn spawn_streaming_task(
                 Some(Err(e)) => {
                     tracing::error!("Exchange {} stream error: {}", exchange, e);
                     // Flush buffers before reconnecting
+                    let repo = repository.lock().await;
                     if !ticker_buffer.is_empty() {
-                        let repo = repository.lock().await;
-                        if let Some(first) = ticker_buffer.first() {
-                            if let Some(last) = ticker_buffer.last() {
-                                if let Err(e) = repo.ensure_partitions_for_range("tickers", first.timestamp, last.timestamp).await {
-                                    tracing::error!("Failed to ensure partitions: {}", e);
-                                }
-                            }
-                        }
                         if let Err(e) = repo.store_tickers_with_exchange(&exchange, &ticker_buffer).await {
                             tracing::error!("Failed to flush ticker buffer: {}", e);
                         }
                         ticker_buffer.clear();
                     }
                     if !trade_buffer.is_empty() {
-                        let repo = repository.lock().await;
-                        if let Some(first) = trade_buffer.first() {
-                            if let Some(last) = trade_buffer.last() {
-                                if let Err(e) = repo.ensure_partitions_for_range("trades", first.timestamp, last.timestamp).await {
-                                    tracing::error!("Failed to ensure partitions: {}", e);
-                                }
-                            }
-                        }
                         if let Err(e) = repo.store_trades_with_exchange(&exchange, &trade_buffer).await {
                             tracing::error!("Failed to flush trade buffer: {}", e);
                         }
                         trade_buffer.clear();
                     }
                     if !orderbook_buffer.is_empty() {
-                        let repo = repository.lock().await;
-                        if let Some(first) = orderbook_buffer.first() {
-                            if let Some(last) = orderbook_buffer.last() {
-                                if let Err(e) = repo.ensure_partitions_for_range("orderbooks", first.timestamp, last.timestamp).await {
-                                    tracing::error!("Failed to ensure partitions: {}", e);
-                                }
-                            }
-                        }
                         if let Err(e) = repo.store_orderbooks_with_exchange(&exchange, &orderbook_buffer).await {
                             tracing::error!("Failed to flush orderbook buffer: {}", e);
                         }
                         orderbook_buffer.clear();
                     }
                     if !funding_rate_buffer.is_empty() {
-                        let repo = repository.lock().await;
-                        if let Some(first) = funding_rate_buffer.first() {
-                            if let Some(last) = funding_rate_buffer.last() {
-                                if let Err(e) = repo.ensure_partitions_for_range("funding_rates", first.funding_time, last.funding_time).await {
-                                    tracing::error!("Failed to ensure partitions: {}", e);
-                                }
-                            }
-                        }
                         if let Err(e) = repo.store_funding_rates_with_exchange(&exchange, &funding_rate_buffer).await {
                             tracing::error!("Failed to flush funding rate buffer: {}", e);
                         }
                         funding_rate_buffer.clear();
                     }
                     if !kline_buffer.is_empty() {
-                        let repo = repository.lock().await;
-                        if let Some(first_kline) = kline_buffer.first() {
-                            if let Some(last_kline) = kline_buffer.last() {
-                                if let Err(e) = repo.ensure_partitions_for_range("klines", first_kline.open_time, last_kline.open_time).await {
-                                    tracing::error!("Failed to ensure partitions: {}", e);
-                                }
-                            }
-                        }
                         if let Err(e) = repo.store_klines_with_exchange(&exchange, &kline_buffer).await {
                             tracing::error!("Failed to flush kline buffer: {}", e);
                         }
@@ -513,61 +402,26 @@ async fn spawn_streaming_task(
             // Final flush for this connection before reconnecting
             let repo = repository.lock().await;
             if !ticker_buffer.is_empty() {
-                if let Some(first) = ticker_buffer.first() {
-                    if let Some(last) = ticker_buffer.last() {
-                        if let Err(e) = repo.ensure_partitions_for_range("tickers", first.timestamp, last.timestamp).await {
-                            tracing::error!("Failed to ensure partitions: {}", e);
-                        }
-                    }
-                }
                 if let Err(e) = repo.store_tickers_with_exchange(&exchange, &ticker_buffer).await {
                     tracing::error!("Failed to flush ticker buffer: {}", e);
                 }
             }
             if !trade_buffer.is_empty() {
-                if let Some(first) = trade_buffer.first() {
-                    if let Some(last) = trade_buffer.last() {
-                        if let Err(e) = repo.ensure_partitions_for_range("trades", first.timestamp, last.timestamp).await {
-                            tracing::error!("Failed to ensure partitions: {}", e);
-                        }
-                    }
-                }
                 if let Err(e) = repo.store_trades_with_exchange(&exchange, &trade_buffer).await {
                     tracing::error!("Failed to flush trade buffer: {}", e);
                 }
             }
             if !orderbook_buffer.is_empty() {
-                if let Some(first) = orderbook_buffer.first() {
-                    if let Some(last) = orderbook_buffer.last() {
-                        if let Err(e) = repo.ensure_partitions_for_range("orderbooks", first.timestamp, last.timestamp).await {
-                            tracing::error!("Failed to ensure partitions: {}", e);
-                        }
-                    }
-                }
                 if let Err(e) = repo.store_orderbooks_with_exchange(&exchange, &orderbook_buffer).await {
                     tracing::error!("Failed to flush orderbook buffer: {}", e);
                 }
             }
             if !funding_rate_buffer.is_empty() {
-                if let Some(first) = funding_rate_buffer.first() {
-                    if let Some(last) = funding_rate_buffer.last() {
-                        if let Err(e) = repo.ensure_partitions_for_range("funding_rates", first.funding_time, last.funding_time).await {
-                            tracing::error!("Failed to ensure partitions: {}", e);
-                        }
-                    }
-                }
                 if let Err(e) = repo.store_funding_rates_with_exchange(&exchange, &funding_rate_buffer).await {
                     tracing::error!("Failed to flush funding rate buffer: {}", e);
                 }
             }
             if !kline_buffer.is_empty() {
-                if let Some(first_kline) = kline_buffer.first() {
-                    if let Some(last_kline) = kline_buffer.last() {
-                        if let Err(e) = repo.ensure_partitions_for_range("klines", first_kline.open_time, last_kline.open_time).await {
-                            tracing::error!("Failed to ensure partitions: {}", e);
-                        }
-                    }
-                }
                 if let Err(e) = repo.store_klines_with_exchange(&exchange, &kline_buffer).await {
                     tracing::error!("Failed to flush kline buffer: {}", e);
                 }
@@ -616,13 +470,158 @@ async fn spawn_klines_task(
                       exchange, klines_interval, klines_timeframe);
 
         let client = factory::get_exchange(&exchange)?;
+
+        // Perform initial historical backfill for each symbol (if no data exists)
+        tracing::info!("Checking for existing klines data for {} symbols on {}", symbols.len(), exchange);
+        for symbol in &symbols {
+            if shutdown.load(Ordering::Relaxed) {
+                tracing::info!("Shutdown signal received during initial backfill check");
+                return Ok(());
+            }
+
+            let parsed_symbol = client.parse_symbol(symbol);
+            let repo = repository.lock().await;
+
+            // Check if we have any klines for this symbol/exchange/interval
+            let latest_kline = repo.get_latest_kline(&exchange, symbol, &klines_timeframe).await?;
+            drop(repo); // Release lock before long operation
+
+            match latest_kline {
+                None => {
+                    // No data exists - fetch from earliest available until now
+                    tracing::info!("No existing klines for {}/{} ({}), fetching from earliest available data",
+                                  exchange, symbol, klines_timeframe);
+
+                    // Determine start time based on exchange capabilities
+                    // Most exchanges support 1-2 years of history via REST API
+                    let now = chrono::Utc::now();
+                    let start_time = match exchange.as_str() {
+                        "binance" => now - chrono::Duration::days(365 * 2), // 2 years
+                        "bybit" => now - chrono::Duration::days(365 * 2),   // 2 years
+                        "hyperliquid" => now - chrono::Duration::days(365), // 1 year (conservative)
+                        "kucoin" => now - chrono::Duration::days(365),      // 1 year
+                        "lighter" => now - chrono::Duration::days(180),     // 6 months (conservative)
+                        "paradex" => now - chrono::Duration::days(180),     // 6 months (conservative)
+                        _ => now - chrono::Duration::days(365),             // 1 year default
+                    };
+
+                    // Fetch in chunks to avoid overwhelming the API
+                    let mut current_start = start_time;
+                    let chunk_size = 1000; // Request up to 1000 klines per API call
+                    let mut total_fetched = 0;
+
+                    tracing::info!("Fetching historical klines for {}/{} from {} to {}",
+                                  exchange, symbol, start_time, now);
+
+                    loop {
+                        if shutdown.load(Ordering::Relaxed) {
+                            tracing::info!("Shutdown signal received during historical fetch");
+                            break;
+                        }
+
+                        // Fetch chunk
+                        match client.get_klines(&parsed_symbol, &klines_timeframe,
+                                              Some(current_start), Some(now), Some(chunk_size)).await {
+                            Ok(klines) => {
+                                if klines.is_empty() {
+                                    tracing::debug!("No more klines available for {}/{}", exchange, symbol);
+                                    break;
+                                }
+
+                                let klines_count = klines.len();
+                                total_fetched += klines_count;
+
+                                // Store klines
+                                let repo = repository.lock().await;
+                                match repo.store_klines_with_exchange(&exchange, &klines).await {
+                                    Ok(_) => {
+                                        tracing::debug!("Stored {} klines for {}/{} (total: {})",
+                                                      klines_count, exchange, symbol, total_fetched);
+                                    }
+                                    Err(e) => {
+                                        tracing::error!("Failed to store klines for {}/{}: {}", exchange, symbol, e);
+                                        break;
+                                    }
+                                }
+                                drop(repo);
+
+                                // Move to next chunk based on the latest kline timestamp
+                                if let Some(latest) = klines.iter().max_by_key(|k| k.open_time) {
+                                    current_start = latest.open_time + chrono::Duration::milliseconds(1);
+
+                                    // If we've reached now or got fewer klines than requested, we're done
+                                    if current_start >= now || klines_count < chunk_size as usize {
+                                        break;
+                                    }
+                                } else {
+                                    break;
+                                }
+
+                                // Rate limiting: small delay between chunks
+                                tokio::time::sleep(Duration::from_millis(200)).await;
+                            }
+                            Err(e) => {
+                                let error_msg = e.to_string();
+                                if error_msg.contains("not available") || error_msg.contains("not implemented") {
+                                    tracing::warn!("Klines not available for {}/{}: {}", exchange, symbol, e);
+                                } else {
+                                    tracing::error!("Failed to fetch klines for {}/{}: {}", exchange, symbol, e);
+                                }
+                                break;
+                            }
+                        }
+                    }
+
+                    tracing::info!("Initial backfill complete for {}/{}: {} klines fetched",
+                                  exchange, symbol, total_fetched);
+                }
+                Some(latest) => {
+                    // Data exists - fetch from last kline until now to fill any gaps
+                    tracing::info!("Found existing klines for {}/{} ({}), latest at {}",
+                                  exchange, symbol, klines_timeframe, latest.open_time);
+
+                    let now = chrono::Utc::now();
+                    let start_from = latest.open_time + chrono::Duration::milliseconds(1);
+
+                    if start_from < now {
+                        tracing::info!("Fetching missing klines for {}/{} from {} to {}",
+                                      exchange, symbol, start_from, now);
+
+                        match client.get_klines(&parsed_symbol, &klines_timeframe,
+                                              Some(start_from), Some(now), Some(1000)).await {
+                            Ok(klines) => {
+                                if !klines.is_empty() {
+                                    let repo = repository.lock().await;
+                                    match repo.store_klines_with_exchange(&exchange, &klines).await {
+                                        Ok(_) => {
+                                            tracing::info!("Filled {} missing klines for {}/{}",
+                                                          klines.len(), exchange, symbol);
+                                        }
+                                        Err(e) => {
+                                            tracing::error!("Failed to store klines for {}/{}: {}", exchange, symbol, e);
+                                        }
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                tracing::error!("Failed to fetch missing klines for {}/{}: {}", exchange, symbol, e);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        tracing::info!("Initial klines check/backfill complete for {} on {}", symbols.len(), exchange);
+
+        // Now start periodic fetching
         let mut ticker = interval(Duration::from_secs(klines_interval));
 
         loop {
             // Use tokio::select! to check shutdown signal while waiting for next tick
             tokio::select! {
                 _ = ticker.tick() => {
-                    // Continue with klines fetch
+                    // Continue with periodic klines fetch
                 }
                 _ = tokio::time::sleep(Duration::from_millis(100)) => {
                     // Check shutdown signal periodically
@@ -634,52 +633,26 @@ async fn spawn_klines_task(
                 }
             }
 
-            tracing::debug!("Fetching klines for exchange {} ({} symbols)", exchange, symbols.len());
+            tracing::debug!("Fetching recent klines for exchange {} ({} symbols)", exchange, symbols.len());
 
-            // Calculate time range for klines fetch
-            // For exchanges like Lighter that require start_timestamp, fetch recent data
             let now = chrono::Utc::now();
-            let start_time = now - chrono::Duration::days(1); // Last 24 hours
 
             for symbol in &symbols {
-                // Parse symbol to exchange-specific format
                 let parsed_symbol = client.parse_symbol(symbol);
+                let repo = repository.lock().await;
+                let latest_kline = repo.get_latest_kline(&exchange, symbol, &klines_timeframe).await?;
+                drop(repo);
 
-                // Lighter and KuCoin require start_timestamp, so provide time range
-                let (start, end, limit) = if exchange == "lighter" || exchange == "kucoin" {
-                    (Some(start_time), Some(now), Some(500))
-                } else {
-                    // Other exchanges can work without time range
-                    (None, None, None)
+                // Fetch from latest kline or last hour if no data
+                let start_time = match latest_kline {
+                    Some(kline) => kline.open_time + chrono::Duration::milliseconds(1),
+                    None => now - chrono::Duration::hours(1), // Fallback to last hour
                 };
 
-                match client.get_klines(&parsed_symbol, &klines_timeframe, start, end, limit).await {
+                match client.get_klines(&parsed_symbol, &klines_timeframe, Some(start_time), Some(now), Some(500)).await {
                     Ok(klines) => {
                         if !klines.is_empty() {
                             let repo = repository.lock().await;
-
-                            // Ensure partitions exist for the klines date range
-                            // This prevents insertion failures due to missing partitions
-                            if let Some(first_kline) = klines.first() {
-                                if let Some(last_kline) = klines.last() {
-                                    // Create partitions for the full range of klines
-                                    match repo.ensure_partitions_for_range(
-                                        "klines",
-                                        first_kline.open_time,
-                                        last_kline.open_time,
-                                    ).await {
-                                        Ok(_) => {
-                                            tracing::debug!("Ensured partitions exist for klines range: {} to {}",
-                                                          first_kline.open_time, last_kline.open_time);
-                                        }
-                                        Err(e) => {
-                                            tracing::error!("Failed to ensure partitions for {}/{}: {}", exchange, symbol, e);
-                                            continue; // Skip storing if partition creation fails
-                                        }
-                                    }
-                                }
-                            }
-
                             match repo.store_klines_with_exchange(&exchange, &klines).await {
                                 Ok(_) => {
                                     tracing::debug!("Stored {} klines for {}/{}", klines.len(), exchange, symbol);
@@ -691,7 +664,6 @@ async fn spawn_klines_task(
                         }
                     }
                     Err(e) => {
-                        // Check if this is an expected "not available" error (e.g., KuCoin doesn't provide klines)
                         let error_msg = e.to_string();
                         if error_msg.contains("not available") || error_msg.contains("not implemented") {
                             tracing::warn!("Klines not available for {}/{}: {}", exchange, symbol, e);
@@ -702,7 +674,7 @@ async fn spawn_klines_task(
                 }
             }
 
-            tracing::info!("Exchange {}: Completed klines fetch cycle", exchange);
+            tracing::info!("Exchange {}: Completed periodic klines fetch cycle", exchange);
         }
 
         tracing::info!("Klines fetching task for {} stopped", exchange);
@@ -783,17 +755,6 @@ async fn spawn_liquidity_report_task(
                         Ok(depth_stats) => {
                             // Store liquidity depth
                             let repo = repository.lock().await;
-
-                            // Ensure partition exists for liquidity depth timestamp
-                            if let Err(e) = repo.ensure_partitions_for_range(
-                                "liquidity_depth",
-                                depth_stats.timestamp,
-                                depth_stats.timestamp,
-                            ).await {
-                                tracing::error!("Failed to ensure partition for liquidity depth {}/{}: {}", exchange, symbol, e);
-                                continue;
-                            }
-
                             match repo.store_liquidity_depth(&[depth_stats]).await {
                                 Ok(_) => {
                                     tracing::debug!("Stored liquidity depth for {}/{}", exchange, symbol);
@@ -911,20 +872,6 @@ async fn spawn_ticker_report_task(
 
                 // Store tickers for each exchange
                 for (exchange, tickers) in tickers_by_exchange {
-                    // Ensure partitions exist for ticker timestamp range
-                    if let Some(first) = tickers.first() {
-                        if let Some(last) = tickers.last() {
-                            if let Err(e) = repo.ensure_partitions_for_range(
-                                "tickers",
-                                first.timestamp,
-                                last.timestamp,
-                            ).await {
-                                tracing::error!("Failed to ensure partition for tickers {}: {}", exchange, e);
-                                continue;
-                            }
-                        }
-                    }
-
                     match repo.store_tickers_with_exchange(&exchange, &tickers).await {
                         Ok(_) => {
                             tracing::debug!("Stored {} tickers for exchange {}", tickers.len(), exchange);
@@ -944,85 +891,6 @@ async fn spawn_ticker_report_task(
     }))
 }
 
-/// Spawn partition cleanup task
-async fn spawn_cleanup_task(
-    retention_days: i64,
-    cleanup_interval: u64,
-    repository: Arc<Mutex<PostgresRepository>>,
-    shutdown: Arc<AtomicBool>,
-) -> Result<tokio::task::JoinHandle<Result<()>>> {
-    Ok(tokio::spawn(async move {
-        tracing::info!("Starting partition cleanup task (retention: {} days, interval: {}s)",
-                      retention_days, cleanup_interval);
-
-        let mut ticker = interval(Duration::from_secs(cleanup_interval));
-
-        loop {
-            // Use tokio::select! to check shutdown signal while waiting for next tick
-            tokio::select! {
-                _ = ticker.tick() => {
-                    // Continue with cleanup
-                }
-                _ = tokio::time::sleep(Duration::from_millis(100)) => {
-                    // Check shutdown signal periodically
-                    if shutdown.load(Ordering::Relaxed) {
-                        tracing::info!("Shutdown signal received for cleanup task");
-                        break;
-                    }
-                    continue; // Wait for next tick or shutdown check
-                }
-            }
-
-            tracing::info!("Running partition cleanup for data older than {} days", retention_days);
-
-            // Get partition statistics before cleanup
-            let repo = repository.lock().await;
-            match repo.get_partition_stats().await {
-                Ok(stats_before) => {
-                    tracing::info!("Partition counts before cleanup:");
-                    for (table, count) in &stats_before {
-                        tracing::info!("  {}: {} partitions", table, count);
-                    }
-
-                    // Perform cleanup
-                    match repo.cleanup_old_partitions(retention_days).await {
-                        Ok(dropped_count) => {
-                            if dropped_count > 0 {
-                                tracing::info!("Dropped {} old partitions", dropped_count);
-
-                                // Get statistics after cleanup
-                                match repo.get_partition_stats().await {
-                                    Ok(stats_after) => {
-                                        tracing::info!("Partition counts after cleanup:");
-                                        for (table, count) in &stats_after {
-                                            tracing::info!("  {}: {} partitions", table, count);
-                                        }
-                                    }
-                                    Err(e) => {
-                                        tracing::error!("Failed to get partition stats after cleanup: {}", e);
-                                    }
-                                }
-                            } else {
-                                tracing::info!("No old partitions to drop");
-                            }
-                        }
-                        Err(e) => {
-                            tracing::error!("Failed to cleanup old partitions: {}", e);
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::error!("Failed to get partition stats: {}", e);
-                }
-            }
-
-            tracing::info!("Completed partition cleanup cycle");
-        }
-
-        tracing::info!("Partition cleanup task stopped");
-        Ok(())
-    }))
-}
 
 pub async fn execute(args: StartArgs) -> Result<()> {
     tracing::info!("Starting unified data collection service");
@@ -1121,21 +989,6 @@ pub async fn execute(args: StartArgs) -> Result<()> {
         shutdown.clone(),
     ).await?;
     tasks.push(ticker_report_task);
-
-    // Spawn partition cleanup task (if enabled)
-    if args.enable_partition_cleanup {
-        tracing::info!("Partition cleanup enabled (retention: {} days, interval: {}s)",
-                      args.retention_days, args.cleanup_interval);
-        let cleanup_task = spawn_cleanup_task(
-            args.retention_days,
-            args.cleanup_interval,
-            repository.clone(),
-            shutdown.clone(),
-        ).await?;
-        tasks.push(cleanup_task);
-    } else {
-        tracing::info!("Partition cleanup disabled");
-    }
 
     tracing::info!("All tasks spawned successfully. Running {} tasks total", tasks.len());
     tracing::info!("Press Ctrl+C to stop");

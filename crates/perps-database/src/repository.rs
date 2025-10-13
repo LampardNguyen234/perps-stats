@@ -75,6 +75,9 @@ pub trait Repository: Send + Sync {
         limit: Option<i64>,
     ) -> anyhow::Result<Vec<Kline>>;
 
+    /// Get latest kline for a symbol from a specific exchange with specific interval
+    async fn get_latest_kline(&self, exchange: &str, symbol: &str, interval: &str) -> anyhow::Result<Option<Kline>>;
+
     /// Get trades for a symbol from a specific exchange within a time range
     async fn get_trades(
         &self,
@@ -810,6 +813,40 @@ impl Repository for PostgresRepository {
         }
 
         Ok(klines)
+    }
+
+    async fn get_latest_kline(&self, exchange: &str, symbol: &str, interval: &str) -> anyhow::Result<Option<Kline>> {
+        let exchange_id = self.get_exchange_id(exchange).await?;
+        let normalized_symbol = extract_base_symbol(symbol);
+
+        let row = sqlx::query(
+            r#"
+            SELECT interval, open_time, close_time, open_price, high_price, low_price,
+                   close_price, volume, quote_volume
+            FROM klines
+            WHERE exchange_id = $1 AND symbol = $2 AND interval = $3
+            ORDER BY open_time DESC
+            LIMIT 1
+            "#
+        )
+        .bind(exchange_id)
+        .bind(&normalized_symbol)
+        .bind(interval)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(|r| Kline {
+            symbol: symbol.to_string(),
+            interval: r.get("interval"),
+            open_time: r.get("open_time"),
+            close_time: r.get("close_time"),
+            open: r.get("open_price"),
+            high: r.get("high_price"),
+            low: r.get("low_price"),
+            close: r.get("close_price"),
+            volume: r.get("volume"),
+            turnover: r.get("quote_volume"),
+        }))
     }
 
     async fn get_trades(
