@@ -2,7 +2,9 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use perps_core::*;
 use rust_decimal::Decimal;
+use std::sync::Arc;
 use tracing::{debug, warn};
+use perps_core::{RetryConfig, execute_with_retry};
 
 use crate::cache::SymbolsCache;
 use super::conversions::*;
@@ -23,6 +25,8 @@ pub struct BinanceClient {
     client: reqwest::Client,
     /// Cached set of supported symbols (normalized format)
     symbols_cache: SymbolsCache,
+    /// Rate limiter for API calls
+    rate_limiter: Arc<RateLimiter>,
 }
 
 impl BinanceClient {
@@ -34,6 +38,7 @@ impl BinanceClient {
             base_url: "https://fapi.binance.com".to_string(),
             client: reqwest::Client::new(),
             symbols_cache: SymbolsCache::new(),
+            rate_limiter: Arc::new(RateLimiter::binance()),
         }
     }
 
@@ -45,6 +50,19 @@ impl BinanceClient {
             base_url: "https://fapi.binance.com".to_string(),
             client: reqwest::Client::new(),
             symbols_cache: SymbolsCache::new(),
+            rate_limiter: Arc::new(RateLimiter::binance()),
+        }
+    }
+
+    /// Create a new Binance client with custom rate limiter
+    pub fn with_rate_limiter(rate_limiter: Arc<RateLimiter>) -> Self {
+        Self {
+            api_key: None,
+            secret_key: None,
+            base_url: "https://fapi.binance.com".to_string(),
+            client: reqwest::Client::new(),
+            symbols_cache: SymbolsCache::new(),
+            rate_limiter,
         }
     }
 
@@ -56,6 +74,7 @@ impl BinanceClient {
             base_url,
             client: reqwest::Client::new(),
             symbols_cache: SymbolsCache::new(),
+            rate_limiter: Arc::new(RateLimiter::binance()),
         }
     }
 
@@ -69,28 +88,45 @@ impl BinanceClient {
             .await
     }
 
-    /// Helper to make GET requests to Binance API
+    /// Helper to make GET requests to Binance API with rate limiting and retry
     async fn get<T: serde::de::DeserializeOwned>(
         &self,
         endpoint: &str,
     ) -> anyhow::Result<T> {
+        let config = RetryConfig::default();
         let url = format!("{}{}", self.base_url, endpoint);
-        debug!("Requesting: {}", url);
+        let client = self.client.clone();
+        let rate_limiter = self.rate_limiter.clone();
 
-        let response = self.client.get(&url).send().await?;
+        execute_with_retry(&config, || {
+            let url = url.clone();
+            let client = client.clone();
+            let rate_limiter = rate_limiter.clone();
+            async move {
+                rate_limiter.execute(|| {
+                    let url = url.clone();
+                    let client = client.clone();
+                    async move {
+                        debug!("Requesting: {}", url);
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let text = response.text().await?;
-            return Err(BinanceError::ApiError(format!(
-                "HTTP {}: {}",
-                status, text
-            ))
-            .into());
-        }
+                        let response = client.get(&url).send().await?;
 
-        let data = response.json::<T>().await?;
-        Ok(data)
+                        if !response.status().is_success() {
+                            let status = response.status();
+                            let text = response.text().await?;
+                            return Err(BinanceError::ApiError(format!(
+                                "HTTP {}: {}",
+                                status, text
+                            ))
+                            .into());
+                        }
+
+                        let data = response.json::<T>().await?;
+                        Ok(data)
+                    }
+                }).await
+            }
+        }).await
     }
 
     /// Convert Binance exchange info to our Market type
@@ -247,7 +283,8 @@ impl BinanceClient {
         })
     }
 
-    /// Convert Binance funding rate to our FundingRate type
+    /// Convert Binance funding rate from premium index endpoint to our FundingRate type
+    /// Used by get_funding_rate() which calls /fapi/v1/premiumIndex
     fn convert_funding_rate(&self, data: serde_json::Value) -> anyhow::Result<FundingRate> {
         let symbol = data["symbol"]
             .as_str()
@@ -263,6 +300,37 @@ impl BinanceClient {
         let next_funding_time = data["nextFundingTime"]
             .as_i64()
             .unwrap_or(funding_time + 8 * 3600 * 1000); // Default: 8 hours later
+
+        Ok(FundingRate {
+            symbol: normalize_symbol(symbol),
+            funding_rate,
+            predicted_rate: funding_rate, // Binance doesn't provide predicted rate separately
+            funding_time: timestamp_to_datetime(funding_time)?,
+            next_funding_time: timestamp_to_datetime(next_funding_time)?,
+            funding_interval: 8, // Binance uses 8-hour funding intervals
+            funding_rate_cap_floor: Decimal::new(75, 4), // ±0.75%
+        })
+    }
+
+    /// Convert Binance funding rate from funding rate history endpoint to our FundingRate type
+    /// Used by get_funding_rate_history() which calls /fapi/v1/fundingRate
+    /// This endpoint returns different field names: fundingRate instead of lastFundingRate, fundingTime instead of time
+    fn convert_funding_rate_history(&self, data: serde_json::Value) -> anyhow::Result<FundingRate> {
+        let symbol = data["symbol"]
+            .as_str()
+            .ok_or_else(|| BinanceError::ConversionError("Missing symbol".to_string()))?;
+
+        // Note: fundingRate field (not lastFundingRate)
+        let funding_rate = str_to_decimal(data["fundingRate"].as_str().unwrap_or("0"))?;
+        let _mark_price = str_to_decimal(data["markPrice"].as_str().unwrap_or("0"))?;
+
+        // Note: fundingTime field (not time)
+        let funding_time = data["fundingTime"]
+            .as_i64()
+            .unwrap_or_else(|| Utc::now().timestamp_millis());
+
+        // Historical data doesn't include nextFundingTime, calculate it
+        let next_funding_time = funding_time + 8 * 3600 * 1000; // 8 hours later
 
         Ok(FundingRate {
             symbol: normalize_symbol(symbol),
@@ -570,7 +638,8 @@ impl IPerps for BinanceClient {
 
         let mut rates = Vec::new();
         for rate_data in rates_array {
-            match self.convert_funding_rate(rate_data.clone()) {
+            // Use convert_funding_rate_history for the /fapi/v1/fundingRate endpoint
+            match self.convert_funding_rate_history(rate_data.clone()) {
                 Ok(rate) => rates.push(rate),
                 Err(e) => warn!("Failed to convert funding rate: {}", e),
             }

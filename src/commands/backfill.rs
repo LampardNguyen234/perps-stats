@@ -13,25 +13,25 @@ use tokio::time::sleep;
 
 #[derive(Args)]
 pub struct BackfillArgs {
-    /// Exchange to backfill from (supported: binance, hyperliquid, bybit, lighter, paradex, kucoin)
-    #[arg(short, long)]
-    pub exchange: String,
+    /// Exchanges to backfill from (comma-separated). Defaults to all: binance,hyperliquid,bybit,lighter,paradex,kucoin
+    #[arg(short, long, value_delimiter = ',')]
+    pub exchanges: Vec<String>,
 
     /// Symbols to backfill (comma-separated)
     #[arg(short, long, value_delimiter = ',')]
     pub symbols: Vec<String>,
 
-    /// Data type to backfill (klines, trades, funding_rates)
-    #[arg(short, long, default_value = "klines")]
-    pub data_type: String,
+    /// Data types to backfill (comma-separated). Defaults to: klines,funding_rates
+    #[arg(short, long, value_delimiter = ',')]
+    pub data_types: Vec<String>,
 
-    /// Klines interval/timeframe (e.g., 1m, 5m, 15m, 1h, 4h, 1d). Required when backfilling klines.
-    #[arg(long)]
-    pub interval: Option<String>,
+    /// Klines intervals/timeframes (comma-separated, e.g., 5m,15m,1h). Defaults to: 5m,15m,30m,1h,1d
+    #[arg(long, value_delimiter = ',')]
+    pub intervals: Vec<String>,
 
-    /// Start date (format: YYYY-MM-DD)
+    /// Start date (format: YYYY-MM-DD). If not provided, automatically discovers the earliest available timestamp from the exchange.
     #[arg(long)]
-    pub start_date: String,
+    pub start_date: Option<String>,
 
     /// End date (format: YYYY-MM-DD, defaults to today)
     #[arg(long)]
@@ -45,13 +45,9 @@ pub struct BackfillArgs {
     #[arg(long, default_value = "1000")]
     pub batch_size: usize,
 
-    /// Rate limit: delay between API requests in milliseconds
-    #[arg(long, default_value = "200")]
-    pub rate_limit_ms: u64,
-
-    /// Skip existing data (resume capability)
+    /// Force refetch all data (ignores existing data in database)
     #[arg(long)]
-    pub skip_existing: bool,
+    pub force_refetch: bool,
 }
 
 /// Parse date string (YYYY-MM-DD) to DateTime<Utc>
@@ -97,120 +93,610 @@ fn get_chunk_size(interval: &str) -> usize {
     }
 }
 
-pub async fn execute(args: BackfillArgs) -> Result<()> {
-    tracing::info!("Starting backfill for exchange: {}", args.exchange);
-    tracing::info!("Symbols: {:?}", args.symbols);
-    tracing::info!("Data type: {}", args.data_type);
-    tracing::info!("Date range: {} to {}", args.start_date, args.end_date.as_ref().unwrap_or(&"today".to_string()));
-
-    // Validate exchange
-    let supported_exchanges = vec!["binance", "hyperliquid", "bybit", "lighter", "paradex", "kucoin"];
-    if !supported_exchanges.contains(&args.exchange.as_str()) {
-        anyhow::bail!("Unsupported exchange: {}. Supported: {:?}", args.exchange, supported_exchanges);
+/// Get interval priority for optimization (higher = longer interval)
+/// Used to determine which interval to discover first
+fn get_interval_priority(interval: &str) -> u32 {
+    match interval {
+        "1m" => 1,
+        "3m" => 3,
+        "5m" => 5,
+        "15m" => 15,
+        "30m" => 30,
+        "1h" => 60,
+        "2h" => 120,
+        "4h" => 240,
+        "8h" => 480,
+        "12h" => 720,
+        "1d" => 1440,
+        "1w" => 10080,
+        _ => 0,
     }
+}
 
-    // Validate data type
-    match args.data_type.as_str() {
-        "klines" => {
-            if args.interval.is_none() {
-                anyhow::bail!("--interval is required when backfilling klines. Example: --interval 1h");
+/// Find the longest interval from a list of intervals
+/// This is used for optimization: discover once for the longest interval,
+/// then reuse the timestamp for shorter intervals
+fn find_longest_interval(intervals: &[String]) -> Option<String> {
+    intervals
+        .iter()
+        .max_by_key(|interval| get_interval_priority(interval))
+        .cloned()
+}
+
+/// Get or discover the earliest timestamp for a symbol
+/// For trades/funding_rates, tries to use cached klines discovery first
+/// If no cache exists, discovers using klines endpoint
+async fn get_or_discover_earliest_timestamp(
+    client: &Arc<Box<dyn IPerps + Send + Sync>>,
+    repository: &Arc<Mutex<PostgresRepository>>,
+    exchange: &str,
+    symbol: &str,
+) -> Result<DateTime<Utc>> {
+    // Try to find cached discovery for any klines interval for this symbol
+    // We'll try common intervals in order of preference: 1d, 1h, 15m, 5m, 1m
+    let preferred_intervals = vec!["1d", "1h", "15m", "5m", "1m"];
+
+    for interval in &preferred_intervals {
+        let repo = repository.lock().await;
+        match repo.get_discovery_cache(exchange, symbol, interval).await {
+            Ok(Some((earliest_timestamp, _, _))) => {
+                tracing::info!(
+                    "Using cached klines discovery for {}/{}: earliest={} (from interval {})",
+                    exchange,
+                    symbol,
+                    earliest_timestamp,
+                    interval
+                );
+                return Ok(earliest_timestamp);
+            }
+            Ok(None) => continue,
+            Err(e) => {
+                tracing::debug!("Failed to query cache for {}/{}/{}: {}", exchange, symbol, interval, e);
+                continue;
             }
         }
-        "trades" | "funding_rates" => {
-            // No special validation for trades and funding_rates
-        }
-        _ => anyhow::bail!("Unsupported data type: {}. Supported: klines, trades, funding_rates", args.data_type),
     }
 
-    // Parse dates
-    let start_date = parse_date(&args.start_date)?;
+    // No cache found, discover using klines with 1d interval
+    tracing::info!(
+        "No cached discovery found for {}/{}. Discovering using klines (1d interval)...",
+        exchange,
+        symbol
+    );
+
+    discover_earliest_kline(client, repository, exchange, symbol, "1d").await
+}
+
+/// Discover the earliest available kline timestamp for a symbol on an exchange
+/// Uses backward expansion search to efficiently find the first available data point
+/// Results are cached in the database to avoid redundant discoveries
+async fn discover_earliest_kline(
+    client: &Arc<Box<dyn IPerps + Send + Sync>>,
+    repository: &Arc<Mutex<PostgresRepository>>,
+    exchange: &str,
+    symbol: &str,
+    interval: &str,
+) -> Result<DateTime<Utc>> {
+    let parsed_symbol = client.parse_symbol(symbol);
+
+    tracing::info!("Discovering earliest available kline for {} ({})", symbol, interval);
+
+    // Check cache first
+    {
+        let repo = repository.lock().await;
+        match repo.get_discovery_cache(exchange, symbol, interval).await {
+            Ok(Some((earliest_timestamp, cached_api_calls, cached_duration_ms))) => {
+                tracing::info!(
+                    "Cache hit for {}/{}/{}: earliest={} (originally took {} API calls, {}ms)",
+                    exchange,
+                    symbol,
+                    interval,
+                    earliest_timestamp,
+                    cached_api_calls,
+                    cached_duration_ms
+                );
+                return Ok(earliest_timestamp);
+            }
+            Ok(None) => {
+                tracing::debug!("Cache miss for {}/{}/{}, performing discovery", exchange, symbol, interval);
+            }
+            Err(e) => {
+                tracing::warn!("Failed to query discovery cache: {}, proceeding with discovery", e);
+            }
+        }
+    }
+
+    // Track discovery statistics
+    let discovery_start = std::time::Instant::now();
+    let mut api_calls = 0;
+
+    // First, verify that recent data exists (sanity check)
+    tracing::debug!("Checking for recent data availability...");
+    let end_time = Utc::now();
+    let recent_test = end_time - Duration::days(1);
+    match client.get_klines(&parsed_symbol, interval, Some(recent_test), Some(end_time), Some(10)).await {
+        Ok(klines) if !klines.is_empty() => {
+            api_calls += 1;
+            tracing::debug!("Recent data available, proceeding with historical search");
+        }
+        Ok(_) => {
+            api_calls += 1;
+            anyhow::bail!("No recent data available for symbol {} ({}). Symbol may not be actively traded.", symbol, interval);
+        }
+        Err(e) => {
+            api_calls += 1;
+            anyhow::bail!("Failed to fetch recent klines for {} ({}): {}", symbol, interval, e);
+        }
+    }
+
+    // Strategy: Search backwards in exponentially increasing time windows
+    // Start with 30 days ago, then try 90, 180, 365, 730 days, etc.
+    // For each window, fetch a small batch and check if data exists
+    // Keep expanding until we find the absolute earliest data
+
+    let search_windows = vec![
+        30,   // 1 month
+        90,   // 3 months
+        180,  // 6 months
+        365,  // 1 year
+        730,  // 2 years
+        1095, // 3 years
+        1460, // 4 years
+        1825, // 5 years
+    ];
+
+    let mut earliest_found: Option<DateTime<Utc>> = None;
+
+    for &days_back in &search_windows {
+        let test_time = end_time - Duration::days(days_back);
+
+        tracing::debug!(
+            "Testing {} days back ({})",
+            days_back,
+            test_time
+        );
+
+        // Try to fetch klines from this point
+        match client.get_klines(&parsed_symbol, interval, Some(test_time), Some(test_time + Duration::days(7)), Some(100)).await {
+            Ok(klines) if !klines.is_empty() => {
+                api_calls += 1;
+                let earliest_in_batch = klines.iter().map(|k| k.open_time).min().unwrap();
+
+                tracing::debug!("Found data at {} days back, earliest kline: {}", days_back, earliest_in_batch);
+
+                // Update earliest_found if this is older than what we've found
+                match earliest_found {
+                    None => earliest_found = Some(earliest_in_batch),
+                    Some(current_earliest) if earliest_in_batch < current_earliest => {
+                        earliest_found = Some(earliest_in_batch);
+                    }
+                    _ => {}
+                }
+
+                // Continue searching further back
+            }
+            Ok(_) => {
+                api_calls += 1;
+                tracing::debug!("No data found at {} days back", days_back);
+
+                // If we have found data before and now there's none, we've gone too far back
+                // The earliest_found is our answer
+                if earliest_found.is_some() {
+                    tracing::debug!("Reached limit of available data, earliest found: {:?}", earliest_found);
+                    break;
+                }
+            }
+            Err(e) => {
+                api_calls += 1;
+                tracing::debug!("Error fetching data at {} days back: {}", days_back, e);
+
+                // If we have found data before and now there's an error, we've likely gone too far back
+                if earliest_found.is_some() {
+                    tracing::debug!("Error indicates limit reached, earliest found: {:?}", earliest_found);
+                    break;
+                }
+            }
+        }
+
+        // Add a small delay to avoid rate limiting during discovery
+        sleep(tokio::time::Duration::from_millis(100)).await;
+    }
+
+    // Use the earliest timestamp found, or default to 2 years ago if nothing was found
+    let found_start = earliest_found.unwrap_or_else(|| {
+        tracing::warn!("Could not determine earliest available data, defaulting to 2 years ago");
+        end_time - Duration::days(730)
+    });
+
+    let duration_ms = discovery_start.elapsed().as_millis() as i32;
+    tracing::info!("Discovered earliest kline timestamp: {} ({} API calls, {}ms)", found_start, api_calls, duration_ms);
+
+    // Store in cache
+    let repo = repository.lock().await;
+    if let Err(e) = repo.store_discovery_cache(exchange, symbol, interval, found_start, api_calls, duration_ms).await {
+        tracing::warn!("Failed to cache discovery result: {}", e);
+    }
+
+    Ok(found_start)
+}
+
+pub async fn execute(args: BackfillArgs) -> Result<()> {
+    // Apply defaults
+    let exchanges_to_process = if args.exchanges.is_empty() {
+        vec![
+            "binance".to_string(),
+            "hyperliquid".to_string(),
+            "bybit".to_string(),
+            "lighter".to_string(),
+            "paradex".to_string(),
+            "kucoin".to_string(),
+        ]
+    } else {
+        args.exchanges.clone()
+    };
+
+    let data_types_to_process = if args.data_types.is_empty() {
+        vec!["klines".to_string()]
+    } else {
+        args.data_types.clone()
+    };
+
+    tracing::info!("Starting backfill");
+    tracing::info!("Exchanges: {:?}", exchanges_to_process);
+    tracing::info!("Data types: {:?}", data_types_to_process);
+    tracing::info!("Symbols: {:?}", args.symbols);
+
+    // Validate exchanges
+    let supported_exchanges = vec!["binance", "hyperliquid", "bybit", "lighter", "paradex", "kucoin"];
+    for exchange in &exchanges_to_process {
+        if !supported_exchanges.contains(&exchange.as_str()) {
+            anyhow::bail!("Unsupported exchange: {}. Supported: {:?}", exchange, supported_exchanges);
+        }
+    }
+
+    // Validate data types
+    let supported_data_types = vec!["klines", "trades", "funding_rates"];
+    for data_type in &data_types_to_process {
+        if !supported_data_types.contains(&data_type.as_str()) {
+            anyhow::bail!("Unsupported data type: {}. Supported: {:?}", data_type, supported_data_types);
+        }
+    }
+
+    // Check if klines is in the data types, if so, intervals must be specified or use defaults
+    let needs_intervals = data_types_to_process.iter().any(|dt| dt == "klines");
+    let intervals_to_process = if needs_intervals {
+        if args.intervals.is_empty() {
+            vec!["5m".to_string(), "15m".to_string(), "30m".to_string(), "1h".to_string(), "1d".to_string()]
+        } else {
+            args.intervals.clone()
+        }
+    } else {
+        vec![] // Not used for trades or funding_rates
+    };
+
+    if needs_intervals {
+        tracing::info!("Klines intervals: {:?}", intervals_to_process);
+    }
+
+    // Initialize database once for all exchanges
+    tracing::info!("Connecting to database: {}", args.database_url);
+    let pool = PgPool::connect(&args.database_url).await?;
+    let repository = Arc::new(Mutex::new(PostgresRepository::new(pool)));
+
+    // Determine start_date: either parse from args or discover automatically
+    let (start_date, auto_discover) = if let Some(ref start_str) = args.start_date {
+        (parse_date(start_str)?, false)
+    } else {
+        // Auto-discovery will be handled per exchange/symbol
+        tracing::info!("No start-date provided, will auto-discover earliest available timestamp for each exchange/symbol");
+        (Utc::now() - Duration::days(365 * 2), true) // Placeholder, will be overridden
+    };
+
     let end_date = if let Some(ref end_str) = args.end_date {
         parse_date(end_str)?
     } else {
         Utc::now()
     };
 
-    if start_date >= end_date {
+    // Only validate date range if start_date was provided
+    if args.start_date.is_some() && start_date >= end_date {
         anyhow::bail!("Start date must be before end date");
     }
 
-    tracing::info!("Parsed date range: {} to {}", start_date, end_date);
+    if args.start_date.is_some() {
+        tracing::info!("Date range: {} to {}", start_date, end_date);
+    } else {
+        tracing::info!("Date range: auto-discover to {}", end_date);
+    }
 
-    // Initialize database
-    tracing::info!("Connecting to database: {}", args.database_url);
-    let pool = PgPool::connect(&args.database_url).await?;
-    let repository = Arc::new(Mutex::new(PostgresRepository::new(pool)));
+    // Spawn concurrent tasks for each exchange
+    tracing::info!("Spawning {} concurrent tasks for exchanges", exchanges_to_process.len());
 
-    // Get exchange client
-    let client = factory::get_exchange(&args.exchange)?;
+    let mut tasks = Vec::new();
 
-    // Validate symbols
-    tracing::info!("Validating {} symbols", args.symbols.len());
-    let mut valid_symbols = Vec::new();
-    for symbol in &args.symbols {
-        let parsed_symbol = client.parse_symbol(symbol);
-        if client.is_supported(&parsed_symbol).await? {
-            valid_symbols.push(symbol.clone());
-        } else {
-            tracing::warn!("Symbol {} not supported on exchange {}", symbol, args.exchange);
+    for (exchange_idx, exchange) in exchanges_to_process.iter().enumerate() {
+        // Clone all necessary data for the task
+        let exchange = exchange.clone();
+        let symbols = args.symbols.clone();
+        let data_types = data_types_to_process.clone();
+        let intervals = intervals_to_process.clone();
+        let repository = repository.clone();
+        let batch_size = args.batch_size;
+        let force_refetch = args.force_refetch;
+        let total_exchanges = exchanges_to_process.len();
+
+        // Spawn task for this exchange
+        let task = tokio::spawn(async move {
+            tracing::info!(
+                "=============== Processing exchange [{}/{}]: {} ===============",
+                exchange_idx + 1,
+                total_exchanges,
+                exchange
+            );
+
+            // Get exchange client
+            let client = match factory::get_exchange(&exchange) {
+                Ok(c) => Arc::new(c),
+                Err(e) => {
+                    tracing::error!("Failed to create client for {}: {}", exchange, e);
+                    return Err(e);
+                }
+            };
+
+            // Validate symbols for this exchange
+            tracing::info!("Validating {} symbols for {}", symbols.len(), exchange);
+            let mut valid_symbols = Vec::new();
+            for symbol in &symbols {
+                let parsed_symbol = client.parse_symbol(symbol);
+                match client.is_supported(&parsed_symbol).await {
+                    Ok(true) => valid_symbols.push(symbol.clone()),
+                    Ok(false) => {
+                        tracing::warn!("Symbol {} not supported on exchange {}", symbol, exchange);
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to validate symbol {} on {}: {}", symbol, exchange, e);
+                    }
+                }
+            }
+
+            if valid_symbols.is_empty() {
+                tracing::warn!("No valid symbols found for exchange {}, skipping", exchange);
+                return Ok(());
+            }
+
+            tracing::info!(
+                "Validated {}/{} symbols for {}: {:?}",
+                valid_symbols.len(),
+                symbols.len(),
+                exchange,
+                valid_symbols
+            );
+
+            // Loop through all data types for this exchange
+            for (data_type_idx, data_type) in data_types.iter().enumerate() {
+                tracing::info!(
+                    "--- Processing data type [{}/{}]: {} for {} ---",
+                    data_type_idx + 1,
+                    data_types.len(),
+                    data_type,
+                    exchange
+                );
+
+                // Route to appropriate backfill function based on data type
+                let result = match data_type.as_str() {
+                    "klines" => {
+                        // Multi-interval optimization: if auto_discover is enabled and multiple intervals are requested,
+                        // discover once for the longest interval, then reuse the timestamp for shorter intervals
+                        if auto_discover && intervals.len() > 1 {
+                            let longest_interval = find_longest_interval(&intervals)
+                                .expect("intervals is non-empty, should have a longest interval");
+
+                            tracing::info!(
+                                "Multi-interval optimization: Discovering earliest timestamp for longest interval: {}",
+                                longest_interval
+                            );
+                            tracing::info!(
+                                "Once discovered, the timestamp will be reused for all shorter intervals: {:?}",
+                                intervals.iter().filter(|i| *i != &longest_interval).collect::<Vec<_>>()
+                            );
+
+                            // Discover once per symbol for the longest interval
+                            // This will populate the cache for the longest interval
+                            for (symbol_idx, symbol) in valid_symbols.iter().enumerate() {
+                                tracing::info!(
+                                    "Symbol [{}/{}]: Discovering earliest timestamp for interval {}",
+                                    symbol_idx + 1,
+                                    valid_symbols.len(),
+                                    longest_interval
+                                );
+
+                                match discover_earliest_kline(&client, &repository, &exchange, symbol, &longest_interval).await {
+                                    Ok(discovered_start) => {
+                                        tracing::info!(
+                                            "Symbol {}: Earliest timestamp for {} is {}",
+                                            symbol,
+                                            longest_interval,
+                                            discovered_start
+                                        );
+
+                                        // Store this timestamp for all shorter intervals as well
+                                        // This avoids redundant API calls for each interval
+                                        for interval in &intervals {
+                                            if interval != &longest_interval {
+                                                // Store in cache for this shorter interval
+                                                let repo = repository.lock().await;
+                                                if let Err(e) = repo.store_discovery_cache(
+                                                    &exchange,
+                                                    symbol,
+                                                    interval,
+                                                    discovered_start,
+                                                    0, // API calls = 0 (extrapolated from longest interval)
+                                                    0, // duration_ms = 0 (extrapolated from longest interval)
+                                                ).await {
+                                                    tracing::warn!(
+                                                        "Failed to cache extrapolated discovery for {}/{}: {}",
+                                                        symbol,
+                                                        interval,
+                                                        e
+                                                    );
+                                                } else {
+                                                    tracing::debug!(
+                                                        "Cached extrapolated discovery for {}/{}: {} (from {})",
+                                                        symbol,
+                                                        interval,
+                                                        discovered_start,
+                                                        longest_interval
+                                                    );
+                                                }
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::error!(
+                                            "Symbol {}: Failed to discover earliest timestamp for {}: {}",
+                                            symbol,
+                                            longest_interval,
+                                            e
+                                        );
+                                        tracing::warn!(
+                                            "Symbol {}: Skipping auto-discovery for this symbol. It will be skipped during backfill.",
+                                            symbol
+                                        );
+                                    }
+                                }
+                            }
+
+                            tracing::info!(
+                                "Discovery complete for all {} symbols. API calls saved by optimization: {}",
+                                valid_symbols.len(),
+                                valid_symbols.len() * (intervals.len() - 1)
+                            );
+                        }
+
+                        // Loop through all intervals and backfill
+                        for (interval_idx, interval) in intervals.iter().enumerate() {
+                            tracing::info!(
+                                "Processing interval [{}/{}]: {}",
+                                interval_idx + 1,
+                                intervals.len(),
+                                interval
+                            );
+
+                            backfill_klines(
+                                &exchange,
+                                &valid_symbols,
+                                interval,
+                                start_date,
+                                end_date,
+                                client.clone(),
+                                repository.clone(),
+                                batch_size,
+                                !force_refetch, // skip_existing is now the default (opposite of force_refetch)
+                                auto_discover,
+                            )
+                            .await?;
+
+                            tracing::info!("Completed interval {} [{}/{}]", interval, interval_idx + 1, intervals.len());
+                        }
+                        Ok(())
+                    }
+                    "trades" => {
+                        backfill_trades(
+                            &exchange,
+                            &valid_symbols,
+                            start_date,
+                            end_date,
+                            client.clone(),
+                            repository.clone(),
+                            batch_size,
+                            !force_refetch, // skip_existing is now the default (opposite of force_refetch)
+                            auto_discover,
+                        )
+                        .await
+                    }
+                    "funding_rates" => {
+                        backfill_funding_rates(
+                            &exchange,
+                            &valid_symbols,
+                            start_date,
+                            end_date,
+                            client.clone(),
+                            repository.clone(),
+                            batch_size,
+                            !force_refetch, // skip_existing is now the default (opposite of force_refetch)
+                            auto_discover,
+                        )
+                        .await
+                    }
+                    _ => unreachable!(),
+                };
+
+                if let Err(e) = result {
+                    tracing::error!(
+                        "Failed to backfill {} for {}: {}",
+                        data_type,
+                        exchange,
+                        e
+                    );
+                    // Continue to next data type instead of failing the entire exchange task
+                    continue;
+                }
+
+                tracing::info!(
+                    "Completed data type {} [{}/{}] for {}",
+                    data_type,
+                    data_type_idx + 1,
+                    data_types.len(),
+                    exchange
+                );
+            }
+
+            tracing::info!(
+                "=============== Completed exchange {} [{}/{}] ===============",
+                exchange,
+                exchange_idx + 1,
+                total_exchanges
+            );
+
+            Ok(())
+        });
+
+        tasks.push(task);
+    }
+
+    // Wait for all tasks to complete
+    tracing::info!("Waiting for all {} exchange tasks to complete...", tasks.len());
+    let results = futures::future::join_all(tasks).await;
+
+    // Check results and collect errors
+    let mut successful = 0;
+    let mut failed = 0;
+    for (idx, result) in results.iter().enumerate() {
+        match result {
+            Ok(Ok(())) => {
+                successful += 1;
+            }
+            Ok(Err(e)) => {
+                failed += 1;
+                tracing::error!("Exchange task {} failed: {}", idx, e);
+            }
+            Err(e) => {
+                failed += 1;
+                tracing::error!("Exchange task {} panicked: {}", idx, e);
+            }
         }
     }
 
-    if valid_symbols.is_empty() {
-        anyhow::bail!("No valid symbols found");
+    tracing::info!(
+        "Backfill completed: {} exchanges successful, {} failed",
+        successful,
+        failed
+    );
+
+    if failed > 0 {
+        anyhow::bail!("{} exchange(s) failed during backfill", failed);
     }
 
-    tracing::info!("Validated {}/{} symbols", valid_symbols.len(), args.symbols.len());
-
-    // Backfill based on data type
-    match args.data_type.as_str() {
-        "klines" => {
-            backfill_klines(
-                &args.exchange,
-                &valid_symbols,
-                args.interval.as_ref().unwrap(),
-                start_date,
-                end_date,
-                client,
-                repository,
-                args.batch_size,
-                args.rate_limit_ms,
-                args.skip_existing,
-            )
-            .await?;
-        }
-        "trades" => {
-            backfill_trades(
-                &args.exchange,
-                &valid_symbols,
-                start_date,
-                end_date,
-                client,
-                repository,
-                args.batch_size,
-                args.rate_limit_ms,
-                args.skip_existing,
-            )
-            .await?;
-        }
-        "funding_rates" => {
-            backfill_funding_rates(
-                &args.exchange,
-                &valid_symbols,
-                start_date,
-                end_date,
-                client,
-                repository,
-                args.batch_size,
-                args.rate_limit_ms,
-                args.skip_existing,
-            )
-            .await?;
-        }
-        _ => unreachable!(),
-    }
-
-    tracing::info!("Backfill completed successfully");
     Ok(())
 }
 
@@ -220,11 +706,11 @@ async fn backfill_klines(
     interval: &str,
     start_date: DateTime<Utc>,
     end_date: DateTime<Utc>,
-    client: Box<dyn IPerps + Send + Sync>,
+    client: Arc<Box<dyn IPerps + Send + Sync>>,
     repository: Arc<Mutex<PostgresRepository>>,
     batch_size: usize,
-    rate_limit_ms: u64,
     skip_existing: bool,
+    auto_discover: bool,
 ) -> Result<()> {
     tracing::info!("Backfilling klines with interval: {}", interval);
 
@@ -243,21 +729,54 @@ async fn backfill_klines(
         // Parse symbol to exchange-specific format
         let parsed_symbol = client.parse_symbol(symbol);
 
+        // Discover earliest available timestamp if auto_discover is enabled
+        let actual_start_date = if auto_discover {
+            match discover_earliest_kline(&client, &repository, exchange, symbol, interval).await {
+                Ok(discovered_start) => {
+                    tracing::info!(
+                        "Symbol {}/{}: Using earliest kline timestamp: {}",
+                        exchange,
+                        symbol,
+                        discovered_start
+                    );
+                    discovered_start
+                }
+                Err(e) => {
+                    tracing::error!(
+                        "Symbol {}/{}: Failed to discover earliest kline: {}. Skipping this symbol.",
+                        exchange,
+                        symbol,
+                        e
+                    );
+                    continue;
+                }
+            }
+        } else {
+            start_date
+        };
+
         // Calculate total time range
-        let total_duration = end_date.signed_duration_since(start_date);
+        let total_duration = end_date.signed_duration_since(actual_start_date);
         let total_intervals = (total_duration.num_milliseconds() / interval_ms) as usize;
 
-        tracing::info!("Symbol {}: {} intervals to backfill ({})", symbol, total_intervals, interval);
+        tracing::info!(
+            "Symbol {}/{}: {} intervals to backfill ({}) from {} to {}",
+            exchange,
+            symbol,
+            total_intervals,
+            interval,
+            actual_start_date,
+            end_date
+        );
 
         // Query all existing klines for gap detection
         let existing_timestamps: HashSet<DateTime<Utc>> = if skip_existing {
             tracing::info!("Loading existing klines from database for gap detection...");
             let repo = repository.lock().await;
-            match repo.get_klines(exchange, symbol, interval, start_date, end_date, None).await {
+            match repo.get_klines(exchange, symbol, interval, actual_start_date, end_date, None).await {
                 Ok(klines) => {
                     let count = klines.len();
                     let timestamps: HashSet<DateTime<Utc>> = klines.iter().map(|k| k.open_time).collect();
-                    tracing::info!("Found {} existing klines, will skip these timestamps", count);
                     timestamps
                 }
                 Err(e) => {
@@ -271,7 +790,7 @@ async fn backfill_klines(
 
         // Generate expected timestamps for the entire range
         let mut expected_timestamps = Vec::new();
-        let mut current_ts = start_date;
+        let mut current_ts = actual_start_date;
         while current_ts < end_date {
             expected_timestamps.push(current_ts);
             current_ts = current_ts + Duration::milliseconds(interval_ms);
@@ -288,11 +807,11 @@ async fn backfill_klines(
         };
 
         if missing_timestamps.is_empty() {
-            tracing::info!("Symbol {}: All data already exists, skipping", symbol);
+            tracing::info!("Symbol {}/{}: All data already exists, skipping", exchange, symbol);
             continue;
         }
 
-        tracing::info!("Symbol {}: {} missing intervals to fetch", symbol, missing_timestamps.len());
+        tracing::info!("Symbol {}/{}: {} missing intervals to fetch", exchange, symbol, missing_timestamps.len());
 
         // Group consecutive missing timestamps into ranges for efficient fetching
         let mut fetch_ranges: Vec<(DateTime<Utc>, DateTime<Utc>)> = Vec::new();
@@ -341,7 +860,8 @@ async fn backfill_klines(
 
                 // Fetch klines for this chunk
                 tracing::debug!(
-                    "Fetching klines for {} from {} to {} (limit: {})",
+                    "Fetching klines for {}/{} from {} to {} (limit: {})",
+                    exchange,
                     symbol,
                     current_time,
                     chunk_end_time,
@@ -362,13 +882,13 @@ async fn backfill_klines(
                         total_api_calls += 1;
 
                         if klines.is_empty() {
-                            tracing::debug!("No klines returned for {} in range {} to {}", symbol, current_time, chunk_end_time);
+                            tracing::debug!("No klines returned for {}/{} in range {} to {}", exchange, symbol, current_time, chunk_end_time);
                             // No data returned, move to next chunk to avoid infinite loop
                             current_time = chunk_end_time;
                             continue;
                         }
 
-                        tracing::debug!("Fetched {} klines for {} (requested up to {})", klines.len(), symbol, chunk_size);
+                        tracing::debug!("Fetched {} klines for {}/{} (requested up to {})", klines.len(), symbol, exchange, chunk_size);
 
                         // Get the latest timestamp from the fetched klines to advance current_time
                         let latest_kline_time = klines.iter().map(|k| k.open_time).max().unwrap();
@@ -384,7 +904,8 @@ async fn backfill_klines(
                                     symbol_klines_count += buffer.len();
                                     total_klines_stored += buffer.len();
                                     tracing::info!(
-                                        "Symbol {}: Stored {} klines (total: {})",
+                                        "Symbol {}/{}: Stored {} klines (total: {})",
+                                        exchange,
                                         symbol,
                                         buffer.len(),
                                         symbol_klines_count
@@ -407,13 +928,10 @@ async fn backfill_klines(
                             current_time = chunk_end_time;
                         }
 
-                        // Rate limiting
-                        if rate_limit_ms > 0 {
-                            sleep(tokio::time::Duration::from_millis(rate_limit_ms)).await;
-                        }
+                        // Note: Rate limiting is handled automatically by the RateLimiter in the exchange client
                     }
                     Err(e) => {
-                        tracing::error!("Failed to fetch klines for {} at {}: {}", symbol, current_time, e);
+                        tracing::error!("Failed to fetch klines for {}/{} at {}: {}", exchange, symbol, current_time, e);
                         // On error, skip to next chunk to avoid getting stuck
                         current_time = chunk_end_time;
                     }
@@ -429,14 +947,15 @@ async fn backfill_klines(
                     symbol_klines_count += buffer.len();
                     total_klines_stored += buffer.len();
                     tracing::info!(
-                        "Symbol {}: Stored final {} klines (total: {})",
+                        "Symbol {}/{}: Stored final {} klines (total: {})",
+                        exchange,
                         symbol,
                         buffer.len(),
                         symbol_klines_count
                     );
                 }
                 Err(e) => {
-                    tracing::error!("Failed to store final klines for {}: {}", symbol, e);
+                    tracing::error!("Failed to store final klines for {}/{}: {}", exchange, symbol, e);
                     return Err(e);
                 }
             }
@@ -460,11 +979,11 @@ async fn backfill_trades(
     symbols: &[String],
     start_date: DateTime<Utc>,
     end_date: DateTime<Utc>,
-    client: Box<dyn IPerps + Send + Sync>,
+    client: Arc<Box<dyn IPerps + Send + Sync>>,
     repository: Arc<Mutex<PostgresRepository>>,
     batch_size: usize,
-    rate_limit_ms: u64,
     skip_existing: bool,
+    auto_discover: bool,
 ) -> Result<()> {
     tracing::info!("Backfilling trades");
     tracing::warn!("⚠️  LIMITATION: Most exchanges' get_recent_trades() API only returns very recent trades (typically last few hours).");
@@ -486,8 +1005,32 @@ async fn backfill_trades(
         // Parse symbol to exchange-specific format
         let parsed_symbol = client.parse_symbol(symbol);
 
+        // Discover or use provided start date
+        let actual_start_date = if auto_discover {
+            match get_or_discover_earliest_timestamp(&client, &repository, exchange, symbol).await {
+                Ok(discovered_start) => {
+                    tracing::info!(
+                        "Symbol {}: Using earliest timestamp: {}",
+                        symbol,
+                        discovered_start
+                    );
+                    discovered_start
+                }
+                Err(e) => {
+                    tracing::error!(
+                        "Symbol {}: Failed to discover earliest timestamp: {}. Skipping this symbol.",
+                        symbol,
+                        e
+                    );
+                    continue;
+                }
+            }
+        } else {
+            start_date
+        };
+
         // Calculate total time range
-        let total_duration = end_date.signed_duration_since(start_date);
+        let total_duration = end_date.signed_duration_since(actual_start_date);
         let total_hours = total_duration.num_hours();
 
         tracing::info!("Symbol {}: {} hours to backfill", symbol, total_hours);
@@ -580,10 +1123,7 @@ async fn backfill_trades(
                     // Move to next chunk
                     current_time = chunk_end_time;
 
-                    // Rate limiting
-                    if rate_limit_ms > 0 {
-                        sleep(tokio::time::Duration::from_millis(rate_limit_ms)).await;
-                    }
+                    // Note: Rate limiting is handled automatically by the RateLimiter in the exchange client
                 }
                 Err(e) => {
                     tracing::error!("Failed to fetch trades for {} at {}: {}", symbol, current_time, e);
@@ -632,11 +1172,11 @@ async fn backfill_funding_rates(
     symbols: &[String],
     start_date: DateTime<Utc>,
     end_date: DateTime<Utc>,
-    client: Box<dyn IPerps + Send + Sync>,
+    client: Arc<Box<dyn IPerps + Send + Sync>>,
     repository: Arc<Mutex<PostgresRepository>>,
     batch_size: usize,
-    rate_limit_ms: u64,
     skip_existing: bool,
+    auto_discover: bool,
 ) -> Result<()> {
     tracing::info!("Backfilling funding rates");
 
@@ -655,8 +1195,32 @@ async fn backfill_funding_rates(
         // Parse symbol to exchange-specific format
         let parsed_symbol = client.parse_symbol(symbol);
 
+        // Discover or use provided start date
+        let actual_start_date = if auto_discover {
+            match get_or_discover_earliest_timestamp(&client, &repository, exchange, symbol).await {
+                Ok(discovered_start) => {
+                    tracing::info!(
+                        "Symbol {}: Using earliest timestamp: {}",
+                        symbol,
+                        discovered_start
+                    );
+                    discovered_start
+                }
+                Err(e) => {
+                    tracing::error!(
+                        "Symbol {}: Failed to discover earliest timestamp: {}. Skipping this symbol.",
+                        symbol,
+                        e
+                    );
+                    continue;
+                }
+            }
+        } else {
+            start_date
+        };
+
         // Calculate total time range
-        let total_duration = end_date.signed_duration_since(start_date);
+        let total_duration = end_date.signed_duration_since(actual_start_date);
         let total_days = total_duration.num_days();
 
         tracing::info!("Symbol {}: {} days to backfill", symbol, total_days);
@@ -748,10 +1312,7 @@ async fn backfill_funding_rates(
                     // Move to next chunk
                     current_time = chunk_end_time;
 
-                    // Rate limiting
-                    if rate_limit_ms > 0 {
-                        sleep(tokio::time::Duration::from_millis(rate_limit_ms)).await;
-                    }
+                    // Note: Rate limiting is handled automatically by the RateLimiter in the exchange client
                 }
                 Err(e) => {
                     tracing::error!("Failed to fetch funding rates for {} at {}: {}", symbol, current_time, e);

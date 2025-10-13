@@ -155,6 +155,27 @@ pub trait Repository: Send + Sync {
 
     /// Get latest slippage for a symbol from a specific exchange (all trade amounts)
     async fn get_latest_slippage(&self, exchange: &str, symbol: &str) -> anyhow::Result<Option<Vec<Slippage>>>;
+
+    // Discovery cache methods
+
+    /// Get cached earliest kline timestamp for a symbol/interval
+    async fn get_discovery_cache(
+        &self,
+        exchange: &str,
+        symbol: &str,
+        interval: &str,
+    ) -> anyhow::Result<Option<(DateTime<Utc>, i32, i32)>>; // Returns (earliest_timestamp, api_calls_used, duration_ms)
+
+    /// Store discovered earliest kline timestamp in cache
+    async fn store_discovery_cache(
+        &self,
+        exchange: &str,
+        symbol: &str,
+        interval: &str,
+        earliest_timestamp: DateTime<Utc>,
+        api_calls_used: i32,
+        duration_ms: i32,
+    ) -> anyhow::Result<()>;
 }
 
 /// PostgreSQL implementation of the Repository trait
@@ -786,7 +807,7 @@ impl Repository for PostgresRepository {
                 SELECT interval, open_time, close_time, open_price, high_price, low_price,
                        close_price, volume, quote_volume, trade_count, ts
                 FROM klines
-                WHERE exchange_id = $1 AND symbol = $2 AND interval = $3 AND ts >= $4 AND ts <= $5
+                WHERE exchange_id = $1 AND symbol = $2 AND interval = $3 AND open_time >= $4 AND open_time < $5
                 ORDER BY open_time DESC
                 LIMIT {}
                 "#,
@@ -797,7 +818,7 @@ impl Repository for PostgresRepository {
             SELECT interval, open_time, close_time, open_price, high_price, low_price,
                    close_price, volume, quote_volume, trade_count, ts
             FROM klines
-            WHERE exchange_id = $1 AND symbol = $2 AND interval = $3 AND ts >= $4 AND ts <= $5
+            WHERE exchange_id = $1 AND symbol = $2 AND interval = $3 AND open_time >= $4 AND open_time < $5
             ORDER BY open_time DESC
             "#
             .to_string()
@@ -1412,5 +1433,78 @@ impl Repository for PostgresRepository {
         } else {
             Ok(None)
         }
+    }
+
+    async fn get_discovery_cache(
+        &self,
+        exchange: &str,
+        symbol: &str,
+        interval: &str,
+    ) -> anyhow::Result<Option<(DateTime<Utc>, i32, i32)>> {
+        let exchange_id = self.get_exchange_id(exchange).await?;
+        let normalized_symbol = extract_base_symbol(symbol);
+
+        let row = sqlx::query(
+            r#"
+            SELECT earliest_timestamp, api_calls_used, duration_ms
+            FROM kline_discovery_cache
+            WHERE exchange_id = $1 AND symbol = $2 AND interval = $3
+            "#
+        )
+        .bind(exchange_id)
+        .bind(&normalized_symbol)
+        .bind(interval)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(|r| (r.get("earliest_timestamp"), r.get("api_calls_used"), r.get("duration_ms"))))
+    }
+
+    async fn store_discovery_cache(
+        &self,
+        exchange: &str,
+        symbol: &str,
+        interval: &str,
+        earliest_timestamp: DateTime<Utc>,
+        api_calls_used: i32,
+        duration_ms: i32,
+    ) -> anyhow::Result<()> {
+        let exchange_id = self.get_exchange_id(exchange).await?;
+        let normalized_symbol = extract_base_symbol(symbol);
+
+        sqlx::query(
+            r#"
+            INSERT INTO kline_discovery_cache (
+                exchange_id, symbol, interval, earliest_timestamp, api_calls_used, duration_ms
+            )
+            VALUES ($1, $2, $3, $4, $5, $6)
+            ON CONFLICT (exchange_id, symbol, interval)
+            DO UPDATE SET
+                earliest_timestamp = EXCLUDED.earliest_timestamp,
+                discovered_at = NOW(),
+                api_calls_used = EXCLUDED.api_calls_used,
+                duration_ms = EXCLUDED.duration_ms
+            "#
+        )
+        .bind(exchange_id)
+        .bind(&normalized_symbol)
+        .bind(interval)
+        .bind(earliest_timestamp)
+        .bind(api_calls_used)
+        .bind(duration_ms)
+        .execute(&self.pool)
+        .await?;
+
+        tracing::debug!(
+            "Cached discovery result for {}/{}/{}: earliest={}, api_calls={}, duration={}ms",
+            exchange,
+            symbol,
+            interval,
+            earliest_timestamp,
+            api_calls_used,
+            duration_ms
+        );
+
+        Ok(())
     }
 }

@@ -4,9 +4,10 @@ use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, TimeZone, Utc};
 use perps_core::types::*;
-use perps_core::IPerps;
+use perps_core::{IPerps, RateLimiter, RetryConfig, execute_with_retry};
 use rust_decimal::Decimal;
 use std::str::FromStr;
+use std::sync::Arc;
 
 const BASE_URL: &str = "https://api.prod.paradex.trade/v1";
 
@@ -16,6 +17,8 @@ pub struct ParadexClient {
     http: reqwest::Client,
     /// Cached set of supported symbols
     symbols_cache: SymbolsCache,
+    /// Rate limiter for API requests
+    rate_limiter: Arc<RateLimiter>,
 }
 
 impl ParadexClient {
@@ -23,6 +26,7 @@ impl ParadexClient {
         Self {
             http: reqwest::Client::new(),
             symbols_cache: SymbolsCache::new(),
+            rate_limiter: Arc::new(RateLimiter::paradex()),
         }
     }
 
@@ -37,13 +41,31 @@ impl ParadexClient {
     }
 
     async fn get<T: serde::de::DeserializeOwned>(&self, endpoint: &str) -> Result<T> {
+        let config = RetryConfig::default();
         let url = format!("{}{}", BASE_URL, endpoint);
-        let response = self.http.get(&url).send().await?;
-        if !response.status().is_success() {
-            return Err(anyhow!("GET request to {} failed with status: {}", url, response.status()));
-        }
-        let data = response.json().await?;
-        Ok(data)
+        let http = self.http.clone();
+        let rate_limiter = self.rate_limiter.clone();
+
+        execute_with_retry(&config, || {
+            let url = url.clone();
+            let http = http.clone();
+            let rate_limiter = rate_limiter.clone();
+            async move {
+                rate_limiter.execute(|| {
+                    let url = url.clone();
+                    let http = http.clone();
+                    async move {
+                        tracing::debug!("Requesting: {}", url);
+                        let response = http.get(&url).send().await?;
+                        if !response.status().is_success() {
+                            return Err(anyhow!("GET request to {} failed with status: {}", url, response.status()));
+                        }
+                        let data = response.json().await?;
+                        Ok(data)
+                    }
+                }).await
+            }
+        }).await
     }
 }
 

@@ -192,6 +192,7 @@ async fn truncate_all_tables(pool: &PgPool) -> Result<()> {
         "liquidity_depth",
         "markets",
         "klines",
+        "slippage"
         // Don't truncate exchanges as it's a reference table
     ];
 

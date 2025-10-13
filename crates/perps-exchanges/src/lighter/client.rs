@@ -1,11 +1,12 @@
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use perps_core::{FundingRate, IPerps, Kline, Market, MarketStats, OpenInterest, Orderbook, Ticker, Trade};
+use perps_core::{FundingRate, IPerps, Kline, Market, MarketStats, OpenInterest, Orderbook, Ticker, Trade, RateLimiter, RetryConfig, execute_with_retry};
 use crate::cache::SymbolsCache;
 use reqwest::Client;
 use rust_decimal::prelude::FromPrimitive;
 use std::collections::HashMap;
+use std::sync::Arc;
 use tracing;
 
 use super::conversions;
@@ -20,6 +21,8 @@ pub struct LighterClient {
     symbol_to_market_id: HashMap<String, u64>,
     /// Cached set of supported symbols
     symbols_cache: SymbolsCache,
+    /// Rate limiter for API requests
+    rate_limiter: Arc<RateLimiter>,
 }
 
 impl LighterClient {
@@ -40,7 +43,43 @@ impl LighterClient {
             base_url: BASE_URL.to_string(),
             symbol_to_market_id: HashMap::new(),
             symbols_cache: SymbolsCache::new(),
+            rate_limiter: Arc::new(RateLimiter::lighter()),
         }
+    }
+
+    /// Helper method to make rate-limited GET requests with retry
+    async fn get<T: serde::de::DeserializeOwned>(&self, url: &str) -> Result<T> {
+        let config = RetryConfig::default();
+        let url = url.to_string();
+        let client = self.client.clone();
+        let rate_limiter = self.rate_limiter.clone();
+
+        execute_with_retry(&config, || {
+            let url = url.clone();
+            let client = client.clone();
+            let rate_limiter = rate_limiter.clone();
+            async move {
+                rate_limiter.execute(|| {
+                    let url = url.clone();
+                    let client = client.clone();
+                    async move {
+                        tracing::debug!("Requesting: {}", url);
+                        let response = client.get(&url).send().await?;
+
+                        // Check HTTP status first
+                        if !response.status().is_success() {
+                            let status = response.status();
+                            let text = response.text().await.unwrap_or_else(|_| "Unable to read response body".to_string());
+                            return Err(anyhow!("HTTP {}: {}", status, text));
+                        }
+
+                        // Try to decode as the expected type
+                        let data = response.json::<T>().await?;
+                        Ok(data)
+                    }
+                }).await
+            }
+        }).await
     }
 
     /// Get market ID for a symbol
@@ -52,13 +91,7 @@ impl LighterClient {
 
         // Fetch all markets and find the symbol
         let url = format!("{}/orderBooks", self.base_url);
-        let response: LighterResponse<OrderBooksResponse> = self
-            .client
-            .get(&url)
-            .send()
-            .await?
-            .json()
-            .await?;
+        let response: LighterResponse<OrderBooksResponse> = self.get(&url).await?;
 
         if response.code != 200 {
             return Err(anyhow!("API error: code {}", response.code));
@@ -80,13 +113,7 @@ impl LighterClient {
     /// Fetch order book details for a specific market
     async fn fetch_orderbook_detail(&self, symbol: &str) -> Result<OrderBookDetail> {
         let url = format!("{}/orderBookDetails", self.base_url);
-        let response: LighterResponse<OrderBookDetailsResponse> = self
-            .client
-            .get(&url)
-            .send()
-            .await?
-            .json()
-            .await?;
+        let response: LighterResponse<OrderBookDetailsResponse> = self.get(&url).await?;
 
         if response.code != 200 {
             return Err(anyhow!("API error: code {}", response.code));
@@ -137,13 +164,7 @@ impl IPerps for LighterClient {
         let url = format!("{}/orderBooks", self.base_url);
         tracing::debug!("Fetching markets from Lighter: {}", url);
 
-        let response: LighterResponse<OrderBooksResponse> = self
-            .client
-            .get(&url)
-            .send()
-            .await?
-            .json()
-            .await?;
+        let response: LighterResponse<OrderBooksResponse> = self.get(&url).await?;
 
         if response.code != 200 {
             return Err(anyhow!("API error: code {}", response.code));
@@ -163,13 +184,7 @@ impl IPerps for LighterClient {
         let url = format!("{}/orderBooks", self.base_url);
         tracing::debug!("Fetching market {} from Lighter: {}", symbol, url);
 
-        let response: LighterResponse<OrderBooksResponse> = self
-            .client
-            .get(&url)
-            .send()
-            .await?
-            .json()
-            .await?;
+        let response: LighterResponse<OrderBooksResponse> = self.get(&url).await?;
 
         if response.code != 200 {
             return Err(anyhow!("API error: code {}", response.code));
@@ -202,13 +217,7 @@ impl IPerps for LighterClient {
         let url = format!("{}/orderBookDetails", self.base_url);
         tracing::debug!("Fetching all tickers from Lighter: {}", url);
 
-        let response: LighterResponse<OrderBookDetailsResponse> = self
-            .client
-            .get(&url)
-            .send()
-            .await?
-            .json()
-            .await?;
+        let response: LighterResponse<OrderBookDetailsResponse> = self.get(&url).await?;
 
         if response.code != 200 {
             return Err(anyhow!("API error: code {}", response.code));
@@ -237,13 +246,7 @@ impl IPerps for LighterClient {
             self.base_url, market_id, capped_depth
         );
 
-        let response: LighterResponse<OrderBookOrdersResponse> = self
-            .client
-            .get(&url)
-            .send()
-            .await?
-            .json()
-            .await?;
+        let response: LighterResponse<OrderBookOrdersResponse> = self.get(&url).await?;
 
         if response.code != 200 {
             return Err(anyhow!("API error: code {}", response.code));
@@ -256,13 +259,7 @@ impl IPerps for LighterClient {
         let url = format!("{}/funding-rates", self.base_url);
         tracing::debug!("Fetching funding rate for {} from Lighter: {}", symbol, url);
 
-        let response: LighterResponse<FundingRatesResponse> = self
-            .client
-            .get(&url)
-            .send()
-            .await?
-            .json()
-            .await?;
+        let response: LighterResponse<FundingRatesResponse> = self.get(&url).await?;
 
         if response.code != 200 {
             return Err(anyhow!("API error: code {}", response.code));
@@ -318,36 +315,30 @@ impl IPerps for LighterClient {
         // Get market_id for the symbol
         let market_id = self.clone().get_market_id(symbol).await?;
 
-        // Build the URL
-        let mut url = format!(
-            "{}/candlesticks?market_id={}&resolution={}",
-            self.base_url, market_id, interval
-        );
+        // Lighter API requires start_timestamp, end_timestamp, AND count_back
+        // If not provided, use sensible defaults
+        let now = Utc::now();
+        let start = start_time.unwrap_or_else(|| now - chrono::Duration::hours(24));
+        let end = end_time.unwrap_or(now);
+        let count_back = limit.unwrap_or(1000); // Default to 1000 if not specified
 
-        // Add time parameters if provided (Lighter expects milliseconds)
-        if let Some(start) = start_time {
-            url.push_str(&format!("&start_timestamp={}", start.timestamp_millis()));
-        }
-        if let Some(end) = end_time {
-            url.push_str(&format!("&end_timestamp={}", end.timestamp_millis()));
-        }
-        // Add limit parameter if provided
-        if let Some(lim) = limit {
-            url.push_str(&format!("&count_back={}", lim));
-        }
+        // Build the URL with all required parameters
+        let url = format!(
+            "{}/candlesticks?market_id={}&resolution={}&start_timestamp={}&end_timestamp={}&count_back={}",
+            self.base_url,
+            market_id,
+            interval,
+            start.timestamp_millis(),
+            end.timestamp_millis(),
+            count_back
+        );
 
         tracing::debug!("Lighter klines URL: {}", url);
 
-        let response: LighterResponse<CandlesticksResponse> = self
-            .client
-            .get(&url)
-            .send()
-            .await?
-            .json()
-            .await?;
+        let response: LighterResponse<CandlesticksResponse> = self.get(&url).await?;
 
         if response.code != 200 {
-            return Err(anyhow!("API error: code {}", response.code));
+            return Err(anyhow!("Lighter API error: code {} - This may indicate an unsupported interval or invalid parameters", response.code));
         }
 
         // Convert candlesticks to Kline format
@@ -414,13 +405,7 @@ impl IPerps for LighterClient {
         let url = format!("{}/orderBookDetails", self.base_url);
         tracing::debug!("Fetching all market stats from Lighter: {}", url);
 
-        let response: LighterResponse<OrderBookDetailsResponse> = self
-            .client
-            .get(&url)
-            .send()
-            .await?
-            .json()
-            .await?;
+        let response: LighterResponse<OrderBookDetailsResponse> = self.get(&url).await?;
 
         if response.code != 200 {
             return Err(anyhow!("API error: code {}", response.code));
@@ -485,6 +470,7 @@ impl Clone for LighterClient {
             base_url: self.base_url.clone(),
             symbol_to_market_id: self.symbol_to_market_id.clone(),
             symbols_cache: self.symbols_cache.clone(),
+            rate_limiter: self.rate_limiter.clone(),
         }
     }
 }

@@ -503,13 +503,39 @@ async fn spawn_klines_task(
                         _ => now - chrono::Duration::days(365),             // 1 year default
                     };
 
-                    // Fetch in chunks to avoid overwhelming the API
-                    let mut current_start = start_time;
-                    let chunk_size = 1000; // Request up to 1000 klines per API call
-                    let mut total_fetched = 0;
+                    // Use smart chunking based on interval (from backfill logic)
+                    let interval_ms = match &klines_timeframe[..] {
+                        "1m" => 60_000i64,
+                        "3m" => 180_000,
+                        "5m" => 300_000,
+                        "15m" => 900_000,
+                        "30m" => 1_800_000,
+                        "1h" => 3_600_000,
+                        "2h" => 7_200_000,
+                        "4h" => 14_400_000,
+                        "8h" => 28_800_000,
+                        "12h" => 43_200_000,
+                        "1d" => 86_400_000,
+                        "1w" => 604_800_000,
+                        _ => 3_600_000, // default to 1 hour
+                    };
 
-                    tracing::info!("Fetching historical klines for {}/{} from {} to {}",
-                                  exchange, symbol, start_time, now);
+                    // Calculate optimal chunk size based on interval
+                    let chunk_size = match &klines_timeframe[..] {
+                        "1m" | "3m" | "5m" => 1000,
+                        "15m" | "30m" | "1h" => 1000,
+                        "2h" | "4h" => 500,
+                        "8h" | "12h" => 500,
+                        "1d" | "1w" => 500,
+                        _ => 1000,
+                    };
+
+                    tracing::info!("Fetching historical klines for {}/{} from {} to {} (chunk size: {})",
+                                  exchange, symbol, start_time, now, chunk_size);
+
+                    // Fetch in chunks with progress tracking
+                    let mut current_start = start_time;
+                    let mut total_fetched = 0;
 
                     loop {
                         if shutdown.load(Ordering::Relaxed) {
@@ -517,9 +543,13 @@ async fn spawn_klines_task(
                             break;
                         }
 
+                        // Calculate chunk end time
+                        let chunk_duration = chrono::Duration::milliseconds(interval_ms * chunk_size as i64);
+                        let chunk_end = (current_start + chunk_duration).min(now);
+
                         // Fetch chunk
                         match client.get_klines(&parsed_symbol, &klines_timeframe,
-                                              Some(current_start), Some(now), Some(chunk_size)).await {
+                                              Some(current_start), Some(chunk_end), Some(chunk_size as u32)).await {
                             Ok(klines) => {
                                 if klines.is_empty() {
                                     tracing::debug!("No more klines available for {}/{}", exchange, symbol);
@@ -528,6 +558,9 @@ async fn spawn_klines_task(
 
                                 let klines_count = klines.len();
                                 total_fetched += klines_count;
+
+                                // Get latest timestamp to advance correctly
+                                let latest_kline_time = klines.iter().map(|k| k.open_time).max().unwrap();
 
                                 // Store klines
                                 let repo = repository.lock().await;
@@ -543,20 +576,20 @@ async fn spawn_klines_task(
                                 }
                                 drop(repo);
 
-                                // Move to next chunk based on the latest kline timestamp
-                                if let Some(latest) = klines.iter().max_by_key(|k| k.open_time) {
-                                    current_start = latest.open_time + chrono::Duration::milliseconds(1);
+                                // Move to next interval after latest fetched kline
+                                current_start = latest_kline_time + chrono::Duration::milliseconds(interval_ms);
 
-                                    // If we've reached now or got fewer klines than requested, we're done
-                                    if current_start >= now || klines_count < chunk_size as usize {
-                                        break;
-                                    }
-                                } else {
+                                // If we've reached or passed the chunk_end, adjust
+                                if current_start >= chunk_end {
+                                    current_start = chunk_end;
+                                }
+
+                                // If we've reached now, we're done
+                                if current_start >= now || klines_count < chunk_size {
                                     break;
                                 }
 
-                                // Rate limiting: small delay between chunks
-                                tokio::time::sleep(Duration::from_millis(200)).await;
+                                // Note: Rate limiting is handled automatically by the RateLimiter in the exchange client
                             }
                             Err(e) => {
                                 let error_msg = e.to_string();
@@ -582,28 +615,90 @@ async fn spawn_klines_task(
                     let start_from = latest.open_time + chrono::Duration::milliseconds(1);
 
                     if start_from < now {
-                        tracing::info!("Fetching missing klines for {}/{} from {} to {}",
-                                      exchange, symbol, start_from, now);
+                        // Use smart chunking for gap filling too
+                        let interval_ms = match &klines_timeframe[..] {
+                            "1m" => 60_000i64,
+                            "3m" => 180_000,
+                            "5m" => 300_000,
+                            "15m" => 900_000,
+                            "30m" => 1_800_000,
+                            "1h" => 3_600_000,
+                            "2h" => 7_200_000,
+                            "4h" => 14_400_000,
+                            "8h" => 28_800_000,
+                            "12h" => 43_200_000,
+                            "1d" => 86_400_000,
+                            "1w" => 604_800_000,
+                            _ => 3_600_000,
+                        };
 
-                        match client.get_klines(&parsed_symbol, &klines_timeframe,
-                                              Some(start_from), Some(now), Some(1000)).await {
-                            Ok(klines) => {
-                                if !klines.is_empty() {
+                        let chunk_size = match &klines_timeframe[..] {
+                            "1m" | "3m" | "5m" | "15m" | "30m" | "1h" => 1000,
+                            "2h" | "4h" | "8h" | "12h" | "1d" | "1w" => 500,
+                            _ => 1000,
+                        };
+
+                        tracing::info!("Fetching missing klines for {}/{} from {} to {} (chunk size: {})",
+                                      exchange, symbol, start_from, now, chunk_size);
+
+                        let mut current_start = start_from;
+                        let mut total_filled = 0;
+
+                        loop {
+                            if shutdown.load(Ordering::Relaxed) {
+                                tracing::info!("Shutdown signal received during gap fill");
+                                break;
+                            }
+
+                            let chunk_duration = chrono::Duration::milliseconds(interval_ms * chunk_size as i64);
+                            let chunk_end = (current_start + chunk_duration).min(now);
+
+                            match client.get_klines(&parsed_symbol, &klines_timeframe,
+                                                  Some(current_start), Some(chunk_end), Some(chunk_size as u32)).await {
+                                Ok(klines) => {
+                                    if klines.is_empty() {
+                                        break;
+                                    }
+
+                                    let klines_count = klines.len();
+                                    total_filled += klines_count;
+
+                                    let latest_kline_time = klines.iter().map(|k| k.open_time).max().unwrap();
+
                                     let repo = repository.lock().await;
                                     match repo.store_klines_with_exchange(&exchange, &klines).await {
                                         Ok(_) => {
-                                            tracing::info!("Filled {} missing klines for {}/{}",
-                                                          klines.len(), exchange, symbol);
+                                            tracing::debug!("Filled {} klines for {}/{} (total: {})",
+                                                          klines_count, exchange, symbol, total_filled);
                                         }
                                         Err(e) => {
                                             tracing::error!("Failed to store klines for {}/{}: {}", exchange, symbol, e);
+                                            break;
                                         }
                                     }
+                                    drop(repo);
+
+                                    // Move to next interval
+                                    current_start = latest_kline_time + chrono::Duration::milliseconds(interval_ms);
+                                    if current_start >= chunk_end {
+                                        current_start = chunk_end;
+                                    }
+
+                                    if current_start >= now || klines_count < chunk_size {
+                                        break;
+                                    }
+
+                                    // Note: Rate limiting is handled automatically by the RateLimiter
+                                }
+                                Err(e) => {
+                                    tracing::error!("Failed to fetch missing klines for {}/{}: {}", exchange, symbol, e);
+                                    break;
                                 }
                             }
-                            Err(e) => {
-                                tracing::error!("Failed to fetch missing klines for {}/{}: {}", exchange, symbol, e);
-                            }
+                        }
+
+                        if total_filled > 0 {
+                            tracing::info!("Filled {} missing klines for {}/{}", total_filled, exchange, symbol);
                         }
                     }
                 }
@@ -636,6 +731,12 @@ async fn spawn_klines_task(
             let now = chrono::Utc::now();
 
             for symbol in &symbols {
+                // Check shutdown before processing each symbol
+                if shutdown.load(Ordering::Relaxed) {
+                    tracing::info!("Shutdown signal received during klines fetch");
+                    break;
+                }
+
                 let parsed_symbol = client.parse_symbol(symbol);
                 let repo = repository.lock().await;
                 let latest_kline = repo.get_latest_kline(&exchange, symbol, &klines_timeframe).await?;
@@ -682,8 +783,7 @@ async fn spawn_klines_task(
 
 /// Spawn liquidity depth report generation task
 async fn spawn_liquidity_report_task(
-    exchanges: Vec<String>,
-    symbols: Vec<String>,
+    exchange_symbols: HashMap<String, Vec<String>>,
     report_interval: u64,
     repository: Arc<Mutex<PostgresRepository>>,
     shutdown: Arc<AtomicBool>,
@@ -696,7 +796,7 @@ async fn spawn_liquidity_report_task(
 
         // Create REST API clients for each exchange
         let mut clients: HashMap<String, Box<dyn perps_core::IPerps + Send + Sync>> = HashMap::new();
-        for exchange in &exchanges {
+        for exchange in exchange_symbols.keys() {
             match factory::get_exchange(exchange) {
                 Ok(client) => {
                     clients.insert(exchange.clone(), client);
@@ -724,10 +824,15 @@ async fn spawn_liquidity_report_task(
                 }
             }
 
-            tracing::info!("Generating liquidity depth report for {} symbols across {} exchanges",
-                          symbols.len(), exchanges.len());
+            tracing::info!("Generating liquidity depth report for {} exchanges", exchange_symbols.len());
 
-            for exchange in &exchanges {
+            for (exchange, symbols) in &exchange_symbols {
+                // Check shutdown before processing each exchange
+                if shutdown.load(Ordering::Relaxed) {
+                    tracing::info!("Shutdown signal received during liquidity report generation");
+                    break;
+                }
+
                 // Get REST client for this exchange
                 let client = match clients.get(exchange) {
                     Some(c) => c,
@@ -737,7 +842,13 @@ async fn spawn_liquidity_report_task(
                     }
                 };
 
-                for symbol in &symbols {
+                for symbol in symbols {
+                    // Check shutdown before processing each symbol
+                    if shutdown.load(Ordering::Relaxed) {
+                        tracing::info!("Shutdown signal received during liquidity report generation");
+                        break;
+                    }
+
                     // Parse symbol to exchange-specific format
                     let parsed_symbol = client.parse_symbol(symbol);
 
@@ -800,8 +911,7 @@ async fn spawn_liquidity_report_task(
 
 /// Spawn ticker report generation task
 async fn spawn_ticker_report_task(
-    exchanges: Vec<String>,
-    symbols: Vec<String>,
+    exchange_symbols: HashMap<String, Vec<String>>,
     report_interval: u64,
     repository: Arc<Mutex<PostgresRepository>>,
     shutdown: Arc<AtomicBool>,
@@ -813,7 +923,7 @@ async fn spawn_ticker_report_task(
 
         // Create REST API clients for each exchange
         let mut clients: HashMap<String, Box<dyn perps_core::IPerps + Send + Sync>> = HashMap::new();
-        for exchange in &exchanges {
+        for exchange in exchange_symbols.keys() {
             match factory::get_exchange(exchange) {
                 Ok(client) => {
                     clients.insert(exchange.clone(), client);
@@ -841,12 +951,18 @@ async fn spawn_ticker_report_task(
                 }
             }
 
-            tracing::info!("Generating ticker report for {} symbols across {} exchanges",
-                          symbols.len(), exchanges.len());
+            tracing::info!("Generating ticker report for {} exchanges", exchange_symbols.len());
 
-            let mut ticker_batch: Vec<Ticker> = Vec::new();
+            // Group tickers by exchange for storage
+            let mut tickers_by_exchange: HashMap<String, Vec<Ticker>> = HashMap::new();
 
-            for exchange in &exchanges {
+            for (exchange, symbols) in &exchange_symbols {
+                // Check shutdown before processing each exchange
+                if shutdown.load(Ordering::Relaxed) {
+                    tracing::info!("Shutdown signal received during ticker report generation");
+                    break;
+                }
+
                 // Get REST client for this exchange
                 let client = match clients.get(exchange) {
                     Some(c) => c,
@@ -856,7 +972,13 @@ async fn spawn_ticker_report_task(
                     }
                 };
 
-                for symbol in &symbols {
+                for symbol in symbols {
+                    // Check shutdown before processing each symbol
+                    if shutdown.load(Ordering::Relaxed) {
+                        tracing::info!("Shutdown signal received during ticker report generation");
+                        break;
+                    }
+
                     // Parse symbol to exchange-specific format
                     let parsed_symbol = client.parse_symbol(symbol);
 
@@ -864,7 +986,7 @@ async fn spawn_ticker_report_task(
                     match client.get_ticker(&parsed_symbol).await {
                         Ok(ticker) => {
                             if !ticker.is_empty() {
-                                ticker_batch.push(ticker);
+                                tickers_by_exchange.entry(exchange.clone()).or_insert_with(Vec::new).push(ticker);
                             } else {
                                 tracing::error!("Ticker {} empty for exchange {}", symbol, exchange);
                             }
@@ -877,15 +999,8 @@ async fn spawn_ticker_report_task(
             }
 
             // Store all tickers in batch
-            if !ticker_batch.is_empty() {
+            if !tickers_by_exchange.is_empty() {
                 let repo = repository.lock().await;
-
-                // Group tickers by exchange for storage
-                let mut tickers_by_exchange: HashMap<String, Vec<Ticker>> = HashMap::new();
-                for (i, ticker) in ticker_batch.iter().enumerate() {
-                    let exchange = &exchanges[i / symbols.len()];
-                    tickers_by_exchange.entry(exchange.clone()).or_insert_with(Vec::new).push(ticker.clone());
-                }
 
                 // Store tickers for each exchange
                 for (exchange, tickers) in tickers_by_exchange {
@@ -989,8 +1104,7 @@ pub async fn execute(args: StartArgs) -> Result<()> {
 
     // Spawn liquidity depth report generation task (single task for all exchanges)
     let liquidity_report_task = spawn_liquidity_report_task(
-        exchanges.clone(),
-        symbols.clone(),
+        exchange_symbols.clone(),
         args.report_interval,
         repository.clone(),
         shutdown.clone(),
@@ -999,8 +1113,7 @@ pub async fn execute(args: StartArgs) -> Result<()> {
 
     // Spawn ticker report generation task (single task for all exchanges)
     let ticker_report_task = spawn_ticker_report_task(
-        exchanges.clone(),
-        symbols.clone(),
+        exchange_symbols.clone(),
         args.report_interval,
         repository.clone(),
         shutdown.clone(),

@@ -4,10 +4,11 @@ use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, TimeZone, Utc};
 use perps_core::types::*;
-use perps_core::IPerps;
+use perps_core::{IPerps, RateLimiter, RetryConfig, execute_with_retry};
 use rust_decimal::Decimal;
 use serde_json::Value;
 use std::str::FromStr;
+use std::sync::Arc;
 
 const INFO_URL: &str = "https://api.hyperliquid.xyz/info";
 
@@ -17,6 +18,8 @@ pub struct HyperliquidClient {
     http: reqwest::Client,
     /// Cached set of supported symbols
     symbols_cache: SymbolsCache,
+    /// Rate limiter for API calls
+    rate_limiter: Arc<RateLimiter>,
 }
 
 impl HyperliquidClient {
@@ -24,6 +27,7 @@ impl HyperliquidClient {
         Self {
             http: reqwest::Client::new(),
             symbols_cache: SymbolsCache::new(),
+            rate_limiter: Arc::new(RateLimiter::hyperliquid()),
         }
     }
 
@@ -38,14 +42,31 @@ impl HyperliquidClient {
     }
 
     async fn post<T: serde::de::DeserializeOwned>(&self, body: Value) -> Result<T> {
-        let response = self.http.post(INFO_URL).json(&body).send().await?;
-        if !response.status().is_success() {
-            let status = response.status();
-            let text = response.text().await.unwrap_or_else(|_| "Failed to read error body".to_string());
-            return Err(anyhow!("info request failed with status: {}. Body: {}", status, text));
-        }
-        let data = response.json().await?;
-        Ok(data)
+        let config = RetryConfig::default();
+        let http = self.http.clone();
+        let rate_limiter = self.rate_limiter.clone();
+
+        execute_with_retry(&config, || {
+            let http = http.clone();
+            let body = body.clone();
+            let rate_limiter = rate_limiter.clone();
+            async move {
+                rate_limiter.execute(|| {
+                    let http = http.clone();
+                    let body = body.clone();
+                    async move {
+                        let response = http.post(INFO_URL).json(&body).send().await?;
+                        if !response.status().is_success() {
+                            let status = response.status();
+                            let text = response.text().await.unwrap_or_else(|_| "Failed to read error body".to_string());
+                            return Err(anyhow!("info request failed with status: {}. Body: {}", status, text));
+                        }
+                        let data = response.json().await?;
+                        Ok(data)
+                    }
+                }).await
+            }
+        }).await
     }
 
     /// Helper method to fetch combined meta and asset contexts

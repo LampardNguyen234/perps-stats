@@ -22,5 +22,12 @@ anyhow = "1.0"
 # Async streams
 futures = "0.3"
 
+# Async runtime for rate limiter
+tokio = { version = "1.0", features = ["sync", "time"] }
+
+# Logging
+tracing = "0.1"
+
 [dev-dependencies]
 rust_decimal_macros = "1.37"
+tokio = { version = "1.0", features = ["macros", "rt"] }
