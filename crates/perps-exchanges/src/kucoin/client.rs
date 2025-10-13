@@ -224,15 +224,91 @@ impl IPerps for KucoinClient {
 
     async fn get_klines(
         &self,
-        _symbol: &str,
-        _interval: &str,
-        _start_time: Option<chrono::DateTime<chrono::Utc>>,
-        _end_time: Option<chrono::DateTime<chrono::Utc>>,
+        symbol: &str,
+        interval: &str,
+        start_time: Option<chrono::DateTime<chrono::Utc>>,
+        end_time: Option<chrono::DateTime<chrono::Utc>>,
         _limit: Option<u32>,
     ) -> Result<Vec<Kline>> {
-        // KuCoin doesn't provide a REST API endpoint for klines
-        // Use WebSocket streaming instead (via IPerpsStream trait and StreamDataType::Kline)
-        Err(anyhow!("get_klines is not available from KuCoin Futures REST API. Use WebSocket streaming instead."))
+        // Convert interval to granularity (minutes)
+        // KuCoin accepts: 15, 30, 60, 120, 240, 480, 720, 1440, 10080
+        let granularity = match interval {
+            "1m" => 1,
+            "5m" => 5,
+            "15m" => 15,
+            "30m" => 30,
+            "1h" => 60,
+            "2h" => 120,
+            "4h" => 240,
+            "8h" => 480,
+            "12h" => 720,
+            "1d" => 1440,
+            "1w" => 10080,
+            _ => return Err(anyhow!("Unsupported interval '{}' for KuCoin. Supported: 15m, 30m, 1h, 2h, 4h, 8h, 12h, 1d, 1w", interval)),
+        };
+
+        // Build query parameters
+        let mut params = vec![
+            ("symbol", symbol.to_string()),
+            ("granularity", granularity.to_string()),
+        ];
+
+        if let Some(start) = start_time {
+            params.push(("from", start.timestamp_millis().to_string()));
+        }
+        if let Some(end) = end_time {
+            params.push(("to", end.timestamp_millis().to_string()));
+        }
+
+        let query_string = params
+            .iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect::<Vec<_>>()
+            .join("&");
+
+        let endpoint = format!("/api/v1/kline/query?{}", query_string);
+
+        // KuCoin returns an array of arrays: [[timestamp, open, high, low, close, volume1, volume2], ...]
+        let klines: Vec<Vec<serde_json::Value>> = self.get(&endpoint).await?;
+
+        let klines = klines
+            .into_iter()
+            .filter_map(|k| {
+                if k.len() < 7 {
+                    tracing::warn!("Invalid kline data format for KuCoin: expected 7 fields, got {}", k.len());
+                    return None;
+                }
+
+                // Parse each field with error handling
+                // KuCoin returns: [timestamp(int), open(float), high(float), low(float), close(float), volume(int), quote_volume(float)]
+                let timestamp = k[0].as_i64()?;
+                let open = k[1].as_f64().and_then(Decimal::from_f64)?;
+                let high = k[2].as_f64().and_then(Decimal::from_f64)?;
+                let low = k[3].as_f64().and_then(Decimal::from_f64)?;
+                let close = k[4].as_f64().and_then(Decimal::from_f64)?;
+                let volume = k[5].as_i64().and_then(Decimal::from_i64)?;
+                let quote_volume = k[6].as_f64().and_then(Decimal::from_f64)?;
+
+                let open_time = Utc.timestamp_millis_opt(timestamp).single()?;
+                // Calculate close_time based on interval
+                let close_time = open_time + chrono::Duration::minutes(granularity as i64);
+
+                Some(Kline {
+                    symbol: symbol.to_string(),
+                    interval: interval.to_string(),
+                    open_time,
+                    close_time,
+                    open,
+                    high,
+                    low,
+                    close,
+                    volume,
+                    turnover: quote_volume,
+                })
+            })
+            .collect();
+
+        Ok(klines)
     }
 
     async fn is_supported(&self, symbol: &str) -> Result<bool> {

@@ -139,3 +139,7 @@ pub struct KucoinContractDetail {
     #[serde(rename = "openInterest", default)]
     pub open_interest: Option<String>,
 }
+
+// For /api/v1/kline/query?symbol=...&granularity=...
+// Response is an array of arrays: [[timestamp, open, high, low, close, volume1, volume2], ...]
+pub type KucoinKline = Vec<serde_json::Value>;

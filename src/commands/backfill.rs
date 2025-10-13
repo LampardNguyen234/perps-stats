@@ -12,7 +12,7 @@ use tokio::time::sleep;
 
 #[derive(Args)]
 pub struct BackfillArgs {
-    /// Exchange to backfill from (supported: binance, hyperliquid, bybit, lighter, paradex)
+    /// Exchange to backfill from (supported: binance, hyperliquid, bybit, lighter, paradex, kucoin)
     #[arg(short, long)]
     pub exchange: String,
 
@@ -103,7 +103,7 @@ pub async fn execute(args: BackfillArgs) -> Result<()> {
     tracing::info!("Date range: {} to {}", args.start_date, args.end_date.as_ref().unwrap_or(&"today".to_string()));
 
     // Validate exchange
-    let supported_exchanges = vec!["binance", "hyperliquid", "bybit", "lighter", "paradex"];
+    let supported_exchanges = vec!["binance", "hyperliquid", "bybit", "lighter", "paradex", "kucoin"];
     if !supported_exchanges.contains(&args.exchange.as_str()) {
         anyhow::bail!("Unsupported exchange: {}. Supported: {:?}", args.exchange, supported_exchanges);
     }
@@ -119,11 +119,6 @@ pub async fn execute(args: BackfillArgs) -> Result<()> {
             // No special validation for trades and funding_rates
         }
         _ => anyhow::bail!("Unsupported data type: {}. Supported: klines, trades, funding_rates", args.data_type),
-    }
-
-    // Special handling for KuCoin
-    if args.exchange == "kucoin" {
-        anyhow::bail!("KuCoin does not provide REST API for historical klines. Use the 'start' command with WebSocket streaming instead.");
     }
 
     // Parse dates
@@ -284,7 +279,7 @@ async fn backfill_klines(
             let chunk_end_time = (current_time + chunk_duration).min(end_date);
 
             // Fetch klines for this chunk
-            tracing::debug!(
+            tracing::info!(
                 "Fetching klines for {} from {} to {} (limit: {})",
                 symbol,
                 current_time,
@@ -307,12 +302,15 @@ async fn backfill_klines(
 
                     if klines.is_empty() {
                         tracing::debug!("No klines returned for {} in range {} to {}", symbol, current_time, chunk_end_time);
-                        // Move to next chunk
+                        // No data returned, move to next chunk to avoid infinite loop
                         current_time = chunk_end_time;
                         continue;
                     }
 
-                    tracing::debug!("Fetched {} klines for {}", klines.len(), symbol);
+                    tracing::debug!("Fetched {} klines for {} (requested up to {})", klines.len(), symbol, chunk_size);
+
+                    // Get the latest timestamp from the fetched klines to advance current_time
+                    let latest_kline_time = klines.iter().map(|k| k.open_time).max().unwrap();
 
                     // Add to buffer
                     buffer.extend(klines);
@@ -339,8 +337,14 @@ async fn backfill_klines(
                         }
                     }
 
-                    // Move to next chunk
-                    current_time = chunk_end_time;
+                    // Move to the next interval after the latest fetched kline
+                    // This ensures we don't skip data or get stuck in an infinite loop
+                    current_time = latest_kline_time + Duration::milliseconds(interval_ms);
+
+                    // If we've reached or passed the chunk_end_time, move to end_date check
+                    if current_time >= chunk_end_time {
+                        current_time = chunk_end_time;
+                    }
 
                     // Rate limiting
                     if rate_limit_ms > 0 {
@@ -349,7 +353,7 @@ async fn backfill_klines(
                 }
                 Err(e) => {
                     tracing::error!("Failed to fetch klines for {} at {}: {}", symbol, current_time, e);
-                    // Continue to next chunk instead of failing completely
+                    // On error, skip to next chunk to avoid getting stuck
                     current_time = chunk_end_time;
                 }
             }

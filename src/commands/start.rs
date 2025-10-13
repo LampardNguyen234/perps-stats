@@ -119,6 +119,10 @@ async fn validate_symbols(exchange: &str, symbols: &[String]) -> Result<Vec<Stri
 /// NOTE: Ticker is excluded from all exchanges because the ticker report task
 /// fetches complete ticker data via REST API every 30 seconds. WebSocket tickers
 /// often have incomplete 24h statistics (zero values), so we rely solely on REST API.
+///
+/// WARNING: This function is currently unused in the `start` command since WebSocket streaming is disabled.
+/// It's kept for reference and potential future use.
+#[allow(dead_code)]
 fn get_supported_data_types(exchange: &str) -> Vec<perps_core::streaming::StreamDataType> {
     use perps_core::streaming::StreamDataType;
 
@@ -161,6 +165,10 @@ fn get_supported_data_types(exchange: &str) -> Vec<perps_core::streaming::Stream
 }
 
 /// Spawn WebSocket streaming task for a specific exchange
+///
+/// WARNING: This function is currently unused in the `start` command since WebSocket streaming is disabled.
+/// It's kept for reference and potential future use.
+#[allow(dead_code)]
 async fn spawn_streaming_task(
     exchange: String,
     symbols: Vec<String>,
@@ -637,8 +645,8 @@ async fn spawn_klines_task(
                 // Parse symbol to exchange-specific format
                 let parsed_symbol = client.parse_symbol(symbol);
 
-                // Lighter requires start_timestamp, so provide time range
-                let (start, end, limit) = if exchange == "lighter" {
+                // Lighter and KuCoin require start_timestamp, so provide time range
+                let (start, end, limit) = if exchange == "lighter" || exchange == "kucoin" {
                     (Some(start_time), Some(now), Some(500))
                 } else {
                     // Other exchanges can work without time range
@@ -1078,37 +1086,11 @@ pub async fn execute(args: StartArgs) -> Result<()> {
     // Spawn tasks
     let mut tasks = Vec::new();
 
-    // Spawn WebSocket streaming tasks (one per exchange)
-    // For KuCoin, pass klines_timeframe to enable WebSocket klines
+    // Note: WebSocket streaming is disabled. All data is fetched via REST API for better data quality.
+    // The ticker and liquidity reports provide complete data with all 24h statistics.
+
+    // Spawn klines fetching tasks (one per exchange)
     for (exchange, symbols) in &exchange_symbols {
-        let klines_timeframe_for_exchange = if exchange == "kucoin" {
-            Some(args.klines_timeframe.clone())
-        } else {
-            None
-        };
-
-        let task = spawn_streaming_task(
-            exchange.clone(),
-            symbols.clone(),
-            args.batch_size,
-            klines_timeframe_for_exchange,
-            repository.clone(),
-            shutdown.clone(),
-            args.max_reconnect_attempts,
-            args.reconnect_delay_seconds,
-            args.max_reconnect_delay_seconds,
-        ).await?;
-        tasks.push(task);
-    }
-
-    // Spawn klines fetching tasks (one per exchange, except KuCoin which uses WebSocket)
-    for (exchange, symbols) in &exchange_symbols {
-        // Skip KuCoin - it uses WebSocket for klines instead
-        if exchange == "kucoin" {
-            tracing::info!("Skipping REST API klines task for KuCoin (using WebSocket instead)");
-            continue;
-        }
-
         let task = spawn_klines_task(
             exchange.clone(),
             symbols.clone(),

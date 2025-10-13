@@ -189,8 +189,9 @@ impl IPerps for HyperliquidClient {
         let last_price = Decimal::from_str(&asset_ctx.mid_px.clone().unwrap_or_else(|| "0".to_string()))?;
         let prev_day_px = Decimal::from_str(&asset_ctx.prev_day_px)?;
         let price_change = last_price - prev_day_px;
+        // Store as decimal (e.g., 0.05 for 5%) to match other exchanges
         let price_change_percent = if prev_day_px > Decimal::ZERO {
-            (price_change / prev_day_px) * Decimal::from(100)
+            price_change / prev_day_px
         } else {
             Decimal::ZERO
         };
@@ -230,8 +231,9 @@ impl IPerps for HyperliquidClient {
                 )?;
                 let prev_day_px = Decimal::from_str(&asset_ctx.prev_day_px)?;
                 let price_change = last_price - prev_day_px;
+                // Store as decimal (e.g., 0.05 for 5%) to match other exchanges
                 let price_change_percent = if prev_day_px > Decimal::ZERO {
-                    (price_change / prev_day_px) * Decimal::from(100)
+                    price_change / prev_day_px
                 } else {
                     Decimal::ZERO
                 };
@@ -429,8 +431,9 @@ impl IPerps for HyperliquidClient {
                 )?;
                 let prev_day_px = Decimal::from_str(&asset_ctx.prev_day_px)?;
                 let price_change = last_price - prev_day_px;
+                // Store as decimal (e.g., 0.05 for 5%) to match other exchanges
                 let price_change_percent = if prev_day_px > Decimal::ZERO {
-                    (price_change / prev_day_px) * Decimal::from(100)
+                    price_change / prev_day_px
                 } else {
                     Decimal::ZERO
                 };
