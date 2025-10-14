@@ -210,12 +210,42 @@ impl IPerps for ExtendedClient {
         let last_price = Decimal::from_str(&stats.last_price).unwrap_or(Decimal::ZERO);
         let mark_price = Decimal::from_str(&stats.mark_price).unwrap_or(Decimal::ZERO);
         let index_price = Decimal::from_str(&stats.index_price).unwrap_or(Decimal::ZERO);
-        let bid_price = Decimal::from_str(&stats.bid_price).unwrap_or(Decimal::ZERO);
-        let ask_price = Decimal::from_str(&stats.ask_price).unwrap_or(Decimal::ZERO);
+        let mut bid_price = Decimal::from_str(&stats.bid_price).unwrap_or(Decimal::ZERO);
+        let mut ask_price = Decimal::from_str(&stats.ask_price).unwrap_or(Decimal::ZERO);
         let open_interest = Decimal::from_str(&stats.open_interest).unwrap_or(Decimal::ZERO);
         let price_change_pct =
             Decimal::from_str(&stats.daily_price_change_percentage).unwrap_or(Decimal::ZERO);
         let price_change_24h = Decimal::from_str(&stats.daily_price_change).unwrap_or(Decimal::ZERO);
+
+        // Fetch orderbook to get best bid/ask quantities
+        // Use minimal depth (1) to reduce API overhead
+        let (best_bid_qty, best_ask_qty) = match self.get_orderbook(symbol, 1).await {
+            Ok(orderbook) => {
+                bid_price = orderbook.bids.first().map(|level| level.price).unwrap_or(bid_price);
+
+                let bid_qty = orderbook
+                    .bids
+                    .first()
+                    .map(|level| level.quantity)
+                    .unwrap_or(Decimal::ZERO);
+
+                ask_price = orderbook.asks.first().map(|level| level.price).unwrap_or(ask_price);
+                let ask_qty = orderbook
+                    .asks
+                    .first()
+                    .map(|level| level.quantity)
+                    .unwrap_or(Decimal::ZERO);
+                (bid_qty, ask_qty)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to fetch orderbook for {} to get quantities: {}",
+                    symbol,
+                    e
+                );
+                (Decimal::ZERO, Decimal::ZERO)
+            }
+        };
 
         Ok(Ticker {
             symbol: symbol.to_string(),
@@ -223,9 +253,9 @@ impl IPerps for ExtendedClient {
             mark_price,
             index_price,
             best_bid_price: bid_price,
-            best_bid_qty: Decimal::ZERO, // Not provided by Extended API
+            best_bid_qty,
             best_ask_price: ask_price,
-            best_ask_qty: Decimal::ZERO, // Not provided by Extended API
+            best_ask_qty,
             volume_24h: Decimal::from_str(&stats.daily_volume_base).unwrap_or(Decimal::ZERO),
             turnover_24h: Decimal::from_str(&stats.daily_volume).unwrap_or(Decimal::ZERO),
             open_interest,
