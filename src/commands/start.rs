@@ -1046,7 +1046,7 @@ pub async fn execute(args: StartArgs) -> Result<()> {
 
     // Apply default klines timeframes if not provided
     let klines_timeframes = if args.klines_timeframes.is_empty() {
-        vec!["5m".to_string(), "15m".to_string(), "1h".to_string()]
+        vec!["1h".to_string()]
     } else {
         args.klines_timeframes.clone()
     };

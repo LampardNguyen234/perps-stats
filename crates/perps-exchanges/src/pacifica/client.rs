@@ -222,8 +222,8 @@ impl IPerps for PacificaClient {
             best_bid_qty,
             best_ask_price,
             best_ask_qty,
-            volume_24h,
-            turnover_24h: Decimal::ZERO, // Not provided by Pacifica
+            volume_24h: volume_24h/mark_price,
+            turnover_24h: volume_24h,
             open_interest,
             open_interest_notional: open_interest * mark_price,
             price_change_24h,
