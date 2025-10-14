@@ -240,6 +240,8 @@ fn write_to_csv(
             "Best Ask Notional",
             "Volume 24h",
             "Turnover 24h",
+            "Open Interest",
+            "Open Interest Notional",
             "Price Change 24h",
             "Price Change %",
             "High 24h",
@@ -267,6 +269,8 @@ fn write_to_csv(
                 ask_notional.to_string(),
                 ticker.volume_24h.to_string(),
                 ticker.turnover_24h.to_string(),
+                ticker.open_interest.to_string(),
+                ticker.open_interest_notional.to_string(),
                 ticker.price_change_24h.to_string(),
                 ticker.price_change_pct.to_string(),
                 ticker.high_price_24h.to_string(),
@@ -329,6 +333,8 @@ fn write_to_excel(
             "Best Ask Notional",
             "Volume 24h",
             "Turnover 24h",
+            "Open Interest",
+            "Open Interest Notional",
             "Price Change 24h",
             "Price Change %",
             "High 24h",
@@ -366,17 +372,19 @@ fn write_to_excel(
             worksheet.write_number(row, 11, ask_notional.to_string().parse::<f64>().unwrap_or(0.0))?;
             worksheet.write_number(row, 12, ticker.volume_24h.to_string().parse::<f64>().unwrap_or(0.0))?;
             worksheet.write_number(row, 13, ticker.turnover_24h.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 14, ticker.price_change_24h.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 15, ticker.price_change_pct.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 16, ticker.high_price_24h.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 17, ticker.low_price_24h.to_string().parse::<f64>().unwrap_or(0.0))?;
+            worksheet.write_number(row, 14, ticker.open_interest.to_string().parse::<f64>().unwrap_or(0.0))?;
+            worksheet.write_number(row, 15, ticker.open_interest_notional.to_string().parse::<f64>().unwrap_or(0.0))?;
+            worksheet.write_number(row, 16, ticker.price_change_24h.to_string().parse::<f64>().unwrap_or(0.0))?;
+            worksheet.write_number(row, 17, ticker.price_change_pct.to_string().parse::<f64>().unwrap_or(0.0))?;
+            worksheet.write_number(row, 18, ticker.high_price_24h.to_string().parse::<f64>().unwrap_or(0.0))?;
+            worksheet.write_number(row, 19, ticker.low_price_24h.to_string().parse::<f64>().unwrap_or(0.0))?;
         }
 
         // Auto-fit columns for better readability
         worksheet.set_column_width(0, 25)?; // Timestamp
         worksheet.set_column_width(1, 12)?; // Exchange
         worksheet.set_column_width(2, 15)?; // Symbol
-        for col in 3..18 {
+        for col in 3..20 {
             worksheet.set_column_width(col, 15)?; // Numeric columns
         }
     }
@@ -471,6 +479,14 @@ fn display_table(ticker: &Ticker, exchange: &str) -> Result<()> {
         Cell::new_align(&format!("${:.2}", ticker.turnover_24h), format::Alignment::RIGHT),
     ]));
     table.add_row(Row::new(vec![
+        Cell::new("  Open Interest"),
+        Cell::new_align(&ticker.open_interest.to_string(), format::Alignment::RIGHT),
+    ]));
+    table.add_row(Row::new(vec![
+        Cell::new("  OI Notional"),
+        Cell::new_align(&format!("${:.2}", ticker.open_interest_notional), format::Alignment::RIGHT),
+    ]));
+    table.add_row(Row::new(vec![
         Cell::new("  Change"),
         Cell::new_align(
             &format!("{:.2} ({:.2}%)", ticker.price_change_24h, ticker.price_change_pct * rust_decimal::Decimal::new(100, 0)),
@@ -521,6 +537,8 @@ fn display_json(ticker: &Ticker, exchange: &str) -> Result<()> {
         "statistics_24h": {
             "volume": ticker.volume_24h,
             "turnover": ticker.turnover_24h,
+            "open_interest": ticker.open_interest,
+            "open_interest_notional": ticker.open_interest_notional,
             "price_change": ticker.price_change_24h,
             "price_change_pct": ticker.price_change_pct,
             "high": ticker.high_price_24h,

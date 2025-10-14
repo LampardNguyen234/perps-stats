@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use perps_core::*;
-use rust_decimal::prelude::ToPrimitive;
+use rust_decimal::{Decimal, prelude::ToPrimitive};
 use sqlx::{types::chrono::{DateTime, Utc, NaiveDate}, PgPool, Row};
 
 /// Repository trait defines database operations for perps data.
@@ -355,11 +355,11 @@ impl Repository for PostgresRepository {
                 INSERT INTO tickers (
                     exchange_id, symbol, last_price, mark_price, index_price,
                     best_bid_price, best_bid_qty, best_ask_price, best_ask_qty,
-                    volume_24h, turnover_24h,
+                    volume_24h, turnover_24h, open_interest, open_interest_notional,
                     price_change_24h, price_change_pct,
                     high_24h, low_24h, ts
                 )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
                 ON CONFLICT DO NOTHING
                 "#
             )
@@ -374,6 +374,8 @@ impl Repository for PostgresRepository {
             .bind(ticker.best_ask_qty)
             .bind(ticker.volume_24h)
             .bind(ticker.turnover_24h)
+            .bind(ticker.open_interest)
+            .bind(ticker.open_interest_notional)
             .bind(ticker.price_change_24h)
             .bind(ticker.price_change_pct)
             .bind(ticker.high_price_24h)
@@ -487,42 +489,12 @@ impl Repository for PostgresRepository {
     }
 
     async fn store_open_interest(&self, _oi: &[OpenInterest]) -> anyhow::Result<()> {
-        tracing::warn!("store_open_interest not yet implemented - use store_open_interest_with_exchange instead");
+        tracing::warn!("store_open_interest is deprecated - open_interest is now stored with ticker data");
         Ok(())
     }
 
-    async fn store_open_interest_with_exchange(&self, exchange: &str, oi: &[OpenInterest]) -> anyhow::Result<()> {
-        if oi.is_empty() {
-            return Ok(());
-        }
-
-        let exchange_id = self.get_exchange_id(exchange).await?;
-        let mut tx = self.pool.begin().await?;
-
-        for interest in oi {
-            // Normalize symbol to global format
-            let normalized_symbol = extract_base_symbol(&interest.symbol);
-
-            sqlx::query(
-                r#"
-                INSERT INTO open_interest (
-                    exchange_id, symbol, open_interest, open_value, ts
-                )
-                VALUES ($1, $2, $3, $4, $5)
-                ON CONFLICT DO NOTHING
-                "#
-            )
-            .bind(exchange_id)
-            .bind(&normalized_symbol)
-            .bind(interest.open_interest)
-            .bind(interest.open_value)
-            .bind(interest.timestamp)
-            .execute(&mut *tx)
-            .await?;
-        }
-
-        tx.commit().await?;
-        tracing::info!("✓ Stored {} open interest records to database for exchange {}", oi.len(), exchange);
+    async fn store_open_interest_with_exchange(&self, _exchange: &str, _oi: &[OpenInterest]) -> anyhow::Result<()> {
+        tracing::warn!("store_open_interest_with_exchange is deprecated - open_interest is now stored with ticker data");
         Ok(())
     }
 
@@ -694,8 +666,9 @@ impl Repository for PostgresRepository {
             format!(
                 r#"
                 SELECT last_price, mark_price, index_price,
-                       best_bid, best_bid_qty, best_ask, best_ask_qty,
-                       volume_24h, turnover_24h, price_change_24h, price_change_pct,
+                       best_bid_price, best_bid_qty, best_ask_price, best_ask_qty,
+                       volume_24h, turnover_24h, open_interest, open_interest_notional,
+                       price_change_24h, price_change_pct,
                        high_24h, low_24h, ts
                 FROM tickers
                 WHERE exchange_id = $1 AND symbol = $2 AND ts >= $3 AND ts <= $4
@@ -707,8 +680,9 @@ impl Repository for PostgresRepository {
         } else {
             r#"
             SELECT last_price, mark_price, index_price,
-                   best_bid, best_bid_qty, best_ask, best_ask_qty,
-                   volume_24h, turnover_24h, price_change_24h, price_change_pct,
+                   best_bid_price, best_bid_qty, best_ask_price, best_ask_qty,
+                   volume_24h, turnover_24h, open_interest, open_interest_notional,
+                   price_change_24h, price_change_pct,
                    high_24h, low_24h, ts
             FROM tickers
             WHERE exchange_id = $1 AND symbol = $2 AND ts >= $3 AND ts <= $4
@@ -732,12 +706,14 @@ impl Repository for PostgresRepository {
                 last_price: row.get("last_price"),
                 mark_price: row.get("mark_price"),
                 index_price: row.get("index_price"),
-                best_bid_price: row.get("best_bid"),
+                best_bid_price: row.get("best_bid_price"),
                 best_bid_qty: row.try_get("best_bid_qty").unwrap_or(rust_decimal::Decimal::ZERO),
-                best_ask_price: row.get("best_ask"),
+                best_ask_price: row.get("best_ask_price"),
                 best_ask_qty: row.try_get("best_ask_qty").unwrap_or(rust_decimal::Decimal::ZERO),
                 volume_24h: row.get("volume_24h"),
                 turnover_24h: row.get("turnover_24h"),
+                open_interest: row.try_get("open_interest").unwrap_or(Decimal::ZERO),
+                open_interest_notional: row.try_get("open_interest_notional").unwrap_or(Decimal::ZERO),
                 price_change_24h: row.get("price_change_24h"),
                 price_change_pct: row.try_get("price_change_pct").unwrap_or(rust_decimal::Decimal::ZERO),
                 high_price_24h: row.get("high_24h"),
@@ -756,8 +732,9 @@ impl Repository for PostgresRepository {
         let row = sqlx::query(
             r#"
             SELECT last_price, mark_price, index_price,
-                   best_bid, best_bid_qty, best_ask, best_ask_qty,
-                   volume_24h, turnover_24h, price_change_24h, price_change_pct,
+                   best_bid_price, best_bid_qty, best_ask_price, best_ask_qty,
+                   volume_24h, turnover_24h, open_interest, open_interest_notional,
+                   price_change_24h, price_change_pct,
                    high_24h, low_24h, ts
             FROM tickers
             WHERE exchange_id = $1 AND symbol = $2
@@ -775,12 +752,14 @@ impl Repository for PostgresRepository {
             last_price: r.get("last_price"),
             mark_price: r.get("mark_price"),
             index_price: r.get("index_price"),
-            best_bid_price: r.get("best_bid"),
+            best_bid_price: r.get("best_bid_price"),
             best_bid_qty: r.try_get("best_bid_qty").unwrap_or(rust_decimal::Decimal::ZERO),
-            best_ask_price: r.get("best_ask"),
+            best_ask_price: r.get("best_ask_price"),
             best_ask_qty: r.try_get("best_ask_qty").unwrap_or(rust_decimal::Decimal::ZERO),
             volume_24h: r.get("volume_24h"),
             turnover_24h: r.get("turnover_24h"),
+            open_interest: r.try_get("open_interest").unwrap_or(Decimal::ZERO),
+            open_interest_notional: r.try_get("open_interest_notional").unwrap_or(Decimal::ZERO),
             price_change_24h: r.get("price_change_24h"),
             price_change_pct: r.try_get("price_change_pct").unwrap_or(rust_decimal::Decimal::ZERO),
             high_price_24h: r.get("high_24h"),
@@ -1214,81 +1193,19 @@ impl Repository for PostgresRepository {
 
     async fn get_open_interest(
         &self,
-        exchange: &str,
-        symbol: &str,
-        start: DateTime<Utc>,
-        end: DateTime<Utc>,
-        limit: Option<i64>,
+        _exchange: &str,
+        _symbol: &str,
+        _start: DateTime<Utc>,
+        _end: DateTime<Utc>,
+        _limit: Option<i64>,
     ) -> anyhow::Result<Vec<OpenInterest>> {
-        let exchange_id = self.get_exchange_id(exchange).await?;
-        let normalized_symbol = extract_base_symbol(symbol);
-
-        let query = if let Some(limit_val) = limit {
-            format!(
-                r#"
-                SELECT open_interest, open_value, ts
-                FROM open_interest
-                WHERE exchange_id = $1 AND symbol = $2 AND ts >= $3 AND ts <= $4
-                ORDER BY ts DESC
-                LIMIT {}
-                "#,
-                limit_val
-            )
-        } else {
-            r#"
-            SELECT open_interest, open_value, ts
-            FROM open_interest
-            WHERE exchange_id = $1 AND symbol = $2 AND ts >= $3 AND ts <= $4
-            ORDER BY ts DESC
-            "#
-            .to_string()
-        };
-
-        let rows = sqlx::query(&query)
-            .bind(exchange_id)
-            .bind(&normalized_symbol)
-            .bind(start)
-            .bind(end)
-            .fetch_all(&self.pool)
-            .await?;
-
-        let mut oi = Vec::new();
-        for row in rows {
-            oi.push(OpenInterest {
-                symbol: symbol.to_string(),
-                open_interest: row.get("open_interest"),
-                open_value: row.get("open_value"),
-                timestamp: row.get("ts"),
-            });
-        }
-
-        Ok(oi)
+        tracing::warn!("get_open_interest is deprecated - open_interest is now retrieved with ticker data");
+        Ok(Vec::new())
     }
 
-    async fn get_latest_open_interest(&self, exchange: &str, symbol: &str) -> anyhow::Result<Option<OpenInterest>> {
-        let exchange_id = self.get_exchange_id(exchange).await?;
-        let normalized_symbol = extract_base_symbol(symbol);
-
-        let row = sqlx::query(
-            r#"
-            SELECT open_interest, open_value, ts
-            FROM open_interest
-            WHERE exchange_id = $1 AND symbol = $2
-            ORDER BY ts DESC
-            LIMIT 1
-            "#
-        )
-        .bind(exchange_id)
-        .bind(&normalized_symbol)
-        .fetch_optional(&self.pool)
-        .await?;
-
-        Ok(row.map(|r| OpenInterest {
-            symbol: symbol.to_string(),
-            open_interest: r.get("open_interest"),
-            open_value: r.get("open_value"),
-            timestamp: r.get("ts"),
-        }))
+    async fn get_latest_open_interest(&self, _exchange: &str, _symbol: &str) -> anyhow::Result<Option<OpenInterest>> {
+        tracing::warn!("get_latest_open_interest is deprecated - open_interest is now retrieved with ticker data");
+        Ok(None)
     }
 
     async fn store_slippage_with_exchange(&self, exchange: &str, slippages: &[Slippage]) -> anyhow::Result<()> {

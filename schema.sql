@@ -47,7 +47,7 @@ INSERT INTO exchanges (name) VALUES
   ('lighter'),
   ('paradex'),
   ('hyperliquid'),
-  ('cryptocom')
+  ('aster')
 ON CONFLICT (name) DO NOTHING;
 
 -- Create markets table
@@ -88,6 +88,8 @@ CREATE TABLE IF NOT EXISTS tickers (
   best_ask_qty NUMERIC,
   volume_24h NUMERIC,
   turnover_24h NUMERIC,
+  open_interest NUMERIC,
+  open_interest_notional NUMERIC,
   price_change_24h NUMERIC,
   price_change_pct NUMERIC,
   high_24h NUMERIC,
@@ -148,17 +150,6 @@ CREATE TABLE IF NOT EXISTS liquidity_depth (
   ask_5bps NUMERIC NOT NULL,
   ask_10bps NUMERIC NOT NULL,
   ask_20bps NUMERIC NOT NULL,
-  ts TIMESTAMP WITH TIME ZONE NOT NULL
-);
-
--- Create open_interest table
--- This table stores open interest snapshots for perpetual futures contracts
-CREATE TABLE IF NOT EXISTS open_interest (
-  id BIGSERIAL PRIMARY KEY,
-  exchange_id INT NOT NULL REFERENCES exchanges(id),
-  symbol TEXT NOT NULL,
-  open_interest NUMERIC NOT NULL,
-  open_value NUMERIC NOT NULL,
   ts TIMESTAMP WITH TIME ZONE NOT NULL
 );
 
@@ -228,11 +219,6 @@ CREATE INDEX IF NOT EXISTS idx_funding_exchange_symbol ON funding_rates (exchang
 CREATE INDEX IF NOT EXISTS idx_liquidity_depth_symbol_ts ON liquidity_depth(symbol, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_liquidity_depth_exchange_ts ON liquidity_depth(exchange_id, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_liquidity_depth_exchange_symbol ON liquidity_depth(exchange_id, symbol);
-
--- Open interest indexes
-CREATE INDEX IF NOT EXISTS idx_open_interest_symbol_ts ON open_interest(symbol, ts DESC);
-CREATE INDEX IF NOT EXISTS idx_open_interest_exchange_ts ON open_interest(exchange_id, ts DESC);
-CREATE INDEX IF NOT EXISTS idx_open_interest_exchange_symbol ON open_interest(exchange_id, symbol);
 
 -- Klines indexes
 CREATE INDEX IF NOT EXISTS idx_klines_exchange_symbol ON klines(exchange_id, symbol);

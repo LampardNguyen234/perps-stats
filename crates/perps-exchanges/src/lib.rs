@@ -1,3 +1,4 @@
+pub mod aster;
 pub mod binance;
 pub mod bybit;
 pub mod cache;
@@ -7,6 +8,7 @@ pub mod kucoin;
 pub mod lighter;
 pub mod paradex;
 
+pub use aster::AsterClient;
 pub use binance::BinanceClient;
 pub use bybit::BybitClient;
 pub use cache::SymbolsCache;

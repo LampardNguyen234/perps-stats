@@ -11,7 +11,7 @@ use tokio::sync::Mutex;
 
 #[derive(Args)]
 pub struct StreamArgs {
-    /// Exchange to stream from (supported: binance, hyperliquid, bybit, kucoin, lighter, paradex)
+    /// Exchange to stream from (supported: aster, binance, hyperliquid, bybit, kucoin, lighter, paradex)
     #[arg(short, long, default_value = "binance")]
     pub exchange: String,
 
@@ -46,8 +46,8 @@ pub async fn execute(args: StreamArgs) -> Result<()> {
     tracing::info!("Data types: {:?}", args.data_types);
 
     // Validate exchange
-    if !matches!(args.exchange.as_str(), "binance" | "hyperliquid" | "bybit" | "kucoin" | "lighter" | "paradex") {
-        anyhow::bail!("Only 'binance', 'hyperliquid', 'bybit', 'kucoin', 'lighter', and 'paradex' exchanges are currently supported for streaming");
+    if !matches!(args.exchange.as_str(), "aster" | "binance" | "hyperliquid" | "bybit" | "kucoin" | "lighter" | "paradex") {
+        anyhow::bail!("Only 'aster', 'binance', 'hyperliquid', 'bybit', 'kucoin', 'lighter', and 'paradex' exchanges are currently supported for streaming");
     }
 
     // Parse data types
@@ -114,6 +114,18 @@ pub async fn execute(args: StreamArgs) -> Result<()> {
 
     // Convert symbols to exchange format based on the exchange
     let parsed_symbols: Vec<String> = match args.exchange.as_str() {
+        "aster" => {
+            // For Aster WebSocket, uses Binance-compatible format (BTCUSDT, no hyphens)
+            let aster_client = perps_exchanges::aster::AsterClient::new();
+            args.symbols
+                .iter()
+                .map(|s| {
+                    let normalized = aster_client.parse_symbol(s);
+                    // Convert BTC-USDT to BTCUSDT (remove hyphens for WebSocket)
+                    normalized.replace("-", "")
+                })
+                .collect()
+        }
         "binance" => {
             // For Binance WebSocket, we need BTCUSDT format (no hyphens)
             let binance_client = perps_exchanges::binance::BinanceClient::new();
@@ -181,6 +193,10 @@ pub async fn execute(args: StreamArgs) -> Result<()> {
     // Start streaming based on exchange
     tracing::info!("Connecting to WebSocket stream...");
     let mut stream: Box<dyn futures::Stream<Item = Result<StreamEvent>> + Unpin + Send> = match args.exchange.as_str() {
+        "aster" => {
+            let ws_client = perps_exchanges::aster::AsterWsClient::new();
+            Box::new(ws_client.stream_multi(config).await?)
+        }
         "binance" => {
             let ws_client = perps_exchanges::binance::BinanceWsClient::new();
             Box::new(ws_client.stream_multi(config).await?)

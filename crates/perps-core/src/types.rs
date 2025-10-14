@@ -34,6 +34,8 @@ pub struct Ticker {
     pub best_ask_qty: Decimal,
     pub volume_24h: Decimal,
     pub turnover_24h: Decimal,
+    pub open_interest: Decimal,
+    pub open_interest_notional: Decimal,
     pub price_change_24h: Decimal,
     pub price_change_pct: Decimal,
     pub high_price_24h: Decimal,

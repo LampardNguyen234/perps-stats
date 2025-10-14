@@ -111,6 +111,8 @@ impl KuCoinWsClient {
                 .unwrap_or(Decimal::ZERO),
             volume_24h: Decimal::ZERO, // Not available in ticker stream
             turnover_24h: Decimal::ZERO,
+            open_interest: Decimal::ZERO,
+            open_interest_notional: Decimal::ZERO,
             price_change_24h: Decimal::ZERO,
             price_change_pct: Decimal::ZERO,
             high_price_24h: Decimal::ZERO,

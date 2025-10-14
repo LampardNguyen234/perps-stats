@@ -137,7 +137,7 @@ pub struct KucoinContractDetail {
     #[serde(rename = "priceChg", default)]
     pub price_chg: Option<f64>,
     #[serde(rename = "openInterest", default)]
-    pub open_interest: Option<String>,
+    pub open_interest: String,
 }
 
 // For /api/v1/kline/query?symbol=...&granularity=...

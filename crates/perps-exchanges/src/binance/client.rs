@@ -194,6 +194,7 @@ impl BinanceClient {
         ticker: serde_json::Value,
         premium: serde_json::Value,
         book_ticker: serde_json::Value,
+        open_interest: Decimal,
     ) -> anyhow::Result<Ticker> {
         let symbol = ticker["symbol"]
             .as_str()
@@ -230,6 +231,8 @@ impl BinanceClient {
             best_ask_qty,
             volume_24h: volume,
             turnover_24h: quote_volume,
+            open_interest,
+            open_interest_notional: open_interest * mark_price,
             price_change_24h: price_change,
             price_change_pct: price_change_pct / Decimal::new(100, 0), // Convert percentage to decimal
             high_price_24h: high_price,
@@ -547,14 +550,18 @@ impl IPerps for BinanceClient {
         let book_ticker_endpoint = format!("/fapi/v1/ticker/bookTicker?symbol={}", binance_symbol);
         let book_ticker_data: serde_json::Value = self.get(&book_ticker_endpoint).await?;
 
-        self.convert_ticker(ticker_data, premium_data, book_ticker_data)
+        // Fetch open interest
+        let oi = self.get_open_interest(symbol).await?;
+
+        self.convert_ticker(ticker_data, premium_data, book_ticker_data, oi.open_interest)
     }
 
     async fn get_all_tickers(&self) -> anyhow::Result<Vec<Ticker>> {
-        // Fetch 24hr ticker data, premium index data, and book ticker data
+        // Fetch 24hr ticker data, premium index data, book ticker data, and open interest data
         let ticker_data: serde_json::Value = self.get("/fapi/v1/ticker/24hr").await?;
         let premium_data: serde_json::Value = self.get("/fapi/v1/premiumIndex").await?;
         let book_ticker_data: serde_json::Value = self.get("/fapi/v1/ticker/bookTicker").await?;
+        let open_interest_data: serde_json::Value = self.get("/fapi/v1/openInterest").await?;
 
         let tickers_array = ticker_data
             .as_array()
@@ -563,6 +570,9 @@ impl IPerps for BinanceClient {
             .as_array()
             .ok_or(BinanceError::InvalidResponse)?;
         let book_ticker_array = book_ticker_data
+            .as_array()
+            .ok_or(BinanceError::InvalidResponse)?;
+        let open_interest_array = open_interest_data
             .as_array()
             .ok_or(BinanceError::InvalidResponse)?;
 
@@ -581,12 +591,23 @@ impl IPerps for BinanceClient {
             }
         }
 
+        let mut open_interest_map = std::collections::HashMap::new();
+        for oi_item in open_interest_array {
+            if let Some(symbol) = oi_item["symbol"].as_str() {
+                if let Ok(oi) = str_to_decimal(oi_item["openInterest"].as_str().unwrap_or("0")) {
+                    open_interest_map.insert(symbol.to_string(), oi);
+                }
+            }
+        }
+
         let mut tickers = Vec::new();
         for ticker_item in tickers_array {
             if let Some(symbol) = ticker_item["symbol"].as_str() {
                 if let (Some(premium_item), Some(book_item)) =
                     (premium_map.get(symbol), book_ticker_map.get(symbol)) {
-                    match self.convert_ticker(ticker_item.clone(), premium_item.clone(), book_item.clone()) {
+                    // Get open interest or use zero if not available
+                    let oi = open_interest_map.get(symbol).copied().unwrap_or(Decimal::ZERO);
+                    match self.convert_ticker(ticker_item.clone(), premium_item.clone(), book_item.clone(), oi) {
                         Ok(ticker) => tickers.push(ticker),
                         Err(e) => warn!("Failed to convert ticker for {}: {}", symbol, e),
                     }

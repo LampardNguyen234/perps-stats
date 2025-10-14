@@ -11,15 +11,15 @@ use tokio::net::TcpStream;
 use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
 use url::Url;
 
-const WS_BASE_URL: &str = "wss://fstream.binance.com";
+const WS_BASE_URL: &str = "wss://fstream.asterdex.com";
 
-/// Binance WebSocket streaming client
+/// Aster WebSocket streaming client (Binance-compatible)
 #[derive(Clone)]
-pub struct BinanceWsClient {
+pub struct AsterWsClient {
     base_url: String,
 }
 
-impl BinanceWsClient {
+impl AsterWsClient {
     pub fn new() -> Self {
         Self {
             base_url: WS_BASE_URL.to_string(),
@@ -35,10 +35,10 @@ impl BinanceWsClient {
             .collect();
 
         let url = if streams.len() == 1 {
-            // Single stream: wss://fstream.binance.com/ws/btcusdt@ticker
+            // Single stream: wss://fstream.asterdex.com/ws/btcusdt@ticker
             format!("{}/ws/{}", self.base_url, streams[0])
         } else {
-            // Multiple streams: wss://fstream.binance.com/stream?streams=btcusdt@ticker/ethusdt@ticker
+            // Multiple streams: wss://fstream.asterdex.com/stream?streams=btcusdt@ticker/ethusdt@ticker
             format!("{}/stream?streams={}", self.base_url, streams.join("/"))
         };
 
@@ -47,9 +47,9 @@ impl BinanceWsClient {
 
     /// Connect to WebSocket and return the stream
     async fn connect(&self, url: Url) -> Result<WebSocketStream<MaybeTlsStream<TcpStream>>> {
-        tracing::info!("Connecting to Binance WebSocket: {}", url);
+        tracing::info!("Connecting to Aster WebSocket: {}", url);
         let (ws_stream, response) = connect_async(url.as_str()).await?;
-        tracing::info!("Connected to Binance WebSocket (status: {:?})", response.status());
+        tracing::info!("Connected to Aster WebSocket (status: {:?})", response.status());
         Ok(ws_stream)
     }
 
@@ -58,15 +58,13 @@ impl BinanceWsClient {
         url.path().contains("/stream")
     }
 
-    /// Convert Binance ticker to our Ticker type
-    /// Note: The 24hrTicker stream doesn't include best bid/ask. Use bookTicker stream for real-time BBO.
-    fn convert_ticker(&self, ws_ticker: &BinanceWsTicker) -> Result<Ticker> {
+    /// Convert Aster ticker to our Ticker type
+    fn convert_ticker(&self, ws_ticker: &AsterWsTicker) -> Result<Ticker> {
         Ok(Ticker {
             symbol: ws_ticker.symbol.clone(),
             last_price: Decimal::from_str(&ws_ticker.close_price)?,
             mark_price: Decimal::from_str(&ws_ticker.close_price)?, // 24hrTicker doesn't provide mark price
             index_price: Decimal::from_str(&ws_ticker.close_price)?, // Using last price as fallback
-            // 24hrTicker stream doesn't include bid/ask - use bookTicker stream for real-time BBO
             best_bid_price: Decimal::ZERO,
             best_bid_qty: Decimal::ZERO,
             best_ask_price: Decimal::ZERO,
@@ -83,8 +81,8 @@ impl BinanceWsClient {
         })
     }
 
-    /// Convert Binance trade to our Trade type
-    fn convert_trade(&self, ws_trade: &BinanceWsTrade) -> Result<Trade> {
+    /// Convert Aster trade to our Trade type
+    fn convert_trade(&self, ws_trade: &AsterWsTrade) -> Result<Trade> {
         Ok(Trade {
             id: ws_trade.aggregate_trade_id.to_string(),
             symbol: ws_trade.symbol.clone(),
@@ -99,8 +97,8 @@ impl BinanceWsClient {
         })
     }
 
-    /// Convert Binance depth update to our Orderbook type
-    fn convert_orderbook(&self, ws_depth: &BinanceWsDepthUpdate) -> Result<Orderbook> {
+    /// Convert Aster depth update to our Orderbook type
+    fn convert_orderbook(&self, ws_depth: &AsterWsDepthUpdate) -> Result<Orderbook> {
         let bids: Vec<OrderbookLevel> = ws_depth
             .bids
             .iter()
@@ -131,33 +129,31 @@ impl BinanceWsClient {
         })
     }
 
-    /// Convert Binance mark price update to our FundingRate type
-    fn convert_funding_rate(&self, ws_mark_price: &BinanceWsMarkPrice) -> Result<FundingRate> {
+    /// Convert Aster mark price update to our FundingRate type
+    fn convert_funding_rate(&self, ws_mark_price: &AsterWsMarkPrice) -> Result<FundingRate> {
         let next_funding = Utc.timestamp_millis_opt(ws_mark_price.next_funding_time).unwrap();
         Ok(FundingRate {
             symbol: ws_mark_price.symbol.clone(),
             funding_rate: Decimal::from_str(&ws_mark_price.funding_rate)?,
-            // Binance doesn't provide predicted funding rate in WebSocket stream
-            // Use current rate as predicted rate
             predicted_rate: Decimal::from_str(&ws_mark_price.funding_rate)?,
             funding_time: next_funding,
             next_funding_time: next_funding,
-            funding_interval: 8, // Binance perpetual futures have 8-hour funding intervals
-            funding_rate_cap_floor: Decimal::ZERO, // Not provided in WebSocket stream
+            funding_interval: 8, // 8-hour funding intervals
+            funding_rate_cap_floor: Decimal::ZERO,
         })
     }
 }
 
-impl Default for BinanceWsClient {
+impl Default for AsterWsClient {
     fn default() -> Self {
         Self::new()
     }
 }
 
 #[async_trait]
-impl IPerpsStream for BinanceWsClient {
+impl IPerpsStream for AsterWsClient {
     fn get_name(&self) -> &str {
-        "binance"
+        "aster"
     }
 
     async fn stream_tickers(&self, symbols: Vec<String>) -> Result<DataStream<Ticker>> {
@@ -170,11 +166,10 @@ impl IPerpsStream for BinanceWsClient {
             while let Some(msg) = ws_stream.next().await {
                 match msg {
                     Ok(Message::Text(text)) => {
-                        // Handle combined stream wrapper
                         let ticker_result = if is_combined {
-                            match serde_json::from_str::<BinanceWsCombinedStream>(&text) {
+                            match serde_json::from_str::<AsterWsCombinedStream>(&text) {
                                 Ok(combined) => {
-                                    serde_json::from_value::<BinanceWsTicker>(combined.data)
+                                    serde_json::from_value::<AsterWsTicker>(combined.data)
                                         .map_err(|e| anyhow!("Failed to parse ticker data: {}", e))
                                 }
                                 Err(e) => {
@@ -183,7 +178,7 @@ impl IPerpsStream for BinanceWsClient {
                                 }
                             }
                         } else {
-                            serde_json::from_str::<BinanceWsTicker>(&text)
+                            serde_json::from_str::<AsterWsTicker>(&text)
                                 .map_err(|e| anyhow!("Failed to parse ticker: {}", e))
                         };
 
@@ -200,7 +195,6 @@ impl IPerpsStream for BinanceWsClient {
                         }
                     }
                     Ok(Message::Ping(payload)) => {
-                        // Respond to ping with pong
                         if let Err(e) = ws_stream.send(Message::Pong(payload)).await {
                             tracing::error!("Failed to send pong: {}", e);
                             yield Err(anyhow!("Failed to send pong: {}", e));
@@ -208,7 +202,6 @@ impl IPerpsStream for BinanceWsClient {
                         }
                     }
                     Ok(Message::Pong(_)) => {
-                        // Received pong response
                         tracing::debug!("Received pong");
                     }
                     Ok(Message::Close(frame)) => {
@@ -240,9 +233,9 @@ impl IPerpsStream for BinanceWsClient {
                 match msg {
                     Ok(Message::Text(text)) => {
                         let trade_result = if is_combined {
-                            match serde_json::from_str::<BinanceWsCombinedStream>(&text) {
+                            match serde_json::from_str::<AsterWsCombinedStream>(&text) {
                                 Ok(combined) => {
-                                    serde_json::from_value::<BinanceWsTrade>(combined.data)
+                                    serde_json::from_value::<AsterWsTrade>(combined.data)
                                         .map_err(|e| anyhow!("Failed to parse trade data: {}", e))
                                 }
                                 Err(e) => {
@@ -251,7 +244,7 @@ impl IPerpsStream for BinanceWsClient {
                                 }
                             }
                         } else {
-                            serde_json::from_str::<BinanceWsTrade>(&text)
+                            serde_json::from_str::<AsterWsTrade>(&text)
                                 .map_err(|e| anyhow!("Failed to parse trade: {}", e))
                         };
 
@@ -306,9 +299,9 @@ impl IPerpsStream for BinanceWsClient {
                 match msg {
                     Ok(Message::Text(text)) => {
                         let depth_result = if is_combined {
-                            match serde_json::from_str::<BinanceWsCombinedStream>(&text) {
+                            match serde_json::from_str::<AsterWsCombinedStream>(&text) {
                                 Ok(combined) => {
-                                    serde_json::from_value::<BinanceWsDepthUpdate>(combined.data)
+                                    serde_json::from_value::<AsterWsDepthUpdate>(combined.data)
                                         .map_err(|e| anyhow!("Failed to parse depth data: {}", e))
                                 }
                                 Err(e) => {
@@ -317,7 +310,7 @@ impl IPerpsStream for BinanceWsClient {
                                 }
                             }
                         } else {
-                            serde_json::from_str::<BinanceWsDepthUpdate>(&text)
+                            serde_json::from_str::<AsterWsDepthUpdate>(&text)
                                 .map_err(|e| anyhow!("Failed to parse depth: {}", e))
                         };
 
@@ -369,8 +362,8 @@ impl IPerpsStream for BinanceWsClient {
                 StreamDataType::Ticker => "ticker",
                 StreamDataType::Trade => "aggTrade",
                 StreamDataType::Orderbook => "depth@100ms",
-                StreamDataType::FundingRate => "markPrice", // Mark price stream includes funding rate
-                StreamDataType::Kline => continue, // Klines not yet implemented for Binance WebSocket
+                StreamDataType::FundingRate => "markPrice",
+                StreamDataType::Kline => continue, // Klines not supported via WebSocket
             };
 
             for symbol in &config.symbols {
@@ -378,7 +371,6 @@ impl IPerpsStream for BinanceWsClient {
             }
         }
 
-        // Use correct URL format based on number of streams
         let url = if streams.len() == 1 {
             format!("{}/ws/{}", self.base_url, streams[0])
         } else {
@@ -395,9 +387,8 @@ impl IPerpsStream for BinanceWsClient {
                     Ok(Message::Text(text)) => {
                         tracing::debug!("Received text message: {}", &text[..text.len().min(200)]);
 
-                        // Parse combined stream wrapper if needed
                         let data_json = if is_combined {
-                            match serde_json::from_str::<BinanceWsCombinedStream>(&text) {
+                            match serde_json::from_str::<AsterWsCombinedStream>(&text) {
                                 Ok(combined) => combined.data,
                                 Err(e) => {
                                     tracing::debug!("Failed to parse combined stream: {}. Message: {}", e, &text[..text.len().min(300)]);
@@ -415,7 +406,7 @@ impl IPerpsStream for BinanceWsClient {
                         };
 
                         // Try to parse as different event types
-                        if let Ok(ws_ticker) = serde_json::from_value::<BinanceWsTicker>(data_json.clone()) {
+                        if let Ok(ws_ticker) = serde_json::from_value::<AsterWsTicker>(data_json.clone()) {
                             match client.convert_ticker(&ws_ticker) {
                                 Ok(ticker) => {
                                     yield Ok(StreamEvent::Ticker(ticker));
@@ -427,7 +418,7 @@ impl IPerpsStream for BinanceWsClient {
                             }
                         }
 
-                        if let Ok(ws_trade) = serde_json::from_value::<BinanceWsTrade>(data_json.clone()) {
+                        if let Ok(ws_trade) = serde_json::from_value::<AsterWsTrade>(data_json.clone()) {
                             match client.convert_trade(&ws_trade) {
                                 Ok(trade) => {
                                     yield Ok(StreamEvent::Trade(trade));
@@ -439,7 +430,7 @@ impl IPerpsStream for BinanceWsClient {
                             }
                         }
 
-                        if let Ok(ws_depth) = serde_json::from_value::<BinanceWsDepthUpdate>(data_json.clone()) {
+                        if let Ok(ws_depth) = serde_json::from_value::<AsterWsDepthUpdate>(data_json.clone()) {
                             match client.convert_orderbook(&ws_depth) {
                                 Ok(orderbook) => {
                                     yield Ok(StreamEvent::Orderbook(orderbook));
@@ -451,7 +442,7 @@ impl IPerpsStream for BinanceWsClient {
                             }
                         }
 
-                        if let Ok(ws_mark_price) = serde_json::from_value::<BinanceWsMarkPrice>(data_json) {
+                        if let Ok(ws_mark_price) = serde_json::from_value::<AsterWsMarkPrice>(data_json) {
                             match client.convert_funding_rate(&ws_mark_price) {
                                 Ok(funding_rate) => {
                                     yield Ok(StreamEvent::FundingRate(funding_rate));
@@ -501,5 +492,16 @@ impl IPerpsStream for BinanceWsClient {
         };
 
         Ok(Box::pin(stream))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_client_creation() {
+        let client = AsterWsClient::new();
+        assert_eq!(client.get_name(), "aster");
     }
 }

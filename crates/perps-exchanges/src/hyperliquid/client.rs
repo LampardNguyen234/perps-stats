@@ -220,10 +220,14 @@ impl IPerps for HyperliquidClient {
         // Fetch 24h high/low from 1-day candle
         let (high_price_24h, low_price_24h) = self.get_24h_high_low(symbol).await?;
 
+        let open_interest = Decimal::from_str(&asset_ctx.open_interest).unwrap_or(Decimal::ZERO);
+
+        let mark_price = Decimal::from_str(&asset_ctx.mark_px)?;
+
         Ok(Ticker {
             symbol: symbol.to_string(),
             last_price,
-            mark_price: Decimal::from_str(&asset_ctx.mark_px)?,
+            mark_price,
             index_price: Decimal::from_str(&asset_ctx.oracle_px)?,
             best_bid_price,
             best_bid_qty,
@@ -231,6 +235,8 @@ impl IPerps for HyperliquidClient {
             best_ask_qty,
             volume_24h: Decimal::from_str(&asset_ctx.day_base_vlm)?,
             turnover_24h: Decimal::from_str(&asset_ctx.day_ntl_vlm)?,
+            open_interest,
+            open_interest_notional: open_interest * mark_price,
             price_change_24h: price_change,
             price_change_pct: price_change_percent,
             high_price_24h,
@@ -270,6 +276,8 @@ impl IPerps for HyperliquidClient {
                     best_ask_qty: Decimal::ZERO,
                     volume_24h: Decimal::from_str(&asset_ctx.day_base_vlm)?,
                     turnover_24h: Decimal::from_str(&asset_ctx.day_ntl_vlm)?,
+                    open_interest: Decimal::ZERO,
+                    open_interest_notional: Decimal::ZERO,
                     price_change_24h: price_change,
                     price_change_pct: price_change_percent,
                     high_price_24h: Decimal::ZERO,

@@ -186,6 +186,16 @@ impl RateLimiter {
         ])
     }
 
+    /// Create preset rate limiter for Aster DEX
+    /// - 2400 request weight per minute (40 per second)
+    /// - 1200 orders per minute (safety margin)
+    pub fn aster() -> Self {
+        Self::new(vec![
+            RateLimit::per_second(40),
+            RateLimit::per_minute(2400),
+        ])
+    }
+
     /// Create a disabled rate limiter (no limits)
     /// Useful for testing or when rate limiting is not needed
     pub fn disabled() -> Self {

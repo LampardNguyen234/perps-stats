@@ -72,6 +72,8 @@ impl BybitWsClient {
             best_ask_qty: Decimal::from_str(&ws_ticker.ask1_size)?,
             volume_24h: Decimal::from_str(&ws_ticker.volume24h)?,
             turnover_24h: Decimal::from_str(&ws_ticker.turnover24h)?,
+            open_interest: Decimal::ZERO,
+            open_interest_notional: Decimal::ZERO,
             price_change_24h: price_change,
             price_change_pct: Decimal::from_str(&ws_ticker.price24h_pcnt)?,
             high_price_24h: Decimal::from_str(&ws_ticker.high_price24h)?,

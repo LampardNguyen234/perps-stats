@@ -365,6 +365,7 @@ impl IPerps for BybitClient {
         let price_change_pct = Decimal::from_str(&ticker.price_24h_pcnt)?;
         let high_price_24h = Decimal::from_str(&ticker.high_price_24h)?;
         let low_price_24h = Decimal::from_str(&ticker.low_price_24h)?;
+        let open_interest = Decimal::from_str(&ticker.open_interest)?;
 
         Ok(Ticker {
             symbol: ticker.symbol,
@@ -378,6 +379,8 @@ impl IPerps for BybitClient {
             timestamp: Utc::now(),
             volume_24h,
             turnover_24h,
+            open_interest,
+            open_interest_notional: open_interest * mark_price,
             price_change_24h,
             price_change_pct,
             high_price_24h,
@@ -419,6 +422,8 @@ impl IPerps for BybitClient {
                     timestamp: Utc::now(),
                     volume_24h,
                     turnover_24h,
+                    open_interest: Decimal::ZERO,
+                    open_interest_notional: Decimal::ZERO,
                     price_change_24h,
                     price_change_pct,
                     high_price_24h,

@@ -1,3 +1,4 @@
+use std::ops::Mul;
 use crate::cache::SymbolsCache;
 use crate::kucoin::types::*;
 use anyhow::{anyhow, Result};
@@ -419,6 +420,8 @@ impl IPerps for KucoinClient {
                 tracing::debug!("KuCoin {} low_price is None, using ZERO", symbol);
                 Decimal::ZERO
             });
+        let mut open_interest = Decimal::from_str(&contract.open_interest).unwrap_or(Decimal::ZERO);
+        open_interest = open_interest * Decimal::from_f64(contract.multiplier).unwrap_or(Decimal::ZERO);
 
         Ok(Ticker {
             symbol: contract.symbol,
@@ -432,6 +435,8 @@ impl IPerps for KucoinClient {
             timestamp: Utc.timestamp_nanos(ticker.timestamp),
             volume_24h,
             turnover_24h,
+            open_interest,
+            open_interest_notional: open_interest * mark_price,
             price_change_24h,
             price_change_pct,
             high_price_24h,
@@ -469,11 +474,7 @@ impl IPerps for KucoinClient {
             .find(|c| c.symbol == symbol)
             .ok_or_else(|| anyhow!("Contract {} not found", symbol))?;
 
-        let open_interest = contract
-            .open_interest
-            .as_ref()
-            .and_then(|oi| Decimal::from_str(oi).ok())
-            .unwrap_or(Decimal::ZERO);
+        let open_interest = Decimal::from_str(&contract.open_interest).unwrap_or(Decimal::ZERO);
 
         Ok(OpenInterest {
             symbol: symbol.to_string(),

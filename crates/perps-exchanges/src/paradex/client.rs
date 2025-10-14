@@ -269,6 +269,8 @@ impl IPerps for ParadexClient {
             Decimal::ZERO
         };
 
+        let open_interest = Decimal::from_str(&summary.open_interest).unwrap_or(Decimal::ZERO);
+
         Ok(Ticker {
             symbol: summary.symbol.clone(),
             last_price,
@@ -280,6 +282,8 @@ impl IPerps for ParadexClient {
             best_ask_qty: Decimal::from_str(&bbo.ask_size)?,
             volume_24h: Decimal::ZERO, // Paradex provides notional volume, not base volume
             turnover_24h,
+            open_interest,
+            open_interest_notional: open_interest * mark_price,
             price_change_24h,
             price_change_pct: price_change_rate,
             high_price_24h,

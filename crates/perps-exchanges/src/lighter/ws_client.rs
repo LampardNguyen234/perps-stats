@@ -107,6 +107,8 @@ impl LighterWsClient {
             best_ask_qty: Decimal::ZERO,
             volume_24h: Decimal::from_f64(stats.daily_volume).unwrap_or(Decimal::ZERO),
             turnover_24h: Decimal::from_f64(stats.daily_quote_volume).unwrap_or(Decimal::ZERO),
+            open_interest: Decimal::ZERO,
+            open_interest_notional: Decimal::ZERO,
             price_change_24h,
             price_change_pct,
             high_price_24h: Decimal::from_f64(stats.daily_price_high).unwrap_or(Decimal::ZERO),

@@ -52,6 +52,8 @@ pub fn to_ticker(detail: &OrderBookDetail) -> Result<Ticker> {
             .unwrap_or_else(|| Decimal::from(0)),
         turnover_24h: Decimal::from_f64(detail.daily_quote_token_volume)
             .unwrap_or_else(|| Decimal::from(0)),
+        open_interest: Decimal::ZERO,
+        open_interest_notional: Decimal::ZERO,
         price_change_24h,
         price_change_pct,
         high_price_24h: Decimal::from_f64(detail.daily_price_high)
@@ -92,6 +94,8 @@ pub fn to_ticker_with_orderbook(detail: &OrderBookDetail, orderbook: &Orderbook)
         (last_price * Decimal::new(10001, 4), Decimal::ZERO) // Fallback
     };
 
+    let open_interest = Decimal::from_f64(detail.open_interest).unwrap();
+
     Ok(Ticker {
         symbol: detail.symbol.clone(),
         last_price,
@@ -105,6 +109,8 @@ pub fn to_ticker_with_orderbook(detail: &OrderBookDetail, orderbook: &Orderbook)
             .unwrap_or_else(|| Decimal::from(0)),
         turnover_24h: Decimal::from_f64(detail.daily_quote_token_volume)
             .unwrap_or_else(|| Decimal::from(0)),
+        open_interest,
+        open_interest_notional: open_interest * last_price,
         price_change_24h,
         price_change_pct,
         high_price_24h: Decimal::from_f64(detail.daily_price_high)

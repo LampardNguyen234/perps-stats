@@ -76,6 +76,8 @@ pub fn calculate_ticker_from_klines(
         best_ask_qty,
         volume_24h: total_volume,
         turnover_24h: total_turnover,
+        open_interest: Decimal::ZERO,
+        open_interest_notional: Decimal::ZERO,
         price_change_24h: price_change,
         price_change_pct,
         high_price_24h: high,

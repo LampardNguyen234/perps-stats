@@ -84,6 +84,8 @@ impl ParadexWsClient {
             best_ask_qty: Decimal::ZERO,
             volume_24h: Decimal::ZERO, // Paradex provides notional volume
             turnover_24h: Decimal::from_str(&summary.volume_24h)?,
+            open_interest: Decimal::ZERO,
+            open_interest_notional: Decimal::ZERO,
             price_change_24h,
             price_change_pct: price_change_rate,
             high_price_24h,
