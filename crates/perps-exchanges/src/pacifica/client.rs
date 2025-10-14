@@ -293,7 +293,7 @@ impl IPerps for PacificaClient {
         let exchange_symbol = self.parse_symbol(symbol);
         // Pacifica uses agg_level parameter for orderbook depth
         let orderbook: PacificaOrderbookData = self
-            .get(&format!("/book?symbol={}&agg_level=5", exchange_symbol))
+            .get(&format!("/book?symbol={}&agg_level=20", exchange_symbol))
             .await?;
 
         // Parse nested orderbook structure

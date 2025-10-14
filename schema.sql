@@ -24,7 +24,8 @@ INSERT INTO exchanges (name) VALUES
                                  ('paradex'),
                                  ('hyperliquid'),
                                  ('aster'),
-                                 ('extended')
+                                 ('extended'),
+                                 ('pacifica')
 ON CONFLICT (name) DO NOTHING;
 
 -- Create markets table
