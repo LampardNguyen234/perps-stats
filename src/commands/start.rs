@@ -771,7 +771,7 @@ async fn spawn_klines_task(
                         }
                     }
                 }
-                tracing::info!("Symbol {}/{}: Completed periodic klines fetch cycle", exchange, symbol);
+                tracing::info!("Symbol {}/{}: Completed periodic klines fetch cycle with start_time {}", exchange, symbol, start_time.to_string());
             }
         }
 

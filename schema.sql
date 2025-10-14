@@ -1,29 +1,5 @@
--- ============================================
--- perps-stats Complete Database Schema
--- ============================================
--- Consolidated schema for fresh database setups
--- Generated on: 2025-10-13
---
--- USAGE:
---   This file is for FRESH DATABASE SETUP ONLY (drop/recreate scenario)
---   For production migrations, use: cargo run -- db migrate
---
--- To use this file:
---   1. Drop and recreate database:
---      dropdb perps_stats && createdb perps_stats
---   2. Load schema:
---      psql -U postgres -d perps_stats < schema.sql
---   3. Or use the provided script:
---      ./scripts/fresh_db_setup.sh
---
--- CHANGES:
---   - Removed partitioning from all time-series tables
---   - Simplified schema with regular tables
---   - Updated tickers table: added best_bid_qty, best_ask_qty, price_change_pct
---   - Renamed best_bid/best_ask to best_bid_price/best_ask_price
---   - Removed received_at column from all time-series tables
---
--- ============================================
+-- Initial schema migration
+-- Creates all base tables required for the perps-stats application
 
 -- ============================================
 -- 1. REFERENCE TABLES
@@ -31,9 +7,9 @@
 
 -- Create exchanges table
 CREATE TABLE IF NOT EXISTS exchanges (
-  id SERIAL PRIMARY KEY,
-  name TEXT NOT NULL UNIQUE,
-  created_at TIMESTAMP WITH TIME ZONE DEFAULT now()
+                                         id SERIAL PRIMARY KEY,
+                                         name TEXT NOT NULL UNIQUE,
+                                         created_at TIMESTAMP WITH TIME ZONE DEFAULT now()
 );
 
 -- Create index on exchange name
@@ -41,28 +17,28 @@ CREATE INDEX IF NOT EXISTS idx_exchanges_name ON exchanges(name);
 
 -- Seed known exchanges
 INSERT INTO exchanges (name) VALUES
-  ('binance'),
-  ('bybit'),
-  ('kucoin'),
-  ('lighter'),
-  ('paradex'),
-  ('hyperliquid'),
-  ('aster')
+                                 ('binance'),
+                                 ('bybit'),
+                                 ('kucoin'),
+                                 ('lighter'),
+                                 ('paradex'),
+                                 ('hyperliquid'),
+                                 ('aster')
 ON CONFLICT (name) DO NOTHING;
 
 -- Create markets table
 CREATE TABLE IF NOT EXISTS markets (
-  id BIGSERIAL PRIMARY KEY,
-  exchange_id INT NOT NULL REFERENCES exchanges(id) ON DELETE CASCADE,
-  symbol TEXT NOT NULL,
-  base_currency TEXT,
-  quote_currency TEXT,
-  contract_type TEXT,
-  tick_size NUMERIC,
-  lot_size NUMERIC,
-  metadata JSONB,
-  created_at TIMESTAMP WITH TIME ZONE DEFAULT now(),
-  UNIQUE (exchange_id, symbol)
+                                       id BIGSERIAL PRIMARY KEY,
+                                       exchange_id INT NOT NULL REFERENCES exchanges(id) ON DELETE CASCADE,
+                                       symbol TEXT NOT NULL,
+                                       base_currency TEXT,
+                                       quote_currency TEXT,
+                                       contract_type TEXT,
+                                       tick_size NUMERIC,
+                                       lot_size NUMERIC,
+                                       metadata JSONB,
+                                       created_at TIMESTAMP WITH TIME ZONE DEFAULT now(),
+                                       UNIQUE (exchange_id, symbol)
 );
 
 -- Create indexes on markets
@@ -76,100 +52,99 @@ CREATE INDEX IF NOT EXISTS idx_markets_exchange_symbol ON markets(exchange_id, s
 
 -- Create tickers table
 CREATE TABLE IF NOT EXISTS tickers (
-  id BIGSERIAL PRIMARY KEY,
-  exchange_id INT NOT NULL REFERENCES exchanges(id),
-  symbol TEXT NOT NULL,
-  last_price NUMERIC,
-  mark_price NUMERIC,
-  index_price NUMERIC,
-  best_bid_price NUMERIC,
-  best_bid_qty NUMERIC,
-  best_ask_price NUMERIC,
-  best_ask_qty NUMERIC,
-  volume_24h NUMERIC,
-  turnover_24h NUMERIC,
-  open_interest NUMERIC,
-  open_interest_notional NUMERIC,
-  price_change_24h NUMERIC,
-  price_change_pct NUMERIC,
-  high_24h NUMERIC,
-  low_24h NUMERIC,
-  ts TIMESTAMP WITH TIME ZONE NOT NULL
+                                       id BIGSERIAL PRIMARY KEY,
+                                       exchange_id INT NOT NULL REFERENCES exchanges(id),
+                                       symbol TEXT NOT NULL,
+                                       last_price NUMERIC,
+                                       mark_price NUMERIC,
+                                       index_price NUMERIC,
+                                       best_bid_price NUMERIC,
+                                       best_bid_qty NUMERIC,
+                                       best_ask_price NUMERIC,
+                                       best_ask_qty NUMERIC,
+                                       volume_24h NUMERIC,
+                                       turnover_24h NUMERIC,
+                                       open_interest NUMERIC,
+                                       open_interest_notional NUMERIC,
+                                       price_change_24h NUMERIC,
+                                       price_change_pct NUMERIC,
+                                       high_24h NUMERIC,
+                                       low_24h NUMERIC,
+                                       ts TIMESTAMP WITH TIME ZONE NOT NULL
 );
 
 -- Create orderbooks table (liquidity snapshots)
 CREATE TABLE IF NOT EXISTS orderbooks (
-  id BIGSERIAL PRIMARY KEY,
-  exchange_id INT NOT NULL REFERENCES exchanges(id),
-  symbol TEXT NOT NULL,
-  bids_notional NUMERIC,
-  asks_notional NUMERIC,
-  raw_book JSONB,
-  spread_bps INTEGER,
-  ts TIMESTAMP WITH TIME ZONE NOT NULL
+                                          id BIGSERIAL PRIMARY KEY,
+                                          exchange_id INT NOT NULL REFERENCES exchanges(id),
+                                          symbol TEXT NOT NULL,
+                                          bids_notional NUMERIC,
+                                          asks_notional NUMERIC,
+                                          raw_book JSONB,
+                                          spread_bps INTEGER,
+                                          ts TIMESTAMP WITH TIME ZONE NOT NULL
 );
 
 -- Create trades table
 CREATE TABLE IF NOT EXISTS trades (
-  id BIGSERIAL PRIMARY KEY,
-  exchange_id INT NOT NULL REFERENCES exchanges(id),
-  symbol TEXT NOT NULL,
-  trade_id TEXT,
-  price NUMERIC NOT NULL,
-  size NUMERIC NOT NULL,
-  side TEXT,
-  ts TIMESTAMP WITH TIME ZONE NOT NULL,
-  raw JSONB
+                                      id BIGSERIAL PRIMARY KEY,
+                                      exchange_id INT NOT NULL REFERENCES exchanges(id),
+                                      symbol TEXT NOT NULL,
+                                      trade_id TEXT,
+                                      price NUMERIC NOT NULL,
+                                      size NUMERIC NOT NULL,
+                                      side TEXT,
+                                      ts TIMESTAMP WITH TIME ZONE NOT NULL,
+                                      raw JSONB
 );
 
 -- Create funding_rates table
 CREATE TABLE IF NOT EXISTS funding_rates (
-  id BIGSERIAL PRIMARY KEY,
-  exchange_id INT NOT NULL REFERENCES exchanges(id),
-  symbol TEXT NOT NULL,
-  rate NUMERIC NOT NULL,
-  next_rate NUMERIC,
-  ts TIMESTAMP WITH TIME ZONE NOT NULL,
-  raw JSONB
+                                             id BIGSERIAL PRIMARY KEY,
+                                             exchange_id INT NOT NULL REFERENCES exchanges(id),
+                                             symbol TEXT NOT NULL,
+                                             rate NUMERIC NOT NULL,
+                                             next_rate NUMERIC,
+                                             ts TIMESTAMP WITH TIME ZONE NOT NULL,
+                                             raw JSONB
 );
 
 -- Create liquidity_depth table
--- This table stores calculated liquidity depth statistics at various basis point spreads
 CREATE TABLE IF NOT EXISTS liquidity_depth (
-  id BIGSERIAL PRIMARY KEY,
-  exchange_id INT NOT NULL REFERENCES exchanges(id),
-  symbol TEXT NOT NULL,
-  mid_price NUMERIC NOT NULL,
-  bid_1bps NUMERIC NOT NULL,
-  bid_2_5bps NUMERIC NOT NULL,
-  bid_5bps NUMERIC NOT NULL,
-  bid_10bps NUMERIC NOT NULL,
-  bid_20bps NUMERIC NOT NULL,
-  ask_1bps NUMERIC NOT NULL,
-  ask_2_5bps NUMERIC NOT NULL,
-  ask_5bps NUMERIC NOT NULL,
-  ask_10bps NUMERIC NOT NULL,
-  ask_20bps NUMERIC NOT NULL,
-  ts TIMESTAMP WITH TIME ZONE NOT NULL
+                                               id BIGSERIAL PRIMARY KEY,
+                                               exchange_id INT NOT NULL REFERENCES exchanges(id),
+                                               symbol TEXT NOT NULL,
+                                               mid_price NUMERIC NOT NULL,
+                                               bid_1bps NUMERIC NOT NULL,
+                                               bid_2_5bps NUMERIC NOT NULL,
+                                               bid_5bps NUMERIC NOT NULL,
+                                               bid_10bps NUMERIC NOT NULL,
+                                               bid_20bps NUMERIC NOT NULL,
+                                               ask_1bps NUMERIC NOT NULL,
+                                               ask_2_5bps NUMERIC NOT NULL,
+                                               ask_5bps NUMERIC NOT NULL,
+                                               ask_10bps NUMERIC NOT NULL,
+                                               ask_20bps NUMERIC NOT NULL,
+                                               ts TIMESTAMP WITH TIME ZONE NOT NULL
 );
 
 -- Create klines table (OHLCV candlestick data)
 CREATE TABLE IF NOT EXISTS klines (
-  id BIGSERIAL PRIMARY KEY,
-  exchange_id INT NOT NULL REFERENCES exchanges(id),
-  symbol TEXT NOT NULL,
-  interval TEXT NOT NULL,
-  open_time TIMESTAMP WITH TIME ZONE NOT NULL,
-  close_time TIMESTAMP WITH TIME ZONE NOT NULL,
-  open_price NUMERIC NOT NULL,
-  high_price NUMERIC NOT NULL,
-  low_price NUMERIC NOT NULL,
-  close_price NUMERIC NOT NULL,
-  volume NUMERIC NOT NULL,
-  quote_volume NUMERIC NOT NULL,
-  trade_count INT,
-  ts TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
-  UNIQUE (exchange_id, symbol, interval, open_time)
+                                      id BIGSERIAL PRIMARY KEY,
+                                      exchange_id INT NOT NULL REFERENCES exchanges(id),
+                                      symbol TEXT NOT NULL,
+                                      interval TEXT NOT NULL,
+                                      open_time TIMESTAMP WITH TIME ZONE NOT NULL,
+                                      close_time TIMESTAMP WITH TIME ZONE NOT NULL,
+                                      open_price NUMERIC NOT NULL,
+                                      high_price NUMERIC NOT NULL,
+                                      low_price NUMERIC NOT NULL,
+                                      close_price NUMERIC NOT NULL,
+                                      volume NUMERIC NOT NULL,
+                                      quote_volume NUMERIC NOT NULL,
+                                      trade_count INT,
+                                      ts TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
+                                      UNIQUE (exchange_id, symbol, interval, open_time)
 );
 
 -- ============================================
@@ -178,13 +153,13 @@ CREATE TABLE IF NOT EXISTS klines (
 
 -- Create ingest_events audit table
 CREATE TABLE IF NOT EXISTS ingest_events (
-  id BIGSERIAL PRIMARY KEY,
-  exchange_id INT,
-  symbol TEXT,
-  event_type TEXT,
-  status TEXT,
-  message TEXT,
-  ts TIMESTAMP WITH TIME ZONE DEFAULT now()
+                                             id BIGSERIAL PRIMARY KEY,
+                                             exchange_id INT,
+                                             symbol TEXT,
+                                             event_type TEXT,
+                                             status TEXT,
+                                             message TEXT,
+                                             ts TIMESTAMP WITH TIME ZONE DEFAULT now()
 );
 
 -- Create index on ingest_events for monitoring
@@ -271,10 +246,23 @@ CREATE INDEX IF NOT EXISTS idx_slippage_trade_amount
 -- Add comment
 COMMENT ON TABLE slippage IS 'Slippage calculations for fixed trade amounts (1K, 10K, 50K, 100K, 500K USD) across exchanges';
 
--- ============================================
--- 5. VERIFICATION QUERIES
--- ============================================
 
--- Uncomment to verify the schema was created correctly:
--- SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename;
--- SELECT * FROM exchanges;
+-- Create table to cache earliest kline discovery results
+-- This avoids re-discovering the same symbol/interval on subsequent backfill runs
+CREATE TABLE IF NOT EXISTS kline_discovery_cache (
+                                                     id SERIAL PRIMARY KEY,
+                                                     exchange_id INTEGER NOT NULL REFERENCES exchanges(id) ON DELETE CASCADE,
+                                                     symbol VARCHAR(20) NOT NULL, -- Global symbol format (e.g., BTC, ETH)
+                                                     interval VARCHAR(10) NOT NULL, -- Normalized interval (e.g., 1h, 5m, 1d)
+                                                     earliest_timestamp TIMESTAMPTZ NOT NULL, -- Discovered earliest kline timestamp
+                                                     discovered_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), -- When discovery was performed
+                                                     api_calls_used INTEGER NOT NULL DEFAULT 0, -- Number of API calls during discovery
+                                                     duration_ms INTEGER NOT NULL DEFAULT 0, -- Discovery duration in milliseconds
+                                                     UNIQUE(exchange_id, symbol, interval) -- One cache entry per symbol/interval/exchange
+);
+
+-- Index for efficient lookups
+CREATE INDEX idx_kline_discovery_cache_lookup ON kline_discovery_cache(exchange_id, symbol, interval);
+
+-- Index for cleanup queries (e.g., delete old cache entries)
+CREATE INDEX idx_kline_discovery_cache_discovered_at ON kline_discovery_cache(discovered_at);
