@@ -206,6 +206,17 @@ impl RateLimiter {
         ])
     }
 
+    /// Create preset rate limiter for Pacifica
+    /// - Conservative limits until actual limits are documented
+    /// - 20 requests per second
+    /// - 1200 requests per minute
+    pub fn pacifica() -> Self {
+        Self::new(vec![
+            RateLimit::per_second(20),
+            RateLimit::per_minute(1200),
+        ])
+    }
+
     /// Create a disabled rate limiter (no limits)
     /// Useful for testing or when rate limiting is not needed
     pub fn disabled() -> Self {

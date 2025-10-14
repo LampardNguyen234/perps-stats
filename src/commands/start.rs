@@ -1027,7 +1027,7 @@ pub async fn execute(args: StartArgs) -> Result<()> {
     tracing::info!("Starting unified data collection service");
 
     // Determine which exchanges to use
-    let supported_exchanges = vec!["aster", "binance", "extended", "hyperliquid", "bybit", "kucoin", "lighter", "paradex"];
+    let supported_exchanges = vec!["aster", "binance", "extended", "hyperliquid", "bybit", "kucoin", "lighter", "pacifica", "paradex"];
     let exchanges = match args.exchanges {
         Some(ref exs) if !exs.is_empty() => {
             // Validate provided exchanges
