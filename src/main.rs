@@ -43,14 +43,14 @@ async fn main() -> Result<()> {
         }
         Commands::Run {
             symbols_file,
-            exchange,
+            exchanges,
             interval,
             output_dir,
             max_snapshots,
         } => {
             commands::run::execute(commands::run::RunArgs {
                 symbols_file,
-                exchange,
+                exchanges,
                 interval,
                 output_dir,
                 max_snapshots,

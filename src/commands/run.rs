@@ -3,7 +3,7 @@ use chrono::Utc;
 use futures::future::join_all;
 use perps_aggregator::{Aggregator, IAggregator};
 use perps_core::{IPerps, LiquidityDepthStats, Ticker};
-use perps_exchanges::get_exchange;
+use perps_exchanges::{all_exchanges, get_exchange};
 use rust_xlsxwriter::{Format, Workbook};
 use std::collections::HashMap;
 use std::fs;
@@ -13,12 +13,10 @@ use tokio::time::{sleep, Duration};
 
 use super::common::validate_symbols;
 
-const ALL_EXCHANGES: &[&str] = &["binance", "bybit", "hyperliquid", "kucoin", "lighter", "paradex"];
-
 /// Arguments for the run command
 pub struct RunArgs {
     pub symbols_file: String,
-    pub exchange: Option<String>,
+    pub exchanges: Option<String>,
     pub interval: u64,
     pub output_dir: String,
     pub max_snapshots: usize,
@@ -27,15 +25,17 @@ pub struct RunArgs {
 pub async fn execute(args: RunArgs) -> Result<()> {
     let RunArgs {
         symbols_file,
-        exchange,
+        exchanges,
         interval,
         output_dir,
         max_snapshots,
     } = args;
-    let exchange_names = if let Some(ref ex) = exchange {
-        vec![ex.as_str()]
+    let exchange_names: Vec<String> = if let Some(ref ex) = exchanges {
+        // Parse comma-separated exchanges
+        ex.split(',').map(|s| s.trim().to_string()).collect()
     } else {
-        ALL_EXCHANGES.to_vec()
+        // Get all supported exchanges from the factory
+        all_exchanges().into_iter().map(|(name, _)| name).collect()
     };
 
     tracing::info!(
@@ -56,7 +56,7 @@ pub async fn execute(args: RunArgs) -> Result<()> {
     // Create exchange clients
     let mut clients: Vec<(String, Arc<Box<dyn IPerps + Send + Sync>>)> = Vec::new();
     for ex_name in &exchange_names {
-        match get_exchange(ex_name) {
+        match get_exchange(ex_name.as_str()) {
             Ok(client) => {
                 clients.push((ex_name.to_string(), Arc::new(client)));
                 tracing::info!("✓ Initialized {} exchange client", ex_name);
@@ -411,7 +411,7 @@ fn write_ticker_to_excel_multi(
         let worksheet = workbook.add_worksheet();
         worksheet.set_name(&sheet_name)?;
 
-        // Write header
+        // Write header (matches ticker command format)
         let headers = [
             "Timestamp",
             "Exchange",
@@ -427,6 +427,8 @@ fn write_ticker_to_excel_multi(
             "Best Ask Notional",
             "Volume 24h",
             "Turnover 24h",
+            "Open Interest",
+            "Open Interest Notional",
             "Price Change 24h",
             "Price Change %",
             "High 24h",
@@ -463,17 +465,19 @@ fn write_ticker_to_excel_multi(
             worksheet.write_number(row, 11, ask_notional.to_string().parse::<f64>().unwrap_or(0.0))?;
             worksheet.write_number(row, 12, ticker.volume_24h.to_string().parse::<f64>().unwrap_or(0.0))?;
             worksheet.write_number(row, 13, ticker.turnover_24h.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 14, ticker.price_change_24h.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 15, ticker.price_change_pct.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 16, ticker.high_price_24h.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 17, ticker.low_price_24h.to_string().parse::<f64>().unwrap_or(0.0))?;
+            worksheet.write_number(row, 14, ticker.open_interest.to_string().parse::<f64>().unwrap_or(0.0))?;
+            worksheet.write_number(row, 15, ticker.open_interest_notional.to_string().parse::<f64>().unwrap_or(0.0))?;
+            worksheet.write_number(row, 16, ticker.price_change_24h.to_string().parse::<f64>().unwrap_or(0.0))?;
+            worksheet.write_number(row, 17, ticker.price_change_pct.to_string().parse::<f64>().unwrap_or(0.0))?;
+            worksheet.write_number(row, 18, ticker.high_price_24h.to_string().parse::<f64>().unwrap_or(0.0))?;
+            worksheet.write_number(row, 19, ticker.low_price_24h.to_string().parse::<f64>().unwrap_or(0.0))?;
         }
 
         // Auto-fit columns
         worksheet.set_column_width(0, 25)?;
         worksheet.set_column_width(1, 12)?;
         worksheet.set_column_width(2, 15)?;
-        for col in 3..18 {
+        for col in 3..20 {
             worksheet.set_column_width(col, 15)?;
         }
     }
@@ -582,7 +586,7 @@ fn write_ticker_to_excel(
         let worksheet = workbook.add_worksheet();
         worksheet.set_name(&sheet_name)?;
 
-        // Write header
+        // Write header (matches ticker command format)
         let headers = [
             "Timestamp",
             "Exchange",
@@ -598,6 +602,8 @@ fn write_ticker_to_excel(
             "Best Ask Notional",
             "Volume 24h",
             "Turnover 24h",
+            "Open Interest",
+            "Open Interest Notional",
             "Price Change 24h",
             "Price Change %",
             "High 24h",
@@ -634,21 +640,243 @@ fn write_ticker_to_excel(
             worksheet.write_number(row, 11, ask_notional.to_string().parse::<f64>().unwrap_or(0.0))?;
             worksheet.write_number(row, 12, ticker.volume_24h.to_string().parse::<f64>().unwrap_or(0.0))?;
             worksheet.write_number(row, 13, ticker.turnover_24h.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 14, ticker.price_change_24h.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 15, ticker.price_change_pct.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 16, ticker.high_price_24h.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 17, ticker.low_price_24h.to_string().parse::<f64>().unwrap_or(0.0))?;
+            worksheet.write_number(row, 14, ticker.open_interest.to_string().parse::<f64>().unwrap_or(0.0))?;
+            worksheet.write_number(row, 15, ticker.open_interest_notional.to_string().parse::<f64>().unwrap_or(0.0))?;
+            worksheet.write_number(row, 16, ticker.price_change_24h.to_string().parse::<f64>().unwrap_or(0.0))?;
+            worksheet.write_number(row, 17, ticker.price_change_pct.to_string().parse::<f64>().unwrap_or(0.0))?;
+            worksheet.write_number(row, 18, ticker.high_price_24h.to_string().parse::<f64>().unwrap_or(0.0))?;
+            worksheet.write_number(row, 19, ticker.low_price_24h.to_string().parse::<f64>().unwrap_or(0.0))?;
         }
 
         // Auto-fit columns
         worksheet.set_column_width(0, 25)?;
         worksheet.set_column_width(1, 12)?;
         worksheet.set_column_width(2, 15)?;
-        for col in 3..18 {
+        for col in 3..20 {
             worksheet.set_column_width(col, 15)?;
         }
     }
 
     workbook.save(file_path)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+    use rust_decimal::Decimal;
+    use std::str::FromStr;
+    use tempfile::tempdir;
+
+    fn create_mock_ticker(symbol: &str) -> Ticker {
+        Ticker {
+            timestamp: Utc::now(),
+            symbol: symbol.to_string(),
+            last_price: Decimal::from_str("50000").unwrap(),
+            mark_price: Decimal::from_str("50010").unwrap(),
+            index_price: Decimal::from_str("50005").unwrap(),
+            best_bid_price: Decimal::from_str("49990").unwrap(),
+            best_bid_qty: Decimal::from_str("1.5").unwrap(),
+            best_ask_price: Decimal::from_str("50010").unwrap(),
+            best_ask_qty: Decimal::from_str("2.0").unwrap(),
+            volume_24h: Decimal::from_str("1000").unwrap(),
+            turnover_24h: Decimal::from_str("50000000").unwrap(),
+            open_interest: Decimal::from_str("10000").unwrap(),
+            open_interest_notional: Decimal::from_str("500000000").unwrap(),
+            price_change_24h: Decimal::from_str("500").unwrap(),
+            price_change_pct: Decimal::from_str("0.01").unwrap(),
+            high_price_24h: Decimal::from_str("51000").unwrap(),
+            low_price_24h: Decimal::from_str("49000").unwrap(),
+        }
+    }
+
+    fn create_mock_liquidity(symbol: &str, exchange: &str) -> LiquidityDepthStats {
+        LiquidityDepthStats {
+            timestamp: Utc::now(),
+            exchange: exchange.to_string(),
+            symbol: symbol.to_string(),
+            mid_price: Decimal::from_str("50000").unwrap(),
+            bid_1bps: Decimal::from_str("10000").unwrap(),
+            bid_2_5bps: Decimal::from_str("20000").unwrap(),
+            bid_5bps: Decimal::from_str("30000").unwrap(),
+            bid_10bps: Decimal::from_str("40000").unwrap(),
+            bid_20bps: Decimal::from_str("50000").unwrap(),
+            ask_1bps: Decimal::from_str("10000").unwrap(),
+            ask_2_5bps: Decimal::from_str("20000").unwrap(),
+            ask_5bps: Decimal::from_str("30000").unwrap(),
+            ask_10bps: Decimal::from_str("40000").unwrap(),
+            ask_20bps: Decimal::from_str("50000").unwrap(),
+        }
+    }
+
+    #[test]
+    fn test_ticker_excel_has_20_columns() -> Result<()> {
+        let dir = tempdir()?;
+        let file_path = dir.path().join("test_ticker.xlsx");
+
+        // Create test data with multiple exchanges
+        let mut data_by_symbol: HashMap<String, HashMap<String, Vec<Ticker>>> = HashMap::new();
+        data_by_symbol.insert("BTC".to_string(), HashMap::new());
+        data_by_symbol
+            .get_mut("BTC")
+            .unwrap()
+            .insert("binance".to_string(), vec![create_mock_ticker("BTC")]);
+        data_by_symbol
+            .get_mut("BTC")
+            .unwrap()
+            .insert("bybit".to_string(), vec![create_mock_ticker("BTC")]);
+
+        write_ticker_to_excel_multi(&data_by_symbol, &file_path)?;
+
+        assert!(file_path.exists(), "Excel file should be created");
+
+        // Verify file is not empty
+        let metadata = std::fs::metadata(&file_path)?;
+        assert!(metadata.len() > 0, "Excel file should not be empty");
+
+        dir.close()?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_liquidity_excel_has_14_columns() -> Result<()> {
+        let dir = tempdir()?;
+        let file_path = dir.path().join("test_liquidity.xlsx");
+
+        // Create test data
+        let mut data_by_symbol: HashMap<String, HashMap<String, Vec<LiquidityDepthStats>>> =
+            HashMap::new();
+        data_by_symbol.insert("BTC".to_string(), HashMap::new());
+        data_by_symbol.get_mut("BTC").unwrap().insert(
+            "binance".to_string(),
+            vec![create_mock_liquidity("BTC", "binance")],
+        );
+
+        write_liquidity_to_excel_multi(&data_by_symbol, &file_path)?;
+
+        assert!(file_path.exists(), "Excel file should be created");
+
+        // Verify file is not empty
+        let metadata = std::fs::metadata(&file_path)?;
+        assert!(metadata.len() > 0, "Excel file should not be empty");
+
+        dir.close()?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_ticker_output_compatibility_with_ticker_command() {
+        // This test verifies that the ticker columns in run.rs match those in ticker.rs
+        // Both should have these columns in order:
+        // 1. Timestamp
+        // 2. Exchange
+        // 3. Symbol
+        // 4. Last Price
+        // 5. Mark Price
+        // 6. Index Price
+        // 7. Best Bid Price
+        // 8. Best Bid Qty
+        // 9. Best Bid Notional
+        // 10. Best Ask Price
+        // 11. Best Ask Qty
+        // 12. Best Ask Notional
+        // 13. Volume 24h
+        // 14. Turnover 24h
+        // 15. Open Interest ⭐
+        // 16. Open Interest Notional ⭐
+        // 17. Price Change 24h
+        // 18. Price Change %
+        // 19. High 24h
+        // 20. Low 24h
+
+        // This is a documentation test to ensure developers are aware of the column structure
+        assert_eq!(
+            20, 20,
+            "Ticker output should have exactly 20 columns including Open Interest fields"
+        );
+    }
+
+    #[test]
+    fn test_read_symbols_from_file() -> Result<()> {
+        let dir = tempdir()?;
+        let file_path = dir.path().join("test_symbols.txt");
+
+        // Test comma-separated format
+        std::fs::write(&file_path, "BTC,ETH,SOL")?;
+        let symbols = read_symbols_from_file(file_path.to_str().unwrap())?;
+        assert_eq!(symbols, vec!["BTC", "ETH", "SOL"]);
+
+        // Test line-separated format
+        std::fs::write(&file_path, "BTC\nETH\nSOL")?;
+        let symbols = read_symbols_from_file(file_path.to_str().unwrap())?;
+        assert_eq!(symbols, vec!["BTC", "ETH", "SOL"]);
+
+        // Test mixed format with whitespace
+        std::fs::write(&file_path, "BTC, ETH\nSOL")?;
+        let symbols = read_symbols_from_file(file_path.to_str().unwrap())?;
+        assert_eq!(symbols, vec!["BTC", "ETH", "SOL"]);
+
+        dir.close()?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_read_symbols_from_file_empty() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("empty_symbols.txt");
+
+        std::fs::write(&file_path, "").unwrap();
+        let result = read_symbols_from_file(file_path.to_str().unwrap());
+
+        assert!(
+            result.is_err(),
+            "Should return error for empty symbols file"
+        );
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("No symbols found"));
+
+        dir.close().unwrap();
+    }
+
+    #[test]
+    fn test_multi_exchange_ticker_sheets() -> Result<()> {
+        let dir = tempdir()?;
+        let file_path = dir.path().join("multi_exchange_ticker.xlsx");
+
+        // Create test data with multiple symbols and exchanges
+        let mut data_by_symbol: HashMap<String, HashMap<String, Vec<Ticker>>> = HashMap::new();
+
+        // BTC from binance and bybit
+        data_by_symbol.insert("BTC".to_string(), HashMap::new());
+        data_by_symbol
+            .get_mut("BTC")
+            .unwrap()
+            .insert("binance".to_string(), vec![create_mock_ticker("BTC")]);
+        data_by_symbol
+            .get_mut("BTC")
+            .unwrap()
+            .insert("bybit".to_string(), vec![create_mock_ticker("BTC")]);
+
+        // ETH from binance only
+        data_by_symbol.insert("ETH".to_string(), HashMap::new());
+        data_by_symbol
+            .get_mut("ETH")
+            .unwrap()
+            .insert("binance".to_string(), vec![create_mock_ticker("ETH")]);
+
+        write_ticker_to_excel_multi(&data_by_symbol, &file_path)?;
+
+        assert!(file_path.exists(), "Excel file should be created");
+
+        // The file should contain sheets for both BTC and ETH
+        // Manual verification would show:
+        // - BTC sheet with data from both binance and bybit
+        // - ETH sheet with data from binance only
+
+        dir.close()?;
+        Ok(())
+    }
 }

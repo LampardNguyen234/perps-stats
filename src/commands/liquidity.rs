@@ -947,8 +947,9 @@ fn display_json_combined(data: &LiquidityData) -> Result<()> {
 mod tests {
     use super::*;
     use perps_core::LiquidityDepthStats;
-    use rust_decimal_macros::dec;
+    use rust_decimal::Decimal;
     use std::collections::HashMap;
+    use std::str::FromStr;
     use tempfile::tempdir;
 
     fn create_mock_stats(exchange: &str, symbol: &str) -> LiquidityDepthStats {
@@ -956,17 +957,17 @@ mod tests {
             timestamp: Utc::now(),
             exchange: exchange.to_string(),
             symbol: symbol.to_string(),
-            mid_price: dec!(50000),
-            bid_1bps: dec!(1000),
-            bid_2_5bps: dec!(2000),
-            bid_5bps: dec!(3000),
-            bid_10bps: dec!(4000),
-            bid_20bps: dec!(5000),
-            ask_1bps: dec!(1000),
-            ask_2_5bps: dec!(2000),
-            ask_5bps: dec!(3000),
-            ask_10bps: dec!(4000),
-            ask_20bps: dec!(5000),
+            mid_price: Decimal::from_str("50000").unwrap(),
+            bid_1bps: Decimal::from_str("1000").unwrap(),
+            bid_2_5bps: Decimal::from_str("2000").unwrap(),
+            bid_5bps: Decimal::from_str("3000").unwrap(),
+            bid_10bps: Decimal::from_str("4000").unwrap(),
+            bid_20bps: Decimal::from_str("5000").unwrap(),
+            ask_1bps: Decimal::from_str("1000").unwrap(),
+            ask_2_5bps: Decimal::from_str("2000").unwrap(),
+            ask_5bps: Decimal::from_str("3000").unwrap(),
+            ask_10bps: Decimal::from_str("4000").unwrap(),
+            ask_20bps: Decimal::from_str("5000").unwrap(),
         }
     }
 
@@ -984,9 +985,9 @@ mod tests {
                 create_mock_stats("lighter", "BTC-USDT"),
             ],
         );
-        write_to_csv(&multi_exchange_data, "ignored.csv", &output_dir)?;
-        
-        let expected_file = dir.path().join("BTC-USDT.csv");
+        write_to_csv_liquidity_only(&multi_exchange_data, "ignored.csv", &output_dir)?;
+
+        let expected_file = dir.path().join("BTC_USDT.csv");
         assert!(expected_file.exists());
 
         dir.close()?;
@@ -1008,8 +1009,8 @@ mod tests {
                 create_mock_stats("lighter", "BTC-USDT"),
             ],
         );
-        write_to_excel(&multi_exchange_data, filename, &output_dir)?;
-        
+        write_to_excel_liquidity_only(&multi_exchange_data, filename, &output_dir)?;
+
         let full_path = dir.path().join(filename);
         assert!(full_path.exists());
 

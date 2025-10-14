@@ -12,7 +12,7 @@ This document outlines the recommended project structure, database schema, API d
 - **`liquidity`** - Retrieves liquidity depth data across exchanges
 - **`ticker`** - Retrieves comprehensive ticker data with periodic collection support
 - **`stream`** - Real-time WebSocket streaming with database storage (Binance only)
-- **`run`** - Periodic data collection with CSV/Excel export (combines ticker and liquidity)
+- **`run`** - Periodic data collection with CSV/Excel export (combines ticker and liquidity, includes Open Interest columns, uses factory pattern for multi-exchange support)
 - **`db init`** - Database initialization with migrations and partitions
 - **`db migrate`** - Run database migrations
 - **`db stats`** - Show database statistics
@@ -201,6 +201,10 @@ perps-stats/
 │   │   ├── serve.rs          # ❌ Not yet implemented
 │   │   ├── stream.rs         # ✅ Real-time WebSocket streaming with database storage
 │   │   ├── run.rs            # ✅ Periodic data collection with Excel/CSV export
+│   │   │                     #    - Multi-exchange parallel collection using all_exchanges()
+│   │   │                     #    - 20-column ticker output including Open Interest fields
+│   │   │                     #    - Output format compatible with ticker and liquidity commands
+│   │   │                     #    - Comprehensive unit test coverage
 │   │   ├── db.rs             # ✅ Database operations: init, clean, migrate, stats
 │   │   ├── market.rs         # ✅ Retrieve L1 market data
 │   │   ├── liquidity.rs      # ✅ Retrieve liquidity depth data

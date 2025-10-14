@@ -37,9 +37,9 @@ pub enum Commands {
         #[arg(short, long, default_value = "symbols.txt")]
         symbols_file: String,
 
-        /// Exchange name (e.g., binance). If not specified, fetches from all supported exchanges in parallel.
+        /// Comma-separated exchange names (e.g., binance,bybit). If not specified, fetches from all supported exchanges in parallel.
         #[arg(short, long)]
-        exchange: Option<String>,
+        exchanges: Option<String>,
 
         /// Fetch interval in seconds
         #[arg(short, long, default_value = "300")]
