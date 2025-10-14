@@ -41,9 +41,9 @@ pub struct StartArgs {
     #[arg(long, default_value = "30")]
     pub report_interval: u64,
 
-    /// Klines interval/timeframe for fetching (e.g., 1m, 5m, 15m, 1h, 4h, 1d)
-    #[arg(long, default_value = "1h")]
-    pub klines_timeframe: String,
+    /// Klines intervals/timeframes for fetching (comma-separated, e.g., 5m,15m,1h). Defaults to 5m,15m,1h
+    #[arg(long, value_delimiter = ',')]
+    pub klines_timeframes: Vec<String>,
 
     /// Maximum number of reconnection attempts (0 = unlimited)
     #[arg(long, default_value = "0")]
@@ -603,8 +603,8 @@ async fn spawn_klines_task(
                         }
                     }
 
-                    tracing::info!("Initial backfill complete for {}/{}: {} klines fetched",
-                                  exchange, symbol, total_fetched);
+                    tracing::info!("Initial backfill complete for {}/{} ({}): {} klines fetched",
+                                  exchange, symbol, klines_timeframe, total_fetched);
                 }
                 Some(latest) => {
                     // Data exists - fetch from last kline until now to fill any gaps
@@ -705,7 +705,7 @@ async fn spawn_klines_task(
             }
         }
 
-        tracing::info!("Initial klines check/backfill complete for {} on {}", symbols.len(), exchange);
+        tracing::info!("Initial klines check/backfill complete for {} on {} ({})", symbols.len(), exchange, klines_timeframe);
 
         // Now start periodic fetching
         let mut ticker = interval(Duration::from_secs(klines_interval));
@@ -726,7 +726,7 @@ async fn spawn_klines_task(
                 }
             }
 
-            tracing::debug!("Fetching recent klines for exchange {} ({} symbols)", exchange, symbols.len());
+            tracing::debug!("Fetching recent klines for exchange {} ({}, {} symbols)", exchange, klines_timeframe, symbols.len());
 
             let now = chrono::Utc::now();
 
@@ -771,7 +771,7 @@ async fn spawn_klines_task(
                         }
                     }
                 }
-                tracing::info!("Symbol {}/{}: Completed periodic klines fetch cycle with start_time {}", exchange, symbol, start_time.to_string());
+                tracing::info!("Symbol {}/{} ({}): Completed periodic klines fetch cycle", exchange, symbol, klines_timeframe);
             }
         }
 
@@ -1027,7 +1027,7 @@ pub async fn execute(args: StartArgs) -> Result<()> {
     tracing::info!("Starting unified data collection service");
 
     // Determine which exchanges to use
-    let supported_exchanges = vec!["aster", "binance", "hyperliquid", "bybit", "kucoin", "lighter", "paradex"];
+    let supported_exchanges = vec!["aster", "binance", "extended", "hyperliquid", "bybit", "kucoin", "lighter", "paradex"];
     let exchanges = match args.exchanges {
         Some(ref exs) if !exs.is_empty() => {
             // Validate provided exchanges
@@ -1044,10 +1044,17 @@ pub async fn execute(args: StartArgs) -> Result<()> {
         }
     };
 
+    // Apply default klines timeframes if not provided
+    let klines_timeframes = if args.klines_timeframes.is_empty() {
+        vec!["5m".to_string(), "15m".to_string(), "1h".to_string()]
+    } else {
+        args.klines_timeframes.clone()
+    };
+
     tracing::info!("Exchanges: {:?}", exchanges);
     tracing::info!("Symbols file: {}", args.symbols_file);
     tracing::info!("Batch size: {}", args.batch_size);
-    tracing::info!("Klines interval: {}s (timeframe: {})", args.klines_interval, args.klines_timeframe);
+    tracing::info!("Klines interval: {}s (timeframes: {:?})", args.klines_interval, klines_timeframes);
     tracing::info!("Report interval: {}s", args.report_interval);
 
     // Load symbols from file
@@ -1088,17 +1095,20 @@ pub async fn execute(args: StartArgs) -> Result<()> {
     // Note: WebSocket streaming is disabled. All data is fetched via REST API for better data quality.
     // The ticker and liquidity reports provide complete data with all 24h statistics.
 
-    // Spawn klines fetching tasks (one per exchange)
+    // Spawn klines fetching tasks (one per exchange per timeframe)
     for (exchange, symbols) in &exchange_symbols {
-        let task = spawn_klines_task(
-            exchange.clone(),
-            symbols.clone(),
-            args.klines_interval,
-            args.klines_timeframe.clone(),
-            repository.clone(),
-            shutdown.clone(),
-        ).await?;
-        tasks.push(task);
+        for timeframe in &klines_timeframes {
+            tracing::info!("Spawning klines task for exchange: {} with timeframe: {}", exchange, timeframe);
+            let task = spawn_klines_task(
+                exchange.clone(),
+                symbols.clone(),
+                args.klines_interval,
+                timeframe.clone(),
+                repository.clone(),
+                shutdown.clone(),
+            ).await?;
+            tasks.push(task);
+        }
     }
 
     // Spawn liquidity depth report generation task (single task for all exchanges)

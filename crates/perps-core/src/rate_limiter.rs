@@ -196,6 +196,16 @@ impl RateLimiter {
         ])
     }
 
+    /// Create preset rate limiter for Extended Exchange
+    /// - 1000 requests per minute per IP (~16.67 per second)
+    /// - Using conservative 16 requests per second to stay under limit
+    pub fn extended() -> Self {
+        Self::new(vec![
+            RateLimit::per_second(16),
+            RateLimit::per_minute(1000),
+        ])
+    }
+
     /// Create a disabled rate limiter (no limits)
     /// Useful for testing or when rate limiting is not needed
     pub fn disabled() -> Self {

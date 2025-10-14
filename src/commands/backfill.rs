@@ -13,7 +13,7 @@ use tokio::time::sleep;
 
 #[derive(Args)]
 pub struct BackfillArgs {
-    /// Exchanges to backfill from (comma-separated). Defaults to all: aster,binance,hyperliquid,bybit,lighter,paradex,kucoin
+    /// Exchanges to backfill from (comma-separated). Defaults to all: aster,binance,extended,hyperliquid,bybit,lighter,paradex,kucoin
     #[arg(short, long, value_delimiter = ',')]
     pub exchanges: Vec<String>,
 
@@ -326,6 +326,7 @@ pub async fn execute(args: BackfillArgs) -> Result<()> {
         vec![
             "aster".to_string(),
             "binance".to_string(),
+            "extended".to_string(),
             "hyperliquid".to_string(),
             "bybit".to_string(),
             "lighter".to_string(),
@@ -348,7 +349,7 @@ pub async fn execute(args: BackfillArgs) -> Result<()> {
     tracing::info!("Symbols: {:?}", args.symbols);
 
     // Validate exchanges
-    let supported_exchanges = vec!["aster", "binance", "hyperliquid", "bybit", "lighter", "paradex", "kucoin"];
+    let supported_exchanges = vec!["aster", "binance", "extended", "hyperliquid", "bybit", "lighter", "paradex", "kucoin"];
     for exchange in &exchanges_to_process {
         if !supported_exchanges.contains(&exchange.as_str()) {
             anyhow::bail!("Unsupported exchange: {}. Supported: {:?}", exchange, supported_exchanges);

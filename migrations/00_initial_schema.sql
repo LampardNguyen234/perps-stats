@@ -19,11 +19,13 @@ CREATE INDEX IF NOT EXISTS idx_exchanges_name ON exchanges(name);
 INSERT INTO exchanges (name) VALUES
     ('binance'),
     ('bybit'),
+    ('extended'),
     ('kucoin'),
     ('lighter'),
     ('paradex'),
     ('hyperliquid'),
-    ('aster')
+    ('aster'),
+    ('extended')
 ON CONFLICT (name) DO NOTHING;
 
 -- Create markets table

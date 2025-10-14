@@ -270,7 +270,7 @@ async fn fetch_table_stats(pool: &PgPool) -> Result<serde_json::Value> {
         "funding_rates",
         "liquidity_depth",
         "klines",
-        "open_interest",
+        "slippage",
     ];
 
     for table in tables {

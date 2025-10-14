@@ -1,6 +1,7 @@
 use crate::aster::AsterClient;
 use crate::binance::BinanceClient;
 use crate::bybit::BybitClient;
+use crate::extended::ExtendedClient;
 use crate::hyperliquid::HyperliquidClient;
 use crate::kucoin::KucoinClient;
 use crate::lighter::LighterClient;
@@ -13,6 +14,7 @@ pub fn all_exchanges() -> Vec<(String, Box<dyn IPerps + Send + Sync>)> {
         ("aster".to_string(), Box::new(AsterClient::new())),
         ("binance".to_string(), Box::new(BinanceClient::new())),
         ("bybit".to_string(), Box::new(BybitClient::new())),
+        ("extended".to_string(), Box::new(ExtendedClient::new())),
         ("hyperliquid".to_string(), Box::new(HyperliquidClient::new())),
         ("kucoin".to_string(), Box::new(KucoinClient::new())),
         ("lighter".to_string(), Box::new(LighterClient::new())),
@@ -26,10 +28,11 @@ pub fn get_exchange(name: &str) -> anyhow::Result<Box<dyn IPerps + Send + Sync>>
         "aster" => Ok(Box::new(AsterClient::new())),
         "binance" => Ok(Box::new(BinanceClient::new())),
         "bybit" => Ok(Box::new(BybitClient::new())),
+        "extended" => Ok(Box::new(ExtendedClient::new())),
         "hyperliquid" => Ok(Box::new(HyperliquidClient::new())),
         "kucoin" => Ok(Box::new(KucoinClient::new())),
         "lighter" => Ok(Box::new(LighterClient::new())),
         "paradex" => Ok(Box::new(ParadexClient::new())),
-        _ => anyhow::bail!("Unsupported exchange: {}. Currently supported: aster, binance, bybit, hyperliquid, kucoin, lighter, paradex", name),
+        _ => anyhow::bail!("Unsupported exchange: {}. Currently supported: aster, binance, bybit, extended, hyperliquid, kucoin, lighter, paradex", name),
     }
 }
