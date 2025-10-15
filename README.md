@@ -4,12 +4,14 @@ A Rust-based backend service for retrieving and serving perpetual futures (perps
 
 ## Features
 
-- **Multi-Exchange Support**: Abstracted interface for connecting to multiple exchanges (KuCoin, Binance, Bybit, etc.)
-- **Historical Data Backfilling**: Fetch and store historical market data via REST APIs
-- **Real-Time Streaming**: WebSocket-based real-time data ingestion
-- **REST API**: Serve market data and calculated metrics
-- **Time-Series Database**: PostgreSQL with TimescaleDB for optimized time-series queries
-- **Market Analytics**: Calculate VWAP, slippage, market depth, and other metrics
+- **Multi-Exchange Support**: Aster, Binance, Bybit, Extended, Hyperliquid, KuCoin, Lighter, Pacifica, Paradex
+- **Historical Data Backfilling**: Intelligent backfill with auto-discovery and gap detection
+- **Real-Time Streaming**: WebSocket-based data ingestion for tickers, trades, orderbooks, funding rates
+- **Unified Data Collection**: Automated periodic fetching with the `start` command
+- **Time-Series Database**: PostgreSQL with optimized queries and caching
+- **Market Analytics**: Calculate spread, VWAP, slippage, liquidity depth, and funding rate statistics
+- **Data Export**: Export to CSV, Excel, JSON formats
+- **Grafana Integration**: Pre-built dashboards for visualization
 
 ## Architecture
 
@@ -54,57 +56,123 @@ cp .env.example .env
 cargo run -- db init
 ```
 
-### Usage
+### Quick Start
+
+#### 1. Initialize Database
+```bash
+DATABASE_URL=postgres://localhost/perps_stats cargo run -- db init
+```
+
+#### 2. Start Data Collection (Recommended)
+```bash
+# Create symbols file
+echo -e "BTC\nETH\nSOL" > symbols.txt
+
+# Start unified data collection service (all exchanges)
+DATABASE_URL=postgres://localhost/perps_stats cargo run -- start
+```
+
+This will:
+- Fetch klines for multiple timeframes (5m, 15m, 1h by default)
+- Calculate liquidity depth and slippage every 30 seconds
+- Fetch tickers with 24h statistics every 60 seconds
+- Run across all configured exchanges in parallel
+
+#### 3. View Data in Grafana
+```bash
+# Start Grafana (if installed locally)
+./scripts/start_grafana.sh
+
+# Access at http://localhost:3000 (admin/admin)
+```
+
+### Common Commands
 
 #### Backfill Historical Data
 ```bash
-cargo run -- backfill --exchange kucoin --symbols BTC,ETH --from 2024-01-01 --to 2024-12-31
+# Auto-discover and backfill all available data for BTC
+cargo run -- backfill -s BTC
+
+# Backfill specific date range
+cargo run -- backfill -s BTC,ETH --start-date 2024-01-01 --end-date 2024-12-31
+
+# Backfill specific exchanges
+cargo run -- backfill --exchanges binance,hyperliquid -s BTC
+
+# Custom intervals and data types
+cargo run -- backfill -s BTC --intervals 1h,4h,1d --data-types klines,funding_rates
 ```
 
 #### Stream Real-Time Data
 ```bash
-cargo run -- stream --exchange kucoin --symbols BTC,ETH --data trades,orderbook
+# Stream tickers and trades
+cargo run -- stream -s BTC --data-types ticker,trade
+
+# Stream with database storage
+DATABASE_URL=postgres://localhost/perps_stats cargo run -- stream -s BTC,ETH --data-types ticker,trade,orderbook
+
+# Stream from specific exchange
+cargo run -- stream --exchange binance -s BTC --data-types ticker,trade --max-duration 3600
 ```
 
-#### Start the API Server
+#### Periodic Excel Exports
 ```bash
-cargo run -- serve --port 8080
-```
+# Export ticker + liquidity data every 5 minutes
+cargo run -- run
 
-#### Run All Services
-```bash
-cargo run -- run --port 8080
+# Custom exchanges and interval
+cargo run -- run --exchanges binance,bybit --interval 30 --max-snapshots 10
 ```
 
 #### Retrieve Market Data
 ```bash
-# Get L1 market data for specific symbols (default: 24h timeframe)
-cargo run -- market --exchange binance --symbols BTC-USDT,ETH-USDT
+# Get ticker data for BTC across all exchanges
+cargo run -- ticker -s BTC
 
-# Use custom timeframe (5m, 15m, 30m, 1h, 4h, 24h)
-cargo run -- market --exchange binance --symbols BTC-USDT --timeframe 1h
+# Get liquidity depth
+cargo run -- liquidity -s BTC --exchange binance
 
-# Show detailed orderbook depth
-cargo run -- market --exchange binance --symbols BTC-USDT --detailed
-
-# Output as JSON
-cargo run -- market --exchange binance --symbols BTC-USDT --format json
+# Get detailed market data
+cargo run -- market -s BTC --exchange hyperliquid --detailed
 ```
 
 #### Database Operations
 ```bash
-# Initialize database schema
-cargo run -- db init
-
-# Run migrations
-cargo run -- db migrate
+# Initialize database schema and run migrations
+DATABASE_URL=postgres://localhost/perps_stats cargo run -- db init
 
 # Show database statistics
 cargo run -- db stats
 
-# Clean database (WARNING: deletes all data)
-cargo run -- db clean
+# Show statistics in JSON format
+cargo run -- db stats --format json
+
+# Clean old data (older than 30 days)
+cargo run -- db clean --older-than 30
+
+# WARNING: Delete all data
+cargo run -- db clean --truncate
 ```
+
+## Supported Exchanges
+
+| Exchange    | REST API | WebSocket | Symbol Format | Notes                     |
+|-------------|:--------:|:---------:|---------------|---------------------------|
+| Aster       |    ✓     |     -     | BTCUSDT       | Binance-compatible        |
+| Binance     |    ✓     |     -     | BTCUSDT       | Full support              |
+| Bybit       |    ✓     |     -     | BTCUSDT       | Full support              |
+| Extended    |    ✓     |     -     | BTC-USD       | Starknet L2 DEX           |
+| Hyperliquid |    ✓     |     -     | BTC           | POST-based API            |
+| KuCoin      |    ✓     |     -     | XBTUSDTM      | Full support              |
+| Lighter     |    ✓     |     -     | BTC           | Uses market_id internally |
+| Pacifica    |    ✓     |     -     | BTC           | StarkEx L2 DEX            |
+| Paradex     |    ✓     |     -     | BTC-USD-PERP  | Full support              |
+
+## Documentation
+
+- **[TUTORIALS.md](TUTORIALS.md)** - Comprehensive command tutorials
+- **[CLAUDE.md](CLAUDE.md)** - Developer guide and architecture details
+- **[docs/DOCKER_DEPLOYMENT.md](docs/DOCKER_DEPLOYMENT.md)** - Docker deployment guide
 
 ## Development
 
