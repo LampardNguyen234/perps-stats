@@ -66,7 +66,7 @@ DATABASE_URL=postgres://localhost/perps_stats cargo run -- db migrate
 #### 2. Start Data Collection (Recommended)
 ```bash
 # Create symbols file
-echo -e "BTC\nETH\nSOL" > symbols.txt
+echo -e "BTC,ETH,SOL" > symbols.txt
 
 # Start unified data collection service (all exchanges)
 DATABASE_URL=postgres://localhost/perps_stats cargo run -- start
