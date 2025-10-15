@@ -36,7 +36,7 @@ For detailed architecture information, see [docs/architecture.md](docs/architect
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/yourusername/perps-stats.git
+git clone https://github.com/LampardNguyen234/perps-stats.git
 cd perps-stats
 ```
 
@@ -73,34 +73,9 @@ DATABASE_URL=postgres://localhost/perps_stats cargo run -- start
 ```
 
 This will:
-- Fetch klines for multiple timeframes (5m, 15m, 1h by default)
 - Calculate liquidity depth and slippage every 30 seconds
 - Fetch tickers with 24h statistics every 60 seconds
 - Run across all configured exchanges in parallel
-
-#### 3. View Data in Grafana
-```bash
-# Start Grafana (if installed locally)
-./scripts/start_grafana.sh
-
-# Access at http://localhost:3000 (admin/admin)
-# Import pre-built dashboard: grafana/dashboards/exchange_spread_comparison.json
-```
-
-**Quick Dashboard Import:**
-
-Two dashboards available:
-
-1. **Exchange Spread Comparison** - Detailed tier analysis
-   - Upload: `grafana/dashboards/exchange_spread_comparison.json`
-   - Guide: [grafana/SPREAD_DASHBOARD_GUIDE.md](grafana/SPREAD_DASHBOARD_GUIDE.md)
-
-2. **Exchange Liquidity Monitor** - Trade Paradigm style
-   - Upload: `grafana/dashboards/liquidity_monitor.json`
-   - Guide: [grafana/LIQUIDITY_MONITOR_GUIDE.md](grafana/LIQUIDITY_MONITOR_GUIDE.md)
-   - Shows "% Time Exchange Offers Best Price"
-
-See [grafana/DASHBOARD_IMPORT_QUICKSTART.md](grafana/DASHBOARD_IMPORT_QUICKSTART.md) for detailed setup.
 
 ### Common Commands
 
@@ -190,25 +165,6 @@ cargo run -- db clean --truncate
 - **[TUTORIALS.md](TUTORIALS.md)** - Comprehensive command tutorials
 - **[CLAUDE.md](CLAUDE.md)** - Developer guide and architecture details
 - **[docs/DOCKER_DEPLOYMENT.md](docs/DOCKER_DEPLOYMENT.md)** - Docker deployment guide
-
-### Grafana Dashboards
-
-**Quick Start:**
-- **[grafana/DASHBOARD_IMPORT_QUICKSTART.md](grafana/DASHBOARD_IMPORT_QUICKSTART.md)** - 5-minute quick start guide
-
-**Dashboard Guides:**
-- **[grafana/SPREAD_DASHBOARD_GUIDE.md](grafana/SPREAD_DASHBOARD_GUIDE.md)** - Exchange spread comparison dashboard
-
-**Trade Paradigm Style (Complete Package):**
-- **[grafana/TRADE_PARADIGM_SUMMARY.md](grafana/TRADE_PARADIGM_SUMMARY.md)** - Overview & quick reference
-- **[grafana/TRADE_PARADIGM_IMPORT_GUIDE.md](grafana/TRADE_PARADIGM_IMPORT_GUIDE.md)** - Import & testing guide
-- **[grafana/TRADE_PARADIGM_GUIDE.md](grafana/TRADE_PARADIGM_GUIDE.md)** - Complete build guide (step-by-step)
-- **[grafana/TRADE_PARADIGM_QUERIES.sql](grafana/TRADE_PARADIGM_QUERIES.sql)** - SQL query reference (12+ patterns)
-
-**Advanced Features:**
-- **[grafana/ADVANCED_DASHBOARD_FEATURES.md](grafana/ADVANCED_DASHBOARD_FEATURES.md)** - Advanced customization & alerts
-- **[grafana/DASHBOARD_VARIABLES_GUIDE.md](grafana/DASHBOARD_VARIABLES_GUIDE.md)** - Variable configuration
-- **[grafana/TABLE_FORMATTING_QUICK_GUIDE.md](grafana/TABLE_FORMATTING_QUICK_GUIDE.md)** - Table styling tips
 
 ## Development
 
