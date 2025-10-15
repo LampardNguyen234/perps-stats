@@ -213,21 +213,21 @@ CREATE TABLE IF NOT EXISTS slippage (
     ts TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
     -- Mid price reference (average of best bid and best ask)
-    mid_price DECIMAL(20, 8) NOT NULL,
+    mid_price DECIMAL(20, 5) NOT NULL,
 
     -- Trade amount (USD notional)
-    trade_amount DECIMAL(20, 2) NOT NULL,
+    trade_amount DECIMAL(20, 4) NOT NULL,
 
     -- Buy slippage (executing on asks - price moves up)
     buy_avg_price DECIMAL(20, 8),
-    buy_slippage_bps DECIMAL(10, 2),
+    buy_slippage_bps DECIMAL(10, 4),
     buy_slippage_pct DECIMAL(10, 4),
     buy_total_cost DECIMAL(20, 2),
     buy_feasible BOOLEAN NOT NULL,
 
     -- Sell slippage (executing on bids - price moves down)
     sell_avg_price DECIMAL(20, 8),
-    sell_slippage_bps DECIMAL(10, 2),
+    sell_slippage_bps DECIMAL(10, 4),
     sell_slippage_pct DECIMAL(10, 4),
     sell_total_cost DECIMAL(20, 2),
     sell_feasible BOOLEAN NOT NULL,
