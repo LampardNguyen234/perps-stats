@@ -129,6 +129,9 @@ async fn main() -> Result<()> {
             })
             .await?;
         }
+        Commands::Export(args) => {
+            commands::export::execute(args).await?;
+        }
     }
 
     Ok(())

@@ -156,6 +156,9 @@ pub enum Commands {
         #[arg(long, env = "DATABASE_URL")]
         database_url: Option<String>,
     },
+
+    /// Export all database tables to CSV or Excel files
+    Export(crate::commands::export::ExportArgs),
 }
 
 #[derive(Subcommand)]
