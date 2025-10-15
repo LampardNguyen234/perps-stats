@@ -69,27 +69,27 @@ export DATABASE_URL="postgres://username:password@localhost:5432/perps?sslmode=r
 
 ```bash
 # Run migrations and create initial partitions (7 days ahead by default)
-cargo run -- db init
+cargo run -- db migrate
 
 # Create more partitions ahead (e.g., 30 days)
-cargo run -- db init --create-partitions-days 30
+cargo run -- db migrate --create-partitions-days 30
 ```
 
 ## Database Commands
 
-### `db init`
+### `db migrate`
 
 Initializes the database schema, runs all migrations, and creates daily partitions.
 
 ```bash
 # Basic initialization with 7 days of partitions
-cargo run -- db init
+cargo run -- db migrate
 
 # Create 30 days of partitions ahead
-cargo run -- db init --create-partitions-days 30
+cargo run -- db migrate --create-partitions-days 30
 
 # Use a specific database URL
-cargo run -- db init --database-url "postgres://user:pass@localhost/perps"
+cargo run -- db migrate --database-url "postgres://user:pass@localhost/perps"
 ```
 
 **What it does:**
@@ -194,8 +194,8 @@ Time-series tables (tickers, orderbooks, trades, funding_rates) use **daily part
 - Example: `tickers_2025_10_10`, `orderbooks_2025_10_11`
 
 **Partition Maintenance:**
-- Initial partitions are created during `db init`
-- Create future partitions: `cargo run -- db init --create-partitions-days 30`
+- Initial partitions are created during `db migrate`
+- Create future partitions: `cargo run -- db migrate --create-partitions-days 30`
 - Drop old partitions: `cargo run -- db clean --drop-partitions-older-than 180`
 
 ### Indexes
@@ -322,7 +322,7 @@ The implementation includes:
 
 1. **Test initialization:**
    ```bash
-   cargo run -- db init
+   cargo run -- db migrate
    # Verify output shows successful migration and partition creation
    ```
 
@@ -354,7 +354,7 @@ cp .env.example .env
 # Edit .env and set: DATABASE_URL=postgres://$(whoami)@localhost/perps
 
 # 4. Initialize schema
-cargo run -- db init
+cargo run -- db migrate
 
 # 5. Verify setup
 cargo run -- db stats
@@ -373,7 +373,7 @@ EOF
 cargo run -- db migrate
 
 # 3. Create partitions for the next 30 days
-cargo run -- db init --create-partitions-days 30
+cargo run -- db migrate --create-partitions-days 30
 
 # 4. Set up monitoring
 cargo run -- db stats --format json | jq '.'

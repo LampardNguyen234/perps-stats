@@ -96,7 +96,7 @@ docker-compose logs -f perps-stats
 
 ```bash
 # Run database initialization
-docker-compose exec perps-stats perps-stats db init
+docker-compose exec perps-stats perps-stats db migrate
 
 # Verify database
 docker-compose exec postgres psql -U perps -d perps -c "\dt"

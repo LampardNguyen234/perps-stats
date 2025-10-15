@@ -12,7 +12,7 @@ These options are available for all commands:
 ## Table of Contents
 
 1. [Database Commands](#database-commands)
-   - [db init](#db-init)
+   - [db migrate](#db-init)
    - [db migrate](#db-migrate)
    - [db stats](#db-stats)
    - [db clean](#db-clean)
@@ -30,14 +30,14 @@ These options are available for all commands:
 
 ## Database Commands
 
-### `db init`
+### `db migrate`
 
 Initialize the database schema and run all migrations. This command creates all necessary tables, indexes, and seeds initial data (exchanges table).
 
 **Usage:**
 
 ```bash
-DATABASE_URL=postgres://localhost/perps_stats cargo run -- db init
+DATABASE_URL=postgres://localhost/perps_stats cargo run -- db migrate
 ```
 
 **What it does:**
@@ -50,10 +50,10 @@ DATABASE_URL=postgres://localhost/perps_stats cargo run -- db init
 
 ```bash
 # Initialize database on localhost
-DATABASE_URL=postgres://localhost/perps_stats cargo run -- db init
+DATABASE_URL=postgres://localhost/perps_stats cargo run -- db migrate
 
 # Initialize remote database
-DATABASE_URL=postgres://user:password@remote-host:5432/perps cargo run -- db init
+DATABASE_URL=postgres://user:password@remote-host:5432/perps cargo run -- db migrate
 ```
 
 **First-time setup:**
@@ -62,7 +62,7 @@ DATABASE_URL=postgres://user:password@remote-host:5432/perps cargo run -- db ini
 createdb perps_stats
 
 # 2. Initialize schema
-DATABASE_URL=postgres://localhost/perps_stats cargo run -- db init
+DATABASE_URL=postgres://localhost/perps_stats cargo run -- db migrate
 ```
 
 ---

@@ -160,14 +160,7 @@ pub enum Commands {
 
 #[derive(Subcommand)]
 pub enum DbCommands {
-    /// Initialize the database schema
-    Init {
-        /// Number of days to create partitions for (default: 7)
-        #[arg(long, default_value = "7")]
-        create_partitions_days: i32,
-    },
-
-    /// Run migrations
+    /// Run database migrations to initialize or update schema
     Migrate,
 
     /// Clean the database (WARNING: deletes all data)

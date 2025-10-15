@@ -58,9 +58,6 @@ async fn main() -> Result<()> {
             .await?;
         }
         Commands::Db { command, database_url } => match command {
-            DbCommands::Init { create_partitions_days } => {
-                commands::db::init(database_url, create_partitions_days).await?
-            }
             DbCommands::Migrate => commands::db::migrate(database_url).await?,
             DbCommands::Clean {
                 older_than,

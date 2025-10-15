@@ -53,14 +53,14 @@ cp .env.example .env
 
 4. Initialize the database:
 ```bash
-cargo run -- db init
+cargo run -- db migrate
 ```
 
 ### Quick Start
 
 #### 1. Initialize Database
 ```bash
-DATABASE_URL=postgres://localhost/perps_stats cargo run -- db init
+DATABASE_URL=postgres://localhost/perps_stats cargo run -- db migrate
 ```
 
 #### 2. Start Data Collection (Recommended)
@@ -139,7 +139,7 @@ cargo run -- market -s BTC --exchange hyperliquid --detailed
 #### Database Operations
 ```bash
 # Initialize database schema and run migrations
-DATABASE_URL=postgres://localhost/perps_stats cargo run -- db init
+DATABASE_URL=postgres://localhost/perps_stats cargo run -- db migrate
 
 # Show database statistics
 cargo run -- db stats

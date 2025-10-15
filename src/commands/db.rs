@@ -1,47 +1,11 @@
 use anyhow::Result;
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{DateTime, Utc};
 use prettytable::{format, Cell, Row, Table};
 use serde_json::json;
 use sqlx::{PgPool, Row as SqlxRow};
 use std::path::Path;
 
-/// Initialize database schema, run migrations, and create partitions
-pub async fn init(database_url: Option<String>, create_partitions_days: i32) -> Result<()> {
-    let db_url = database_url.ok_or_else(|| {
-        anyhow::anyhow!(
-            "DATABASE_URL is required. Set via --database-url flag or DATABASE_URL environment variable"
-        )
-    })?;
-
-    tracing::info!("Initializing database schema");
-    tracing::info!("Database URL: {}", mask_password(&db_url));
-
-    // Connect to database
-    let pool = PgPool::connect(&db_url).await?;
-
-    // Run migrations
-    tracing::info!("Running migrations from migrations/ directory");
-    let migrations_path = Path::new("migrations");
-    if !migrations_path.exists() {
-        anyhow::bail!("Migrations directory not found: migrations/");
-    }
-
-    sqlx::migrate!("./migrations").run(&pool).await?;
-    tracing::info!("✓ Migrations completed successfully");
-
-    // Create partitions for past 7 days (for backfilling) and next N days
-    tracing::info!(
-        "Creating partitions for past 7 days and next {} days",
-        create_partitions_days
-    );
-    create_partitions(&pool, create_partitions_days).await?;
-    tracing::info!("✓ Partitions created successfully");
-
-    tracing::info!("✓ Database initialization completed");
-    Ok(())
-}
-
-/// Run database migrations only
+/// Run database migrations to initialize or update schema
 pub async fn migrate(database_url: Option<String>) -> Result<()> {
     let db_url = database_url.ok_or_else(|| {
         anyhow::anyhow!(
@@ -69,7 +33,7 @@ pub async fn migrate(database_url: Option<String>) -> Result<()> {
 pub async fn clean(
     database_url: Option<String>,
     older_than: Option<i32>,
-    drop_partitions_older_than: Option<i32>,
+    _drop_partitions_older_than: Option<i32>, // Deprecated: partitioning not used
     truncate: bool,
 ) -> Result<()> {
     let db_url = database_url.ok_or_else(|| {
@@ -78,8 +42,8 @@ pub async fn clean(
         )
     })?;
 
-    if !truncate && older_than.is_none() && drop_partitions_older_than.is_none() {
-        anyhow::bail!("Must specify at least one cleaning option: --older-than, --drop-partitions-older-than, or --truncate");
+    if !truncate && older_than.is_none() {
+        anyhow::bail!("Must specify at least one cleaning option: --older-than or --truncate");
     }
 
     if truncate {
@@ -102,12 +66,6 @@ pub async fn clean(
         tracing::info!("Deleting data older than {} days", days);
         delete_old_data(&pool, days).await?;
         tracing::info!("✓ Old data deleted");
-    }
-
-    if let Some(days) = drop_partitions_older_than {
-        tracing::info!("Dropping partitions older than {} days", days);
-        drop_old_partitions(&pool, days).await?;
-        tracing::info!("✓ Old partitions dropped");
     }
 
     Ok(())
@@ -133,48 +91,6 @@ pub async fn stats(database_url: Option<String>, format: &str) -> Result<()> {
         }
         _ => {
             display_stats_table(&stats)?;
-        }
-    }
-
-    Ok(())
-}
-
-/// Create partitions for partitioned tables
-/// Creates partitions for past days (for backfilling) and future days
-async fn create_partitions(pool: &PgPool, days: i32) -> Result<()> {
-    let tables = vec!["tickers", "orderbooks", "trades", "funding_rates", "liquidity_depth", "klines"];
-
-    // Create partitions for past 7 days (for backfilling/historical data) and future N days
-    let past_days = 7;
-    for day_offset in -past_days..days {
-        let date = Utc::now().date_naive() + chrono::Duration::days(day_offset as i64);
-        let next_date = date + chrono::Duration::days(1);
-
-        for table in &tables {
-            let partition_name = format!("{}_{}", table, date.format("%Y_%m_%d"));
-
-            // Check if partition exists
-            let exists: bool = sqlx::query_scalar(
-                "SELECT EXISTS(SELECT 1 FROM pg_class WHERE relname = $1)",
-            )
-            .bind(&partition_name)
-            .fetch_one(pool)
-            .await?;
-
-            if !exists {
-                let query = format!(
-                    "CREATE TABLE {} PARTITION OF {} FOR VALUES FROM ('{}') TO ('{}')",
-                    partition_name,
-                    table,
-                    date.format("%Y-%m-%d"),
-                    next_date.format("%Y-%m-%d")
-                );
-
-                sqlx::query(&query).execute(pool).await?;
-                tracing::debug!("✓ Created partition: {}", partition_name);
-            } else {
-                tracing::debug!("Partition already exists: {}", partition_name);
-            }
         }
     }
 
@@ -224,38 +140,6 @@ async fn delete_old_data(pool: &PgPool, days: i32) -> Result<()> {
     Ok(())
 }
 
-/// Drop partitions older than N days
-async fn drop_old_partitions(pool: &PgPool, days: i32) -> Result<()> {
-    let cutoff_date = Utc::now().date_naive() - chrono::Duration::days(days as i64);
-
-    // Query to find all partitions
-    let partitions: Vec<(String,)> = sqlx::query_as(
-        "SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename ~ '^(tickers|orderbooks|trades|funding_rates|liquidity_depth|klines)_[0-9]{4}_[0-9]{2}_[0-9]{2}$'"
-    )
-    .fetch_all(pool)
-    .await?;
-
-    for (partition_name,) in partitions {
-        // Extract date from partition name (e.g., "tickers_2024_01_15")
-        let parts: Vec<&str> = partition_name.split('_').collect();
-        if parts.len() >= 4 {
-            let year: i32 = parts[parts.len() - 3].parse()?;
-            let month: u32 = parts[parts.len() - 2].parse()?;
-            let day: u32 = parts[parts.len() - 1].parse()?;
-
-            if let Some(partition_date) = NaiveDate::from_ymd_opt(year, month, day) {
-                if partition_date < cutoff_date {
-                    tracing::info!("Dropping partition: {}", partition_name);
-                    let query = format!("DROP TABLE IF EXISTS {}", partition_name);
-                    sqlx::query(&query).execute(pool).await?;
-                }
-            }
-        }
-    }
-
-    Ok(())
-}
-
 /// Fetch table statistics
 async fn fetch_table_stats(pool: &PgPool) -> Result<serde_json::Value> {
     let mut stats = json!({});
@@ -290,7 +174,7 @@ async fn fetch_table_stats(pool: &PgPool) -> Result<serde_json::Value> {
         let mut max_ts: Option<DateTime<Utc>> = None;
         let mut data_age_minutes: Option<i64> = None;
 
-        if vec!["tickers", "orderbooks", "trades", "funding_rates", "liquidity_depth", "klines", "open_interest"]
+        if vec!["tickers", "orderbooks", "trades", "funding_rates", "liquidity_depth", "klines", "slippage", "open_interest"]
             .contains(&table)
         {
             let ts_query = format!("SELECT MIN(ts), MAX(ts) FROM {}", table);
@@ -308,7 +192,7 @@ async fn fetch_table_stats(pool: &PgPool) -> Result<serde_json::Value> {
 
         // Get per-exchange breakdown for time-series tables
         let mut exchange_breakdown = json!({});
-        if vec!["tickers", "orderbooks", "trades", "funding_rates", "liquidity_depth", "klines", "open_interest"]
+        if vec!["tickers", "orderbooks", "trades", "funding_rates", "liquidity_depth", "klines", "slippage", "open_interest"]
             .contains(&table)
         {
             let breakdown_query = format!(
@@ -352,13 +236,6 @@ async fn fetch_table_stats(pool: &PgPool) -> Result<serde_json::Value> {
         });
     }
 
-    // Get partition count
-    let partition_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM pg_tables WHERE schemaname = 'public' AND tablename ~ '^(tickers|orderbooks|trades|funding_rates|liquidity_depth|klines|open_interest)_[0-9]{4}_[0-9]{2}_[0-9]{2}$'"
-    )
-    .fetch_one(pool)
-    .await?;
-
     // Get top symbols by activity (across all exchanges)
     let mut top_symbols = json!([]);
     if let Ok(rows) = sqlx::query(
@@ -383,7 +260,6 @@ async fn fetch_table_stats(pool: &PgPool) -> Result<serde_json::Value> {
     }
 
     stats["metadata"] = json!({
-        "partition_count": partition_count,
         "top_symbols": top_symbols,
         "fetched_at": Utc::now(),
     });
@@ -414,6 +290,7 @@ fn display_stats_table(stats: &serde_json::Value) -> Result<()> {
         "funding_rates",
         "liquidity_depth",
         "klines",
+        "slippage",
         "open_interest",
         "ingest_events",
     ];
@@ -462,7 +339,7 @@ fn display_stats_table(stats: &serde_json::Value) -> Result<()> {
     println!();
 
     // Print per-exchange breakdown for key tables
-    let key_tables = vec!["tickers", "trades", "orderbooks", "liquidity_depth"];
+    let key_tables = vec!["tickers", "trades", "orderbooks", "liquidity_depth", "slippage"];
     for table_name in key_tables {
         if let Some(table_stats) = stats.get(table_name) {
             if let Some(breakdown) = table_stats.get("exchange_breakdown") {
@@ -518,8 +395,6 @@ fn display_stats_table(stats: &serde_json::Value) -> Result<()> {
     if let Some(metadata) = stats.get("metadata") {
         println!("Summary");
         println!("=======");
-        let partition_count = metadata["partition_count"].as_i64().unwrap_or(0);
-        println!("Total partitions: {}", partition_count);
 
         if let Some(top_symbols) = metadata.get("top_symbols") {
             if let Some(symbols_array) = top_symbols.as_array() {

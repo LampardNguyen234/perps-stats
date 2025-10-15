@@ -62,7 +62,7 @@ services:
     command:
       - perps-stats
       - db
-      - init
+      - migrate
     restart: "no"  # Only run once
     logging:
       driver: "json-file"

@@ -13,7 +13,7 @@ This document outlines the recommended project structure, database schema, API d
 - **`ticker`** - Retrieves comprehensive ticker data with periodic collection support
 - **`stream`** - Real-time WebSocket streaming with database storage (Binance only)
 - **`run`** - Periodic data collection with CSV/Excel export (combines ticker and liquidity, includes Open Interest columns, uses factory pattern for multi-exchange support)
-- **`db init`** - Database initialization with migrations and partitions
+- **`db migrate`** - Database initialization with migrations and partitions
 - **`db migrate`** - Run database migrations
 - **`db stats`** - Show database statistics
 - **`db clean`** - Clean old data or truncate tables
