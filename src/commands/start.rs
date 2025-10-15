@@ -56,6 +56,10 @@ pub struct StartArgs {
     /// Maximum reconnection delay in seconds (for exponential backoff)
     #[arg(long, default_value = "300")]
     pub max_reconnect_delay_seconds: u64,
+
+    /// Enable backfilling of historical klines data on startup
+    #[arg(long, default_value = "false")]
+    pub enable_backfill: bool,
 }
 
 /// Load symbols from file (supports both line-separated and comma-separated formats)
@@ -1054,6 +1058,7 @@ pub async fn execute(args: StartArgs) -> Result<()> {
     tracing::info!("Exchanges: {:?}", exchanges);
     tracing::info!("Symbols file: {}", args.symbols_file);
     tracing::info!("Batch size: {}", args.batch_size);
+    tracing::info!("Klines backfill enabled: {}", args.enable_backfill);
     tracing::info!("Klines interval: {}s (timeframes: {:?})", args.klines_interval, klines_timeframes);
     tracing::info!("Report interval: {}s", args.report_interval);
 
@@ -1095,20 +1100,26 @@ pub async fn execute(args: StartArgs) -> Result<()> {
     // Note: WebSocket streaming is disabled. All data is fetched via REST API for better data quality.
     // The ticker and liquidity reports provide complete data with all 24h statistics.
 
-    // Spawn klines fetching tasks (one per exchange per timeframe)
-    for (exchange, symbols) in &exchange_symbols {
-        for timeframe in &klines_timeframes {
-            tracing::info!("Spawning klines task for exchange: {} with timeframe: {}", exchange, timeframe);
-            let task = spawn_klines_task(
-                exchange.clone(),
-                symbols.clone(),
-                args.klines_interval,
-                timeframe.clone(),
-                repository.clone(),
-                shutdown.clone(),
-            ).await?;
-            tasks.push(task);
+    // Spawn klines fetching tasks (one per exchange per timeframe) - only if backfill is enabled
+    if args.enable_backfill {
+        tracing::info!("Klines backfill enabled, spawning klines tasks for {} exchanges and {} timeframes",
+                      exchange_symbols.len(), klines_timeframes.len());
+        for (exchange, symbols) in &exchange_symbols {
+            for timeframe in &klines_timeframes {
+                tracing::info!("Spawning klines task for exchange: {} with timeframe: {}", exchange, timeframe);
+                let task = spawn_klines_task(
+                    exchange.clone(),
+                    symbols.clone(),
+                    args.klines_interval,
+                    timeframe.clone(),
+                    repository.clone(),
+                    shutdown.clone(),
+                ).await?;
+                tasks.push(task);
+            }
         }
+    } else {
+        tracing::info!("Klines backfill disabled, skipping klines tasks");
     }
 
     // Spawn liquidity depth report generation task (single task for all exchanges)
