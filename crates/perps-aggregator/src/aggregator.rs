@@ -139,57 +139,34 @@ impl IAggregator for Aggregator {
         global_symbol: &str,
     ) -> anyhow::Result<LiquidityDepthStats> {
         let start = Instant::now();
-        if book.bids.is_empty() || book.asks.is_empty() {
-            anyhow::bail!("Orderbook is empty or one-sided, cannot calculate liquidity depth.");
-        }
 
-        let mid_price = (book.bids[0].price + book.asks[0].price) / Decimal::new(2, 0);
+        // Use the new mid_price() method
+        let mid_price = book.mid_price()
+            .ok_or_else(|| anyhow::anyhow!("Orderbook is empty or one-sided, cannot calculate liquidity depth."))?;
+
         if mid_price.is_zero() {
             anyhow::bail!("Mid price is zero, cannot calculate percentage-based depth.");
         }
 
+        // Define bps levels in basis points (will be converted in bid_notional/ask_notional)
         let bps_levels = [
-            Decimal::new(1, 4),   // 1 bps = 0.0001
-            Decimal::new(25, 5),  // 2.5 bps = 0.00025
-            Decimal::new(5, 4),   // 5 bps = 0.0005
-            Decimal::new(10, 4),  // 10 bps = 0.001
-            Decimal::new(20, 4),  // 20 bps = 0.002
+            dec!(1),    // 1 bps
+            dec!(2.5),  // 2.5 bps
+            dec!(5),    // 5 bps
+            dec!(10),   // 10 bps
+            dec!(20),   // 20 bps
         ];
 
-        let mut bid_notionals = vec![Decimal::ZERO; bps_levels.len()];
-        let mut ask_notionals = vec![Decimal::ZERO; bps_levels.len()];
+        // Use the new bid_notional() and ask_notional() methods
+        let bid_notionals: Vec<Decimal> = bps_levels
+            .iter()
+            .map(|&bps| book.bid_notional(bps))
+            .collect();
 
-        // Calculate cumulative bid notionals
-        for level in &book.bids {
-            let price_delta = mid_price - level.price;
-            if price_delta < Decimal::ZERO {
-                continue;
-            } // Should not happen for sorted bids
-            let spread_pct = price_delta / mid_price;
-            let notional = level.price * level.quantity;
-
-            for (i, &bps) in bps_levels.iter().enumerate() {
-                if spread_pct <= bps {
-                    bid_notionals[i] += notional;
-                }
-            }
-        }
-
-        // Calculate cumulative ask notionals
-        for level in &book.asks {
-            let price_delta = level.price - mid_price;
-            if price_delta < Decimal::ZERO {
-                continue;
-            } // Should not happen for sorted asks
-            let spread_pct = price_delta / mid_price;
-            let notional = level.price * level.quantity;
-
-            for (i, &bps) in bps_levels.iter().enumerate() {
-                if spread_pct <= bps {
-                    ask_notionals[i] += notional;
-                }
-            }
-        }
+        let ask_notionals: Vec<Decimal> = bps_levels
+            .iter()
+            .map(|&bps| book.ask_notional(bps))
+            .collect();
 
         let duration = start.elapsed();
         tracing::debug!(
@@ -355,45 +332,42 @@ impl IAggregator for Aggregator {
         orderbook: &Orderbook,
         trade_amount: Decimal,
     ) -> Slippage {
-        // Calculate mid price
-        let mid_price = if !orderbook.bids.is_empty() && !orderbook.asks.is_empty() {
-            (orderbook.bids[0].price + orderbook.asks[0].price) / dec!(2)
-        } else {
-            return Slippage::infeasible(
-                orderbook.symbol.clone(),
-                orderbook.timestamp,
-                Decimal::ZERO,
-                trade_amount,
-            );
+        // Use the new mid_price() method
+        let mid_price = match orderbook.mid_price() {
+            Some(price) => price,
+            None => {
+                return Slippage::infeasible(
+                    orderbook.symbol.clone(),
+                    orderbook.timestamp,
+                    Decimal::ZERO,
+                    trade_amount,
+                );
+            }
         };
 
-        // Calculate buy slippage (executing against asks)
-        let (buy_avg_price, buy_total_cost, buy_feasible) =
-            calculate_execution_price(&orderbook.asks, trade_amount);
+        // Use the new get_slippage() method from Orderbook for buy side
+        let (buy_slippage_bps, buy_avg_price, buy_total_cost, buy_feasible) =
+            if let Some(slippage_bps) = orderbook.get_slippage(trade_amount, OrderSide::Buy) {
+                // Calculate avg price and total cost for additional metrics
+                let (avg_price, total_cost, _) = calculate_execution_price(&orderbook.asks, trade_amount);
+                (Some(slippage_bps), avg_price, total_cost, true)
+            } else {
+                (None, None, None, false)
+            };
 
-        let (buy_slippage_bps, buy_slippage_pct) = if buy_feasible {
-            let slippage = (buy_avg_price.unwrap() - mid_price) / mid_price;
-            (
-                Some(slippage * dec!(10000)), // Convert to bps
-                Some(slippage * dec!(100)),    // Convert to percentage
-            )
-        } else {
-            (None, None)
-        };
+        let buy_slippage_pct = buy_slippage_bps.map(|bps| bps / dec!(100)); // Convert bps to percentage
 
-        // Calculate sell slippage (executing against bids)
-        let (sell_avg_price, sell_total_cost, sell_feasible) =
-            calculate_execution_price(&orderbook.bids, trade_amount);
+        // Use the new get_slippage() method from Orderbook for sell side
+        let (sell_slippage_bps, sell_avg_price, sell_total_cost, sell_feasible) =
+            if let Some(slippage_bps) = orderbook.get_slippage(trade_amount, OrderSide::Sell) {
+                // Calculate avg price and total cost for additional metrics
+                let (avg_price, total_cost, _) = calculate_execution_price(&orderbook.bids, trade_amount);
+                (Some(slippage_bps), avg_price, total_cost, true)
+            } else {
+                (None, None, None, false)
+            };
 
-        let (sell_slippage_bps, sell_slippage_pct) = if sell_feasible {
-            let slippage = (mid_price - sell_avg_price.unwrap()) / mid_price;
-            (
-                Some(slippage * dec!(10000)), // Convert to bps
-                Some(slippage * dec!(100)),    // Convert to percentage
-            )
-        } else {
-            (None, None)
-        };
+        let sell_slippage_pct = sell_slippage_bps.map(|bps| bps / dec!(100)); // Convert bps to percentage
 
         Slippage {
             symbol: orderbook.symbol.clone(),
@@ -809,22 +783,22 @@ mod tests {
         let aggregator = Aggregator::new();
         let now = Utc::now();
 
-        // Create orderbook with sufficient liquidity for all standard amounts
+        // Create orderbook with sufficient liquidity for all standard amounts (up to $10M)
         let orderbook = Orderbook {
             symbol: "BTC".to_string(),
             timestamp: now,
             bids: vec![
-                OrderbookLevel { price: dec!(100000), quantity: dec!(10) }, // $1,000,000
+                OrderbookLevel { price: dec!(100000), quantity: dec!(150) }, // $15,000,000
             ],
             asks: vec![
-                OrderbookLevel { price: dec!(100100), quantity: dec!(10) }, // $1,001,000
+                OrderbookLevel { price: dec!(100100), quantity: dec!(150) }, // $15,015,000
             ],
         };
 
         let slippages = aggregator.calculate_all_slippages(&orderbook);
 
-        // Should return 5 slippage entries
-        assert_eq!(slippages.len(), 5);
+        // Should return 7 slippage entries (1K, 10K, 50K, 100K, 500K, 5M, 10M)
+        assert_eq!(slippages.len(), 7);
 
         // Check each trade amount
         assert_eq!(slippages[0].trade_amount, dec!(1000));
@@ -832,6 +806,8 @@ mod tests {
         assert_eq!(slippages[2].trade_amount, dec!(50000));
         assert_eq!(slippages[3].trade_amount, dec!(100000));
         assert_eq!(slippages[4].trade_amount, dec!(500000));
+        assert_eq!(slippages[5].trade_amount, dec!(5000000));
+        assert_eq!(slippages[6].trade_amount, dec!(10000000));
 
         // All should be feasible
         for slippage in &slippages {
@@ -861,16 +837,18 @@ mod tests {
 
         let slippages = aggregator.calculate_all_slippages(&orderbook);
 
-        assert_eq!(slippages.len(), 5);
+        assert_eq!(slippages.len(), 7);
 
         // First 3 should be feasible
         assert!(slippages[0].buy_feasible); // $1,000
         assert!(slippages[1].buy_feasible); // $10,000
         assert!(slippages[2].buy_feasible); // $50,000
 
-        // Last 2 should be infeasible
+        // Last 4 should be infeasible
         assert!(!slippages[3].buy_feasible); // $100,000
         assert!(!slippages[4].buy_feasible); // $500,000
+        assert!(!slippages[5].buy_feasible); // $5,000,000
+        assert!(!slippages[6].buy_feasible); // $10,000,000
     }
 
     #[test]

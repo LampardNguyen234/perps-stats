@@ -40,9 +40,20 @@ pub fn normalize_symbol(binance_symbol: &str) -> String {
 }
 
 /// Denormalize our symbol format back to Binance format
-/// Example: "BTC-USDT" -> "BTCUSDT"
+/// Examples:
+/// - "BTC-USDT" -> "BTCUSDT"
+/// - "BTC" -> "BTCUSDT" (adds USDT suffix for base-only symbols)
 pub fn denormalize_symbol(symbol: &str) -> String {
-    symbol.replace('-', "")
+    if symbol.contains('-') {
+        // Remove hyphens: "BTC-USDT" -> "BTCUSDT"
+        symbol.replace('-', "")
+    } else if !symbol.ends_with("USDT") && !symbol.ends_with("USD") {
+        // If it's just the base currency (e.g., "BTC"), append "USDT"
+        format!("{}USDT", symbol)
+    } else {
+        // Already in correct format
+        symbol.to_string()
+    }
 }
 
 #[cfg(test)]
@@ -59,8 +70,16 @@ mod tests {
 
     #[test]
     fn test_denormalize_symbol() {
+        // Hyphenated format
         assert_eq!(denormalize_symbol("BTC-USDT"), "BTCUSDT");
         assert_eq!(denormalize_symbol("ETH-USDT"), "ETHUSDT");
+
+        // Base-only format (should append USDT)
+        assert_eq!(denormalize_symbol("BTC"), "BTCUSDT");
+        assert_eq!(denormalize_symbol("ETH"), "ETHUSDT");
+
+        // Already in Binance format
+        assert_eq!(denormalize_symbol("BTCUSDT"), "BTCUSDT");
     }
 
     #[test]

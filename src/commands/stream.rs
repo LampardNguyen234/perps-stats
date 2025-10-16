@@ -128,7 +128,7 @@ pub async fn execute(args: StreamArgs) -> Result<()> {
         }
         "binance" => {
             // For Binance WebSocket, we need BTCUSDT format (no hyphens)
-            let binance_client = perps_exchanges::binance::BinanceClient::new();
+            let binance_client = perps_exchanges::binance::BinanceClient::new_rest_only();
             args.symbols
                 .iter()
                 .map(|s| {

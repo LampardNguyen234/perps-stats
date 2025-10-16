@@ -37,7 +37,7 @@ pub async fn execute(args: TickerArgs) -> Result<()> {
         database_url,
     } = args;
     // Create exchange client using factory
-    let client = get_exchange(&exchange)?;
+    let client = get_exchange(&exchange).await?;
 
     // Parse symbols
     let requested_symbols: Vec<String> = symbols

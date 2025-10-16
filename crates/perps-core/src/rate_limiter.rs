@@ -538,8 +538,8 @@ mod tests {
     #[test]
     fn test_preset_rate_limiters() {
         let binance = RateLimiter::binance();
-        assert_eq!(binance.limits().len(), 2);
-        assert_eq!(binance.limits()[0].max_requests, 2400);
+        assert_eq!(binance.limits().len(), 1);
+        assert_eq!(binance.limits()[0].max_requests, 2000);
         assert_eq!(binance.limits()[0].window, Duration::from_secs(60));
 
         let bybit = RateLimiter::bybit();
@@ -549,12 +549,12 @@ mod tests {
 
         let hyperliquid = RateLimiter::hyperliquid();
         assert_eq!(hyperliquid.limits().len(), 2);
-        assert_eq!(hyperliquid.limits()[0].max_requests, 1200);
-        assert_eq!(hyperliquid.limits()[0].window, Duration::from_secs(60));
+        assert_eq!(hyperliquid.limits()[0].max_requests, 10);
+        assert_eq!(hyperliquid.limits()[0].window, Duration::from_secs(1));
 
         let kucoin = RateLimiter::kucoin();
         assert_eq!(kucoin.limits().len(), 2);
-        assert_eq!(kucoin.limits()[0].max_requests, 30);
+        assert_eq!(kucoin.limits()[0].max_requests, 10);
         assert_eq!(kucoin.limits()[0].window, Duration::from_secs(1));
 
         let lighter = RateLimiter::lighter();

@@ -101,6 +101,8 @@ impl BinanceWsClient {
 
     /// Convert Binance depth update to our Orderbook type
     fn convert_orderbook(&self, ws_depth: &BinanceWsDepthUpdate) -> Result<Orderbook> {
+        use super::conversions::normalize_symbol;
+
         let bids: Vec<OrderbookLevel> = ws_depth
             .bids
             .iter()
@@ -124,11 +126,48 @@ impl BinanceWsClient {
             .collect::<Result<Vec<_>>>()?;
 
         Ok(Orderbook {
-            symbol: ws_depth.symbol.clone(),
+            // Normalize symbol: BTCUSDT -> BTC
+            symbol: normalize_symbol(&ws_depth.symbol),
             bids,
             asks,
             timestamp: Utc.timestamp_millis_opt(ws_depth.event_time).unwrap(),
         })
+    }
+
+    /// Convert Binance depth update to orderbook with update IDs
+    /// Returns (symbol, first_update_id, final_update_id, bids, asks)
+    pub fn convert_depth_update(&self, ws_depth: &BinanceWsDepthUpdate) -> Result<(String, u64, u64, Vec<OrderbookLevel>, Vec<OrderbookLevel>)> {
+        use super::conversions::normalize_symbol;
+
+        let bids: Vec<OrderbookLevel> = ws_depth
+            .bids
+            .iter()
+            .map(|(price, qty)| {
+                Ok(OrderbookLevel {
+                    price: Decimal::from_str(price)?,
+                    quantity: Decimal::from_str(qty)?,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        let asks: Vec<OrderbookLevel> = ws_depth
+            .asks
+            .iter()
+            .map(|(price, qty)| {
+                Ok(OrderbookLevel {
+                    price: Decimal::from_str(price)?,
+                    quantity: Decimal::from_str(qty)?,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        Ok((
+            normalize_symbol(&ws_depth.symbol),
+            ws_depth.first_update_id as u64,
+            ws_depth.final_update_id as u64,
+            bids,
+            asks,
+        ))
     }
 
     /// Convert Binance mark price update to our FundingRate type
@@ -296,7 +335,7 @@ impl IPerpsStream for BinanceWsClient {
     }
 
     async fn stream_orderbooks(&self, symbols: Vec<String>) -> Result<DataStream<Orderbook>> {
-        let url = self.build_stream_url(&symbols, "depth@100ms")?;
+        let url = self.build_stream_url(&symbols, "depth@500ms")?;
         let is_combined = self.is_combined_stream(&url);
         let mut ws_stream = self.connect(url).await?;
         let client = self.clone();

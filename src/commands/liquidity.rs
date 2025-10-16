@@ -85,7 +85,7 @@ async fn execute_all_exchanges(
     max_snapshots: usize,
     database_url: Option<String>,
 ) -> Result<()> {
-    let exchanges = all_exchanges();
+    let exchanges = all_exchanges().await;
     let exchange_clients: Vec<Box<dyn IPerps + Send + Sync>> = exchanges.into_iter().map(|(_, client)| client).collect();
 
     if let Some(interval_secs) = interval {
@@ -138,7 +138,7 @@ async fn execute_single_exchange(
     max_snapshots: usize,
     database_url: Option<String>,
 ) -> Result<()> {
-    let client = get_exchange(&exchange)?;
+    let client = get_exchange(&exchange).await?;
     let parsed_symbols: Vec<String> = symbols.iter().map(|s| client.parse_symbol(s)).collect();
     let valid_symbols = validate_symbols(client.as_ref(), &parsed_symbols).await?;
 

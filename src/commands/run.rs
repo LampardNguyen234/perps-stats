@@ -35,7 +35,7 @@ pub async fn execute(args: RunArgs) -> Result<()> {
         ex.split(',').map(|s| s.trim().to_string()).collect()
     } else {
         // Get all supported exchanges from the factory
-        all_exchanges().into_iter().map(|(name, _)| name).collect()
+        all_exchanges().await.into_iter().map(|(name, _)| name).collect()
     };
 
     tracing::info!(
@@ -56,7 +56,7 @@ pub async fn execute(args: RunArgs) -> Result<()> {
     // Create exchange clients
     let mut clients: Vec<(String, Arc<Box<dyn IPerps + Send + Sync>>)> = Vec::new();
     for ex_name in &exchange_names {
-        match get_exchange(ex_name.as_str()) {
+        match get_exchange(ex_name.as_str()).await {
             Ok(client) => {
                 clients.push((ex_name.to_string(), Arc::new(client)));
                 tracing::info!("✓ Initialized {} exchange client", ex_name);

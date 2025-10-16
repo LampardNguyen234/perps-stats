@@ -198,7 +198,7 @@ mod tests {
     #[test]
     fn test_retry_config_default() {
         let config = RetryConfig::default();
-        assert_eq!(config.max_retries, 3);
+        assert_eq!(config.max_retries, 8);
         assert_eq!(config.base_delay_ms, 1000);
     }
 

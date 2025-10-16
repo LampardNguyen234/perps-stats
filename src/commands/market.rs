@@ -40,7 +40,7 @@ pub async fn execute(args: MarketArgs) -> Result<()> {
     );
 
     // Create exchange client using factory
-    let client = get_exchange(&exchange)?;
+    let client = get_exchange(&exchange).await?;
 
     // Parse symbols
     let requested_symbols: Vec<String> = symbols

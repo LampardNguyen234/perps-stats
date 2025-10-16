@@ -438,7 +438,7 @@ pub async fn execute(args: BackfillArgs) -> Result<()> {
             );
 
             // Get exchange client
-            let client = match factory::get_exchange(&exchange) {
+            let client = match factory::get_exchange(&exchange).await {
                 Ok(c) => Arc::new(c),
                 Err(e) => {
                     tracing::error!("Failed to create client for {}: {}", exchange, e);

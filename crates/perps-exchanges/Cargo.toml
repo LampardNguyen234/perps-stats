@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 # Workspace crates
 perps-core = { path = "../perps-core" }
+perps-database = { path = "../perps-database", optional = true }
 
 # HTTP client
 reqwest = { version = "0.12", features = ["json"] }
@@ -39,6 +40,13 @@ tokio = { version = "1.41", features = ["sync"] }
 
 # Cache support
 once_cell = "1.20"
+
+# Database support (optional, for streaming)
+sqlx = { version = "0.7", features = ["runtime-tokio-native-tls", "postgres"], optional = true }
+
+[features]
+default = ["streaming"]
+streaming = ["perps-database", "sqlx"]
 
 [dev-dependencies]
 rust_decimal_macros = "1.37"

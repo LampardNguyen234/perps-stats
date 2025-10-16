@@ -88,7 +88,7 @@ async fn load_symbols(file_path: &str) -> Result<Vec<String>> {
 async fn validate_symbols(exchange: &str, symbols: &[String]) -> Result<Vec<String>> {
     tracing::info!("Validating {} symbols for exchange: {}", symbols.len(), exchange);
 
-    let client = factory::get_exchange(exchange)?;
+    let client = factory::get_exchange(exchange).await?;
     let mut valid_symbols = Vec::new();
 
     for symbol in symbols {
@@ -174,7 +174,7 @@ async fn spawn_streaming_task(
         tracing::info!("Starting WebSocket streaming task for exchange: {} (auto-reconnect enabled)", exchange);
 
         // Parse symbols to exchange-specific format (done once, reused across reconnections)
-        let rest_client = factory::get_exchange(&exchange)?;
+        let rest_client = factory::get_exchange(&exchange).await?;
         let parsed_symbols: Vec<String> = symbols
             .iter()
             .map(|s| {
@@ -471,7 +471,7 @@ async fn spawn_klines_task(
         tracing::info!("Starting klines fetching task for exchange: {} (interval: {}s, timeframe: {})",
                       exchange, klines_interval, klines_timeframe);
 
-        let client = factory::get_exchange(&exchange)?;
+        let client = factory::get_exchange(&exchange).await?;
 
         // Perform initial historical backfill for each symbol (if no data exists)
         tracing::info!("Checking for existing klines data for {} symbols on {}", symbols.len(), exchange);
@@ -800,7 +800,7 @@ async fn spawn_liquidity_report_task(
         // Create REST API clients for each exchange
         let mut clients: HashMap<String, Box<dyn perps_core::IPerps + Send + Sync>> = HashMap::new();
         for exchange in exchange_symbols.keys() {
-            match factory::get_exchange(exchange) {
+            match factory::get_exchange(exchange).await {
                 Ok(client) => {
                     clients.insert(exchange.clone(), client);
                     tracing::debug!("Initialized REST client for exchange: {}", exchange);
@@ -927,7 +927,7 @@ async fn spawn_ticker_report_task(
         // Create REST API clients for each exchange
         let mut clients: HashMap<String, Box<dyn perps_core::IPerps + Send + Sync>> = HashMap::new();
         for exchange in exchange_symbols.keys() {
-            match factory::get_exchange(exchange) {
+            match factory::get_exchange(exchange).await {
                 Ok(client) => {
                     clients.insert(exchange.clone(), client);
                     tracing::debug!("Initialized REST client for exchange: {}", exchange);
