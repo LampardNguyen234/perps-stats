@@ -407,37 +407,49 @@ impl Repository for PostgresRepository {
             // Normalize symbol to global format
             let normalized_symbol = extract_base_symbol(&orderbook.symbol);
 
-            // Calculate spread in basis points
-            let spread_bps = if !orderbook.bids.is_empty() && !orderbook.asks.is_empty() {
-                let best_bid = orderbook.bids[0].price;
-                let best_ask = orderbook.asks[0].price;
-                let spread = best_ask - best_bid;
-                let mid = (best_bid + best_ask) / rust_decimal::Decimal::from(2);
-                if mid > rust_decimal::Decimal::ZERO {
-                    ((spread / mid) * rust_decimal::Decimal::from(10000)).to_i32().unwrap_or(0)
-                } else {
-                    0
-                }
-            } else {
-                0
-            };
+            // Calculate spread in basis points using the new method
+            let spread_bps = orderbook.spread()
+                .and_then(|s| s.to_i32())
+                .unwrap_or(0);
+
+            // Get orderbook sizes (number of bid and ask levels)
+            let (bid_size, ask_size) = orderbook.size();
+
+            // Calculate total notional values
+            let (bids_notional, asks_notional) = orderbook.total_notional();
 
             // Convert orderbook to JSON
             let raw_book = serde_json::to_value(orderbook)?;
 
+            // Get best bid/ask prices and quantities using the new helper methods
+            let best_bid = orderbook.best_bid();
+            let best_ask = orderbook.best_ask();
+            let best_bid_qty = orderbook.best_bid_qty();
+            let best_ask_qty = orderbook.best_ask_qty();
+
             sqlx::query(
                 r#"
                 INSERT INTO orderbooks (
-                    exchange_id, symbol, spread_bps, raw_book, ts
+                    exchange_id, symbol, bids_notional, asks_notional,
+                    bid_size, ask_size, best_bid, best_ask, best_bid_qty, best_ask_qty,
+                    raw_book, spread_bps, ts
                 )
-                VALUES ($1, $2, $3, $4, $5)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
                 ON CONFLICT DO NOTHING
                 "#
             )
             .bind(exchange_id)
             .bind(&normalized_symbol)
-            .bind(spread_bps)
+            .bind(bids_notional)
+            .bind(asks_notional)
+            .bind(bid_size as i32)
+            .bind(ask_size as i32)
+            .bind(best_bid)
+            .bind(best_ask)
+            .bind(best_bid_qty)
+            .bind(best_ask_qty)
             .bind(raw_book)
+            .bind(spread_bps)
             .bind(orderbook.timestamp)
             .execute(&mut *tx)
             .await?;
@@ -1423,5 +1435,14 @@ impl Repository for PostgresRepository {
         );
 
         Ok(())
+    }
+}
+
+// Implement OrderbookRepository for PostgresRepository to support OrderbookManager
+#[async_trait]
+impl perps_core::orderbook_manager::OrderbookRepository for PostgresRepository {
+    async fn store_orderbooks_with_exchange(&self, exchange: &str, orderbooks: &[perps_core::Orderbook]) -> anyhow::Result<()> {
+        // Delegate to the Repository trait implementation
+        <PostgresRepository as Repository>::store_orderbooks_with_exchange(self, exchange, orderbooks).await
     }
 }

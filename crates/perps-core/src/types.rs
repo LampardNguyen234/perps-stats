@@ -107,6 +107,14 @@ impl Orderbook {
         self.asks.first().map(|level| level.quantity)
     }
 
+    /// Calculate the mid price (average of best bid and best ask).
+    /// Returns None if orderbook is empty or missing either side.
+    pub fn mid_price(&self) -> Option<Decimal> {
+        let best_bid = self.best_bid()?;
+        let best_ask = self.best_ask()?;
+        Some((best_bid + best_ask) / Decimal::TWO)
+    }
+
     /// Calculate the spread between best bid and best ask in basis points (bps).
     /// Returns None if orderbook is empty.
     pub fn spread(&self) -> Option<Decimal> {
@@ -117,7 +125,7 @@ impl Orderbook {
             return None;
         }
 
-        let mid_price = (best_bid + best_ask) / Decimal::TWO;
+        let mid_price = self.mid_price()?;
         let spread = best_ask - best_bid;
 
         Some((spread / mid_price) * Decimal::from(10000))
@@ -126,14 +134,10 @@ impl Orderbook {
     /// Calculate total notional value (price × quantity) for bid side within given bps spread.
     /// bps: basis points spread from mid price (e.g., 5 = 5 basis points = 0.05%)
     pub fn bid_notional(&self, bps: Decimal) -> Decimal {
-        let Some(best_bid) = self.bids.first() else {
-            return Decimal::ZERO;
-        };
-        let Some(best_ask) = self.asks.first() else {
+        let Some(mid_price) = self.mid_price() else {
             return Decimal::ZERO;
         };
 
-        let mid_price = (best_bid.price + best_ask.price) / Decimal::TWO;
         let threshold = mid_price * (Decimal::ONE - bps / Decimal::from(10000));
 
         self.bids
@@ -146,14 +150,10 @@ impl Orderbook {
     /// Calculate total notional value (price × quantity) for ask side within given bps spread.
     /// bps: basis points spread from mid price (e.g., 5 = 5 basis points = 0.05%)
     pub fn ask_notional(&self, bps: Decimal) -> Decimal {
-        let Some(best_bid) = self.bids.first() else {
-            return Decimal::ZERO;
-        };
-        let Some(best_ask) = self.asks.first() else {
+        let Some(mid_price) = self.mid_price() else {
             return Decimal::ZERO;
         };
 
-        let mid_price = (best_bid.price + best_ask.price) / Decimal::TWO;
         let threshold = mid_price * (Decimal::ONE + bps / Decimal::from(10000));
 
         self.asks
@@ -182,6 +182,102 @@ impl Orderbook {
             .sum();
 
         (bid_notional, ask_notional)
+    }
+
+    /// Calculate slippage in basis points for a given trade amount and side.
+    ///
+    /// # Arguments
+    /// * `amount` - Trade size in USD notional
+    /// * `side` - OrderSide::Buy (executes against asks) or OrderSide::Sell (executes against bids)
+    ///
+    /// # Returns
+    /// * `Some(slippage_bps)` - Slippage in basis points (e.g., 50 = 0.5% = 50 bps)
+    /// * `None` - If orderbook is empty, insufficient liquidity, or mid price is zero
+    ///
+    /// # Examples
+    /// ```
+    /// use perps_core::{Orderbook, OrderbookLevel, OrderSide};
+    /// use rust_decimal_macros::dec;
+    /// use chrono::Utc;
+    ///
+    /// let orderbook = Orderbook {
+    ///     symbol: "BTC".to_string(),
+    ///     timestamp: Utc::now(),
+    ///     bids: vec![
+    ///         OrderbookLevel { price: dec!(100000), quantity: dec!(0.1) },
+    ///     ],
+    ///     asks: vec![
+    ///         OrderbookLevel { price: dec!(100100), quantity: dec!(0.1) },
+    ///     ],
+    /// };
+    ///
+    /// let buy_slippage = orderbook.get_slippage(dec!(5000), OrderSide::Buy);
+    /// let sell_slippage = orderbook.get_slippage(dec!(5000), OrderSide::Sell);
+    /// ```
+    pub fn get_slippage(&self, amount: Decimal, side: OrderSide) -> Option<Decimal> {
+        // Get mid price
+        let mid_price = self.mid_price()?;
+        if mid_price.is_zero() {
+            return None;
+        }
+
+        // Select levels based on side
+        let levels = match side {
+            OrderSide::Buy => &self.asks,  // Buy executes against asks
+            OrderSide::Sell => &self.bids, // Sell executes against bids
+        };
+
+        if levels.is_empty() {
+            return None;
+        }
+
+        // Calculate average execution price
+        let mut remaining_notional = amount;
+        let mut total_base_qty = Decimal::ZERO;
+        let mut total_cost = Decimal::ZERO;
+
+        for level in levels {
+            if remaining_notional <= Decimal::ZERO {
+                break;
+            }
+
+            // Notional available at this level
+            let level_notional = level.price * level.quantity;
+
+            if level_notional >= remaining_notional {
+                // This level can fill the remaining order
+                let base_qty_needed = remaining_notional / level.price;
+                total_base_qty += base_qty_needed;
+                total_cost += remaining_notional;
+                remaining_notional = Decimal::ZERO;
+                break;
+            } else {
+                // Consume entire level
+                total_base_qty += level.quantity;
+                total_cost += level_notional;
+                remaining_notional -= level_notional;
+            }
+        }
+
+        // Check if trade is feasible
+        if remaining_notional > Decimal::ZERO {
+            // Insufficient liquidity
+            return None;
+        }
+
+        // Calculate average execution price
+        if total_base_qty.is_zero() {
+            return None;
+        }
+        let avg_price = total_cost / total_base_qty;
+
+        // Calculate slippage in bps
+        let slippage = match side {
+            OrderSide::Buy => (avg_price - mid_price) / mid_price,
+            OrderSide::Sell => (mid_price - avg_price) / mid_price,
+        };
+
+        Some(slippage * Decimal::from(10000)) // Convert to bps
     }
 }
 
@@ -324,5 +420,235 @@ impl Slippage {
             sell_total_cost: None,
             sell_feasible: false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rust_decimal_macros::dec;
+
+    #[test]
+    fn test_get_slippage_buy_single_level() {
+        let orderbook = Orderbook {
+            symbol: "BTC".to_string(),
+            timestamp: Utc::now(),
+            bids: vec![
+                OrderbookLevel { price: dec!(100000), quantity: dec!(0.1) }, // $10,000
+            ],
+            asks: vec![
+                OrderbookLevel { price: dec!(100100), quantity: dec!(0.1) }, // $10,010
+            ],
+        };
+
+        // Mid price = (100000 + 100100) / 2 = 100050
+        // Buy $5000 against asks at 100100
+        // Slippage = (100100 - 100050) / 100050 * 10000 = ~4.9975 bps
+        let slippage = orderbook.get_slippage(dec!(5000), OrderSide::Buy);
+        assert!(slippage.is_some());
+        let slippage_bps = slippage.unwrap();
+        assert!(slippage_bps > dec!(4.99) && slippage_bps < dec!(5.01));
+    }
+
+    #[test]
+    fn test_get_slippage_sell_single_level() {
+        let orderbook = Orderbook {
+            symbol: "BTC".to_string(),
+            timestamp: Utc::now(),
+            bids: vec![
+                OrderbookLevel { price: dec!(100000), quantity: dec!(0.1) }, // $10,000
+            ],
+            asks: vec![
+                OrderbookLevel { price: dec!(100100), quantity: dec!(0.1) }, // $10,010
+            ],
+        };
+
+        // Mid price = 100050
+        // Sell $5000 against bids at 100000
+        // Slippage = (100050 - 100000) / 100050 * 10000 = ~4.9975 bps
+        let slippage = orderbook.get_slippage(dec!(5000), OrderSide::Sell);
+        assert!(slippage.is_some());
+        let slippage_bps = slippage.unwrap();
+        assert!(slippage_bps > dec!(4.99) && slippage_bps < dec!(5.01));
+    }
+
+    #[test]
+    fn test_get_slippage_buy_multiple_levels() {
+        let orderbook = Orderbook {
+            symbol: "BTC".to_string(),
+            timestamp: Utc::now(),
+            bids: vec![
+                OrderbookLevel { price: dec!(100000), quantity: dec!(0.1) },
+            ],
+            asks: vec![
+                OrderbookLevel { price: dec!(100100), quantity: dec!(0.05) }, // $5,005
+                OrderbookLevel { price: dec!(100200), quantity: dec!(0.05) }, // $5,010
+                OrderbookLevel { price: dec!(100300), quantity: dec!(0.05) }, // $5,015
+            ],
+        };
+
+        // Buy $10,000 requires first two levels
+        // Level 1: $5,005 at 100100
+        // Level 2: $4,995 at 100200 (partial)
+        // Avg price should be > 100100 and < 100200
+        let slippage = orderbook.get_slippage(dec!(10000), OrderSide::Buy);
+        assert!(slippage.is_some());
+        let slippage_bps = slippage.unwrap();
+        // Should have positive slippage
+        assert!(slippage_bps > Decimal::ZERO);
+    }
+
+    #[test]
+    fn test_get_slippage_sell_multiple_levels() {
+        let orderbook = Orderbook {
+            symbol: "BTC".to_string(),
+            timestamp: Utc::now(),
+            bids: vec![
+                OrderbookLevel { price: dec!(100000), quantity: dec!(0.05) }, // $5,000
+                OrderbookLevel { price: dec!(99900), quantity: dec!(0.05) },  // $4,995
+                OrderbookLevel { price: dec!(99800), quantity: dec!(0.05) },  // $4,990
+            ],
+            asks: vec![
+                OrderbookLevel { price: dec!(100100), quantity: dec!(0.1) },
+            ],
+        };
+
+        // Sell $10,000 requires first two levels plus partial third
+        let slippage = orderbook.get_slippage(dec!(10000), OrderSide::Sell);
+        assert!(slippage.is_some());
+        let slippage_bps = slippage.unwrap();
+        // Should have positive slippage
+        assert!(slippage_bps > Decimal::ZERO);
+    }
+
+    #[test]
+    fn test_get_slippage_insufficient_liquidity() {
+        let orderbook = Orderbook {
+            symbol: "BTC".to_string(),
+            timestamp: Utc::now(),
+            bids: vec![
+                OrderbookLevel { price: dec!(100000), quantity: dec!(0.05) }, // $5,000
+            ],
+            asks: vec![
+                OrderbookLevel { price: dec!(100100), quantity: dec!(0.05) }, // $5,005
+            ],
+        };
+
+        // Try to buy $10,000 but only $5,005 available
+        let slippage = orderbook.get_slippage(dec!(10000), OrderSide::Buy);
+        assert!(slippage.is_none());
+
+        // Try to sell $10,000 but only $5,000 available
+        let slippage = orderbook.get_slippage(dec!(10000), OrderSide::Sell);
+        assert!(slippage.is_none());
+    }
+
+    #[test]
+    fn test_get_slippage_empty_orderbook() {
+        let orderbook = Orderbook {
+            symbol: "BTC".to_string(),
+            timestamp: Utc::now(),
+            bids: vec![],
+            asks: vec![],
+        };
+
+        let slippage = orderbook.get_slippage(dec!(5000), OrderSide::Buy);
+        assert!(slippage.is_none());
+
+        let slippage = orderbook.get_slippage(dec!(5000), OrderSide::Sell);
+        assert!(slippage.is_none());
+    }
+
+    #[test]
+    fn test_get_slippage_one_sided_orderbook() {
+        // Only bids, no asks
+        let orderbook1 = Orderbook {
+            symbol: "BTC".to_string(),
+            timestamp: Utc::now(),
+            bids: vec![
+                OrderbookLevel { price: dec!(100000), quantity: dec!(0.1) },
+            ],
+            asks: vec![],
+        };
+
+        let slippage = orderbook1.get_slippage(dec!(5000), OrderSide::Buy);
+        assert!(slippage.is_none()); // Can't buy without asks
+
+        let slippage = orderbook1.get_slippage(dec!(5000), OrderSide::Sell);
+        assert!(slippage.is_none()); // Can't calculate mid price
+
+        // Only asks, no bids
+        let orderbook2 = Orderbook {
+            symbol: "BTC".to_string(),
+            timestamp: Utc::now(),
+            bids: vec![],
+            asks: vec![
+                OrderbookLevel { price: dec!(100100), quantity: dec!(0.1) },
+            ],
+        };
+
+        let slippage = orderbook2.get_slippage(dec!(5000), OrderSide::Buy);
+        assert!(slippage.is_none()); // Can't calculate mid price
+
+        let slippage = orderbook2.get_slippage(dec!(5000), OrderSide::Sell);
+        assert!(slippage.is_none()); // Can't sell without bids
+    }
+
+    #[test]
+    fn test_get_slippage_zero_slippage() {
+        // Create orderbook where execution price equals mid price
+        // This happens when buy/sell at exactly mid price (theoretical case)
+        let orderbook = Orderbook {
+            symbol: "BTC".to_string(),
+            timestamp: Utc::now(),
+            bids: vec![
+                OrderbookLevel { price: dec!(100000), quantity: dec!(1.0) },
+            ],
+            asks: vec![
+                OrderbookLevel { price: dec!(100000), quantity: dec!(1.0) },
+            ],
+        };
+
+        // Mid price = 100000
+        // Buy/sell at exactly 100000 = 0 slippage
+        let buy_slippage = orderbook.get_slippage(dec!(50000), OrderSide::Buy);
+        assert!(buy_slippage.is_some());
+        assert_eq!(buy_slippage.unwrap(), Decimal::ZERO);
+
+        let sell_slippage = orderbook.get_slippage(dec!(50000), OrderSide::Sell);
+        assert!(sell_slippage.is_some());
+        assert_eq!(sell_slippage.unwrap(), Decimal::ZERO);
+    }
+
+    #[test]
+    fn test_get_slippage_large_trade() {
+        let orderbook = Orderbook {
+            symbol: "BTC".to_string(),
+            timestamp: Utc::now(),
+            bids: vec![
+                OrderbookLevel { price: dec!(100000), quantity: dec!(0.5) },  // $50,000
+                OrderbookLevel { price: dec!(99000), quantity: dec!(0.5) },   // $49,500
+                OrderbookLevel { price: dec!(98000), quantity: dec!(0.5) },   // $49,000
+            ],
+            asks: vec![
+                OrderbookLevel { price: dec!(101000), quantity: dec!(0.5) },  // $50,500
+                OrderbookLevel { price: dec!(102000), quantity: dec!(0.5) },  // $51,000
+                OrderbookLevel { price: dec!(103000), quantity: dec!(0.5) },  // $51,500
+            ],
+        };
+
+        // Large buy that spans all three ask levels
+        let buy_slippage = orderbook.get_slippage(dec!(150000), OrderSide::Buy);
+        assert!(buy_slippage.is_some());
+        let buy_bps = buy_slippage.unwrap();
+        // Should have significant slippage (> 1%)
+        assert!(buy_bps > dec!(100)); // > 100 bps = > 1%
+
+        // Large sell that spans all three bid levels
+        let sell_slippage = orderbook.get_slippage(dec!(145000), OrderSide::Sell);
+        assert!(sell_slippage.is_some());
+        let sell_bps = sell_slippage.unwrap();
+        // Should have significant slippage (> 1%)
+        assert!(sell_bps > dec!(100)); // > 100 bps = > 1%
     }
 }
