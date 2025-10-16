@@ -86,6 +86,105 @@ pub struct Orderbook {
     pub timestamp: DateTime<Utc>,
 }
 
+impl Orderbook {
+    /// Get the best bid price (highest bid)
+    pub fn best_bid(&self) -> Option<Decimal> {
+        self.bids.first().map(|level| level.price)
+    }
+
+    /// Get the best ask price (lowest ask)
+    pub fn best_ask(&self) -> Option<Decimal> {
+        self.asks.first().map(|level| level.price)
+    }
+
+    /// Get the best bid quantity
+    pub fn best_bid_qty(&self) -> Option<Decimal> {
+        self.bids.first().map(|level| level.quantity)
+    }
+
+    /// Get the best ask quantity
+    pub fn best_ask_qty(&self) -> Option<Decimal> {
+        self.asks.first().map(|level| level.quantity)
+    }
+
+    /// Calculate the spread between best bid and best ask in basis points (bps).
+    /// Returns None if orderbook is empty.
+    pub fn spread(&self) -> Option<Decimal> {
+        let best_bid = self.best_bid()?;
+        let best_ask = self.best_ask()?;
+
+        if best_bid.is_zero() || best_ask.is_zero() {
+            return None;
+        }
+
+        let mid_price = (best_bid + best_ask) / Decimal::TWO;
+        let spread = best_ask - best_bid;
+
+        Some((spread / mid_price) * Decimal::from(10000))
+    }
+
+    /// Calculate total notional value (price × quantity) for bid side within given bps spread.
+    /// bps: basis points spread from mid price (e.g., 5 = 5 basis points = 0.05%)
+    pub fn bid_notional(&self, bps: Decimal) -> Decimal {
+        let Some(best_bid) = self.bids.first() else {
+            return Decimal::ZERO;
+        };
+        let Some(best_ask) = self.asks.first() else {
+            return Decimal::ZERO;
+        };
+
+        let mid_price = (best_bid.price + best_ask.price) / Decimal::TWO;
+        let threshold = mid_price * (Decimal::ONE - bps / Decimal::from(10000));
+
+        self.bids
+            .iter()
+            .filter(|level| level.price >= threshold)
+            .map(|level| level.price * level.quantity)
+            .sum()
+    }
+
+    /// Calculate total notional value (price × quantity) for ask side within given bps spread.
+    /// bps: basis points spread from mid price (e.g., 5 = 5 basis points = 0.05%)
+    pub fn ask_notional(&self, bps: Decimal) -> Decimal {
+        let Some(best_bid) = self.bids.first() else {
+            return Decimal::ZERO;
+        };
+        let Some(best_ask) = self.asks.first() else {
+            return Decimal::ZERO;
+        };
+
+        let mid_price = (best_bid.price + best_ask.price) / Decimal::TWO;
+        let threshold = mid_price * (Decimal::ONE + bps / Decimal::from(10000));
+
+        self.asks
+            .iter()
+            .filter(|level| level.price <= threshold)
+            .map(|level| level.price * level.quantity)
+            .sum()
+    }
+
+    /// Returns the number of bid levels and ask levels.
+    pub fn size(&self) -> (usize, usize) {
+        (self.bids.len(), self.asks.len())
+    }
+
+    /// Calculate total notional value for all bids and all asks.
+    /// Returns (total_bid_notional, total_ask_notional)
+    pub fn total_notional(&self) -> (Decimal, Decimal) {
+        let bid_notional: Decimal = self.bids
+            .iter()
+            .map(|level| level.price * level.quantity)
+            .sum();
+
+        let ask_notional: Decimal = self.asks
+            .iter()
+            .map(|level| level.price * level.quantity)
+            .sum();
+
+        (bid_notional, ask_notional)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FundingRate {
     pub symbol: String,
