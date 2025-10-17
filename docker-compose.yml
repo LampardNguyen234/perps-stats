@@ -110,12 +110,10 @@ services:
     command:
       - perps-stats
       - start
-      - --klines-interval
-      - "${KLINES_INTERVAL:-60}"
+      - -e
+      - "extended,aster,pacifica,lighter,hyperliquid,paradex,binance"
       - --report-interval
       - "${REPORT_INTERVAL:-30}"
-      - --klines-timeframes
-      - "${KLINES_TIMEFRAMES:-5m,15m,1h}"
 
     # Alternative commands (comment out above, uncomment one below):
 
@@ -162,47 +160,6 @@ services:
           cpus: '0.5'
           memory: 512M
 
-  # ==================================================================================================
-  # Grafana Dashboard (Optional)
-  # ==================================================================================================
-  # Uncomment to enable Grafana for data visualization
-
-  grafana:
-    image: grafana/grafana:latest
-    container_name: perps-grafana
-    restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
-    environment:
-      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
-      GF_INSTALL_PLUGINS: ""
-      # Pass PostgreSQL password for datasource provisioning
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-perps_secure_password}
-      # Enable anonymous access for easier testing (disable in production)
-      GF_AUTH_ANONYMOUS_ENABLED: "false"
-      GF_AUTH_ANONYMOUS_ORG_ROLE: "Viewer"
-    ports:
-      - "${GRAFANA_PORT:-3000}:3000"
-    volumes:
-      - grafana_data:/var/lib/grafana
-      # Mount provisioned dashboards and datasources
-      - ./grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./grafana/dashboards:/etc/grafana/dashboards:ro
-    networks:
-      - perps-network
-    healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/api/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
-    logging:
-      driver: "json-file"
-      options:
-        "max-size": "10m"
-        "max-file": "3"
 
 # ====================================================================================================
 # Networks

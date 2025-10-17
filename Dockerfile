@@ -70,7 +70,6 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 COPY src ./src
 COPY migrations ./migrations
-COPY schema.sql ./schema.sql
 
 # Build application in release mode
 RUN cargo build --release
@@ -106,16 +105,12 @@ COPY --from=app-builder --chown=perps:perps /app/target/release/perps-stats /usr
 
 # Copy migrations and schema
 COPY --chown=perps:perps migrations ./migrations
-COPY --chown=perps:perps schema.sql ./schema.sql
 
 # Copy default symbols file (if exists)
 COPY --chown=perps:perps symbols.txt ./symbols.txt 2>/dev/null || echo "BTC\nETH\nSOL" > ./symbols.txt
 
 # Switch to non-root user
 USER perps
-
-# Expose default ports (if REST API is added in future)
-# EXPOSE 8080
 
 # Environment variables (can be overridden)
 ENV RUST_LOG=perps_stats=info,perps_core=info
