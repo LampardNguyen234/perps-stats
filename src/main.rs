@@ -57,15 +57,23 @@ async fn main() -> Result<()> {
             })
             .await?;
         }
-        Commands::Db { command, database_url } => match command {
+        Commands::Db {
+            command,
+            database_url,
+        } => match command {
             DbCommands::Migrate => commands::db::migrate(database_url).await?,
             DbCommands::Clean {
                 older_than,
                 drop_partitions_older_than,
                 truncate,
             } => {
-                commands::db::clean(database_url, older_than, drop_partitions_older_than, truncate)
-                    .await?
+                commands::db::clean(
+                    database_url,
+                    older_than,
+                    drop_partitions_older_than,
+                    truncate,
+                )
+                .await?
             }
             DbCommands::Stats { format } => commands::db::stats(database_url, &format).await?,
         },

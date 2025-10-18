@@ -1,13 +1,13 @@
-use std::ops::Mul;
 use crate::cache::SymbolsCache;
 use crate::kucoin::types::*;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use chrono::{TimeZone, Utc};
 use perps_core::types::*;
-use perps_core::{IPerps, RateLimiter, RetryConfig, execute_with_retry};
-use rust_decimal::Decimal;
+use perps_core::{execute_with_retry, IPerps, RateLimiter, RetryConfig};
 use rust_decimal::prelude::FromPrimitive;
+use rust_decimal::Decimal;
+use std::ops::Mul;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -53,27 +53,30 @@ impl KucoinClient {
             let http = http.clone();
             let rate_limiter = rate_limiter.clone();
             async move {
-                rate_limiter.execute(|| {
-                    let url = url.clone();
-                    let http = http.clone();
-                    async move {
-                        let response = http.get(&url).send().await?;
-                        if !response.status().is_success() {
-                            return Err(anyhow!(
-                                "GET request to {} failed with status: {}",
-                                url,
-                                response.status()
-                            ));
+                rate_limiter
+                    .execute(|| {
+                        let url = url.clone();
+                        let http = http.clone();
+                        async move {
+                            let response = http.get(&url).send().await?;
+                            if !response.status().is_success() {
+                                return Err(anyhow!(
+                                    "GET request to {} failed with status: {}",
+                                    url,
+                                    response.status()
+                                ));
+                            }
+                            let wrapper: KucoinResponse<T> = response.json().await?;
+                            if wrapper.code != "200000" {
+                                return Err(anyhow!("KuCoin API error: code {}", wrapper.code));
+                            }
+                            Ok(wrapper.data)
                         }
-                        let wrapper: KucoinResponse<T> = response.json().await?;
-                        if wrapper.code != "200000" {
-                            return Err(anyhow!("KuCoin API error: code {}", wrapper.code));
-                        }
-                        Ok(wrapper.data)
-                    }
-                }).await
+                    })
+                    .await
             }
-        }).await
+        })
+        .await
     }
 }
 
@@ -110,11 +113,7 @@ impl IPerps for KucoinClient {
                 } else {
                     2
                 };
-                let quantity_scale = if c.lot_size > 0 {
-                    0
-                } else {
-                    3
-                };
+                let quantity_scale = if c.lot_size > 0 { 0 } else { 3 };
 
                 Market {
                     symbol: c.symbol.clone(),
@@ -144,11 +143,7 @@ impl IPerps for KucoinClient {
         } else {
             2
         };
-        let quantity_scale = if contract.lot_size > 0 {
-            0
-        } else {
-            3
-        };
+        let quantity_scale = if contract.lot_size > 0 { 0 } else { 3 };
 
         Ok(Market {
             symbol: contract.symbol.clone(),
@@ -297,7 +292,10 @@ impl IPerps for KucoinClient {
             .into_iter()
             .filter_map(|k| {
                 if k.len() < 7 {
-                    tracing::warn!("Invalid kline data format for KuCoin: expected 7 fields, got {}", k.len());
+                    tracing::warn!(
+                        "Invalid kline data format for KuCoin: expected 7 fields, got {}",
+                        k.len()
+                    );
                     return None;
                 }
 
@@ -340,12 +338,13 @@ impl IPerps for KucoinClient {
 
     async fn get_ticker(&self, symbol: &str) -> Result<Ticker> {
         // Get detailed contract info for this specific symbol (includes 24h stats)
-        let contract: KucoinContractDetail = self
-            .get(&format!("/api/v1/contracts/{}", symbol))
-            .await?;
+        let contract: KucoinContractDetail =
+            self.get(&format!("/api/v1/contracts/{}", symbol)).await?;
 
         // Get ticker for real-time best bid/ask
-        let ticker: KucoinTicker = self.get(&format!("/api/v1/ticker?symbol={}", symbol)).await?;
+        let ticker: KucoinTicker = self
+            .get(&format!("/api/v1/ticker?symbol={}", symbol))
+            .await?;
 
         // Parse prices with fallback logging
         let last_price = contract
@@ -359,22 +358,26 @@ impl IPerps for KucoinClient {
             .mark_price
             .and_then(Decimal::from_f64)
             .unwrap_or_else(|| {
-                tracing::debug!("KuCoin {} mark_price is None, using last_price fallback", symbol);
+                tracing::debug!(
+                    "KuCoin {} mark_price is None, using last_price fallback",
+                    symbol
+                );
                 last_price
             });
         let index_price = contract
             .index_price
             .and_then(Decimal::from_f64)
             .unwrap_or_else(|| {
-                tracing::debug!("KuCoin {} index_price is None, using last_price fallback", symbol);
+                tracing::debug!(
+                    "KuCoin {} index_price is None, using last_price fallback",
+                    symbol
+                );
                 last_price
             });
 
-        let best_bid_price = Decimal::from_str(&ticker.best_bid_price)
-            .unwrap_or(Decimal::ZERO);
+        let best_bid_price = Decimal::from_str(&ticker.best_bid_price).unwrap_or(Decimal::ZERO);
         let best_bid_qty = Decimal::from(ticker.best_bid_size);
-        let best_ask_price = Decimal::from_str(&ticker.best_ask_price)
-            .unwrap_or(Decimal::ZERO);
+        let best_ask_price = Decimal::from_str(&ticker.best_ask_price).unwrap_or(Decimal::ZERO);
         let best_ask_qty = Decimal::from(ticker.best_ask_size);
 
         // Parse 24h statistics with fallback logging
@@ -421,7 +424,8 @@ impl IPerps for KucoinClient {
                 Decimal::ZERO
             });
         let mut open_interest = Decimal::from_str(&contract.open_interest).unwrap_or(Decimal::ZERO);
-        open_interest = open_interest * Decimal::from_f64(contract.multiplier).unwrap_or(Decimal::ZERO);
+        open_interest =
+            open_interest * Decimal::from_f64(contract.multiplier).unwrap_or(Decimal::ZERO);
 
         Ok(Ticker {
             symbol: contract.symbol,
@@ -463,7 +467,9 @@ impl IPerps for KucoinClient {
         _end_time: Option<chrono::DateTime<chrono::Utc>>,
         _limit: Option<u32>,
     ) -> Result<Vec<FundingRate>> {
-        Err(anyhow!("get_funding_rate_history is not implemented for KuCoin yet"))
+        Err(anyhow!(
+            "get_funding_rate_history is not implemented for KuCoin yet"
+        ))
     }
 
     async fn get_open_interest(&self, symbol: &str) -> Result<OpenInterest> {
@@ -485,10 +491,14 @@ impl IPerps for KucoinClient {
     }
 
     async fn get_market_stats(&self, _symbol: &str) -> Result<MarketStats> {
-        Err(anyhow!("get_market_stats is not available from KuCoin public API"))
+        Err(anyhow!(
+            "get_market_stats is not available from KuCoin public API"
+        ))
     }
 
     async fn get_all_market_stats(&self) -> Result<Vec<MarketStats>> {
-        Err(anyhow!("get_all_market_stats is not available from KuCoin public API"))
+        Err(anyhow!(
+            "get_all_market_stats is not available from KuCoin public API"
+        ))
     }
 }

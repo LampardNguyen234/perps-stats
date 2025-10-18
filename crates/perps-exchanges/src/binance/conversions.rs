@@ -6,8 +6,9 @@ use super::error::BinanceError;
 
 /// Convert Binance timestamp (milliseconds) to DateTime<Utc>
 pub fn timestamp_to_datetime(timestamp_ms: i64) -> Result<DateTime<Utc>, BinanceError> {
-    DateTime::from_timestamp_millis(timestamp_ms)
-        .ok_or_else(|| BinanceError::ConversionError(format!("Invalid timestamp: {}", timestamp_ms)))
+    DateTime::from_timestamp_millis(timestamp_ms).ok_or_else(|| {
+        BinanceError::ConversionError(format!("Invalid timestamp: {}", timestamp_ms))
+    })
 }
 
 /// Convert string to Decimal

@@ -4,7 +4,7 @@ use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, TimeZone, Utc};
 use perps_core::types::*;
-use perps_core::{IPerps, RateLimiter, RetryConfig, execute_with_retry};
+use perps_core::{execute_with_retry, IPerps, RateLimiter, RetryConfig};
 use rust_decimal::Decimal;
 use serde_json::Value;
 use std::str::FromStr;
@@ -51,22 +51,32 @@ impl HyperliquidClient {
             let body = body.clone();
             let rate_limiter = rate_limiter.clone();
             async move {
-                rate_limiter.execute(|| {
-                    let http = http.clone();
-                    let body = body.clone();
-                    async move {
-                        let response = http.post(INFO_URL).json(&body).send().await?;
-                        if !response.status().is_success() {
-                            let status = response.status();
-                            let text = response.text().await.unwrap_or_else(|_| "Failed to read error body".to_string());
-                            return Err(anyhow!("info request failed with status: {}. Body: {}", status, text));
+                rate_limiter
+                    .execute(|| {
+                        let http = http.clone();
+                        let body = body.clone();
+                        async move {
+                            let response = http.post(INFO_URL).json(&body).send().await?;
+                            if !response.status().is_success() {
+                                let status = response.status();
+                                let text = response
+                                    .text()
+                                    .await
+                                    .unwrap_or_else(|_| "Failed to read error body".to_string());
+                                return Err(anyhow!(
+                                    "info request failed with status: {}. Body: {}",
+                                    status,
+                                    text
+                                ));
+                            }
+                            let data = response.json().await?;
+                            Ok(data)
                         }
-                        let data = response.json().await?;
-                        Ok(data)
-                    }
-                }).await
+                    })
+                    .await
             }
-        }).await
+        })
+        .await
     }
 
     /// Helper method to fetch combined meta and asset contexts
@@ -160,10 +170,10 @@ impl IPerps for HyperliquidClient {
                 symbol: u.name.clone(),
                 contract: u.name,
                 contract_size: Decimal::ONE, // Not provided
-                price_scale: 0, // Not provided
+                price_scale: 0,              // Not provided
                 quantity_scale: u.sz_decimals as i32,
-                min_order_qty: Decimal::ZERO, // Not provided
-                max_order_qty: Decimal::ZERO, // Not provided
+                min_order_qty: Decimal::ZERO,   // Not provided
+                max_order_qty: Decimal::ZERO,   // Not provided
                 min_order_value: Decimal::ZERO, // Not provided
                 max_leverage: u.max_leverage.into(),
             })
@@ -207,7 +217,8 @@ impl IPerps for HyperliquidClient {
             .map(|l| (l.price, l.quantity))
             .unwrap_or((Decimal::ZERO, Decimal::ZERO));
 
-        let last_price = Decimal::from_str(&asset_ctx.mid_px.clone().unwrap_or_else(|| "0".to_string()))?;
+        let last_price =
+            Decimal::from_str(&asset_ctx.mid_px.clone().unwrap_or_else(|| "0".to_string()))?;
         let prev_day_px = Decimal::from_str(&asset_ctx.prev_day_px)?;
         let price_change = last_price - prev_day_px;
         // Store as decimal (e.g., 0.05 for 5%) to match other exchanges
@@ -254,7 +265,10 @@ impl IPerps for HyperliquidClient {
                 // For all tickers, we skip fetching orderbook to improve performance
                 // Use mid price as last price and mark price for bid/ask approximation
                 let last_price = Decimal::from_str(
-                    &asset_ctx.mid_px.clone().unwrap_or_else(|| asset_ctx.mark_px.clone()),
+                    &asset_ctx
+                        .mid_px
+                        .clone()
+                        .unwrap_or_else(|| asset_ctx.mark_px.clone()),
                 )?;
                 let prev_day_px = Decimal::from_str(&asset_ctx.prev_day_px)?;
                 let price_change = last_price - prev_day_px;
@@ -291,10 +305,10 @@ impl IPerps for HyperliquidClient {
     }
 
     async fn get_orderbook(&self, symbol: &str, _depth: u32) -> Result<Orderbook> {
-        let body = serde_json::json!({ "type": "l2Book", "coin": symbol, "nSigFigs": 5, "mantisa": 1 });
+        let body =
+            serde_json::json!({ "type": "l2Book", "coin": symbol, "nSigFigs": 5, "mantisa": 1 });
         let book: L2Book = self.post(body).await?;
-        let bids = book
-            .levels[0]
+        let bids = book.levels[0]
             .iter()
             .map(|l| {
                 Ok(OrderbookLevel {
@@ -303,8 +317,7 @@ impl IPerps for HyperliquidClient {
                 })
             })
             .collect::<Result<Vec<_>>>()?;
-        let asks = book
-            .levels[1]
+        let asks = book.levels[1]
             .iter()
             .map(|l| {
                 Ok(OrderbookLevel {
@@ -324,15 +337,17 @@ impl IPerps for HyperliquidClient {
     async fn get_funding_rate(&self, symbol: &str) -> Result<FundingRate> {
         let body = serde_json::json!({ "type": "fundingHistory", "coin": symbol, "startTime": Utc::now().timestamp_millis() - 1000 * 60 * 60 * 8 });
         let history: Vec<FundingHistory> = self.post(body).await?;
-        let last_rate = history.last().ok_or_else(|| anyhow!("No funding history found"))?;
+        let last_rate = history
+            .last()
+            .ok_or_else(|| anyhow!("No funding history found"))?;
         Ok(FundingRate {
             symbol: symbol.to_string(),
             funding_rate: Decimal::from_str(&last_rate.funding_rate)?,
             predicted_rate: Decimal::ZERO, // Not available
             funding_time: Utc.timestamp_millis_opt(last_rate.time as i64).unwrap(),
             next_funding_time: Utc.timestamp_millis_opt(0).unwrap(), // Not available
-            funding_interval: 0, // Not available
-            funding_rate_cap_floor: Decimal::ZERO, // Not available
+            funding_interval: 0,                                     // Not available
+            funding_rate_cap_floor: Decimal::ZERO,                   // Not available
         })
     }
 
@@ -424,7 +439,9 @@ impl IPerps for HyperliquidClient {
     async fn get_recent_trades(&self, _symbol: &str, _limit: u32) -> Result<Vec<Trade>> {
         // Hyperliquid doesn't have a public recent trades endpoint
         // Would require userFills with a known address
-        Err(anyhow!("Recent trades are not available from Hyperliquid public API"))
+        Err(anyhow!(
+            "Recent trades are not available from Hyperliquid public API"
+        ))
     }
 
     async fn get_market_stats(&self, symbol: &str) -> Result<MarketStats> {
@@ -456,7 +473,10 @@ impl IPerps for HyperliquidClient {
         for (index, universe_item) in data.universe.iter().enumerate() {
             if let Some(asset_ctx) = data.asset_ctxs.get(index) {
                 let last_price = Decimal::from_str(
-                    &asset_ctx.mid_px.clone().unwrap_or_else(|| asset_ctx.mark_px.clone()),
+                    &asset_ctx
+                        .mid_px
+                        .clone()
+                        .unwrap_or_else(|| asset_ctx.mark_px.clone()),
                 )?;
                 let prev_day_px = Decimal::from_str(&asset_ctx.prev_day_px)?;
                 let price_change = last_price - prev_day_px;

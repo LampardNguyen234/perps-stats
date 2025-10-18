@@ -9,9 +9,9 @@ pub struct ParadexWsSubscribeRequest {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ParadexWsSubscribeParams {
-    pub channel: String,           // e.g., "markets_summary", "order_book", "trades"
+    pub channel: String, // e.g., "markets_summary", "order_book", "trades"
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub market: Option<String>,    // e.g., "BTC-USD-PERP"
+    pub market: Option<String>, // e.g., "BTC-USD-PERP"
 }
 
 /// Paradex WebSocket subscription response
@@ -86,8 +86,8 @@ pub struct ParadexTradeItem {
     pub market: String,
     pub price: String,
     pub size: String,
-    pub side: String,     // "buy" or "sell"
-    pub timestamp: i64,   // Unix timestamp in seconds
+    pub side: String,   // "buy" or "sell"
+    pub timestamp: i64, // Unix timestamp in seconds
 }
 
 /// Paradex WebSocket funding data message

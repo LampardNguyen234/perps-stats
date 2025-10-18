@@ -1,8 +1,10 @@
 use anyhow::Result;
 use chrono::{DateTime, TimeZone, Utc};
-use perps_core::{FundingRate as CoreFundingRate, Kline, Market as CoreMarket, Orderbook, OrderbookLevel, Ticker};
-use rust_decimal::Decimal;
+use perps_core::{
+    FundingRate as CoreFundingRate, Kline, Market as CoreMarket, Orderbook, OrderbookLevel, Ticker,
+};
 use rust_decimal::prelude::FromPrimitive;
+use rust_decimal::Decimal;
 use std::str::FromStr;
 
 use super::models::{Candlestick, FundingRate, Order, OrderBook, OrderBookDetail};
@@ -12,7 +14,7 @@ pub fn to_market(orderbook: &OrderBook) -> Result<CoreMarket> {
     Ok(CoreMarket {
         symbol: orderbook.symbol.clone(),
         contract: format!("{}-PERP", orderbook.symbol), // Lighter perps format
-        contract_size: Decimal::from(1), // 1:1 for most perps
+        contract_size: Decimal::from(1),                // 1:1 for most perps
         price_scale: -(orderbook.supported_price_decimals as i32),
         quantity_scale: -(orderbook.supported_size_decimals as i32),
         min_order_qty: Decimal::from_str(&orderbook.min_base_amount)?,
@@ -24,11 +26,10 @@ pub fn to_market(orderbook: &OrderBook) -> Result<CoreMarket> {
 
 /// Convert Lighter OrderBookDetail to core Ticker
 pub fn to_ticker(detail: &OrderBookDetail) -> Result<Ticker> {
-    let last_price = Decimal::from_f64(detail.last_trade_price)
-        .unwrap_or_else(|| Decimal::from(0));
+    let last_price = Decimal::from_f64(detail.last_trade_price).unwrap_or_else(|| Decimal::from(0));
 
-    let price_change_pct_raw = Decimal::from_f64(detail.daily_price_change)
-        .unwrap_or_else(|| Decimal::from(0));
+    let price_change_pct_raw =
+        Decimal::from_f64(detail.daily_price_change).unwrap_or_else(|| Decimal::from(0));
 
     // Convert percentage to decimal to match other exchanges (e.g., -1.19% -> -0.0119)
     let price_change_pct = price_change_pct_raw / Decimal::from(100);
@@ -42,7 +43,7 @@ pub fn to_ticker(detail: &OrderBookDetail) -> Result<Ticker> {
     Ok(Ticker {
         symbol: detail.symbol.clone(),
         last_price,
-        mark_price: last_price, // Use last price as mark price
+        mark_price: last_price,  // Use last price as mark price
         index_price: last_price, // Use last price as index price
         best_bid_price: last_price * Decimal::new(9999, 4), // Approximate (99.99% of last)
         best_bid_qty: Decimal::ZERO, // Not provided
@@ -66,11 +67,10 @@ pub fn to_ticker(detail: &OrderBookDetail) -> Result<Ticker> {
 
 /// Convert Lighter OrderBookDetail to core Ticker with orderbook data for best bid/ask
 pub fn to_ticker_with_orderbook(detail: &OrderBookDetail, orderbook: &Orderbook) -> Result<Ticker> {
-    let last_price = Decimal::from_f64(detail.last_trade_price)
-        .unwrap_or_else(|| Decimal::from(0));
+    let last_price = Decimal::from_f64(detail.last_trade_price).unwrap_or_else(|| Decimal::from(0));
 
-    let price_change_pct_raw = Decimal::from_f64(detail.daily_price_change)
-        .unwrap_or_else(|| Decimal::from(0));
+    let price_change_pct_raw =
+        Decimal::from_f64(detail.daily_price_change).unwrap_or_else(|| Decimal::from(0));
 
     // Convert percentage to decimal to match other exchanges (e.g., -1.19% -> -0.0119)
     let price_change_pct = price_change_pct_raw / Decimal::from(100);
@@ -99,7 +99,7 @@ pub fn to_ticker_with_orderbook(detail: &OrderBookDetail, orderbook: &Orderbook)
     Ok(Ticker {
         symbol: detail.symbol.clone(),
         last_price,
-        mark_price: last_price, // Use last price as mark price
+        mark_price: last_price,  // Use last price as mark price
         index_price: last_price, // Use last price as index price
         best_bid_price,
         best_bid_qty,
@@ -122,11 +122,7 @@ pub fn to_ticker_with_orderbook(detail: &OrderBookDetail, orderbook: &Orderbook)
 }
 
 /// Convert Lighter orders to core Orderbook
-pub fn to_orderbook(
-    symbol: &str,
-    bids: &[Order],
-    asks: &[Order],
-) -> Result<Orderbook> {
+pub fn to_orderbook(symbol: &str, bids: &[Order], asks: &[Order]) -> Result<Orderbook> {
     let mut bid_levels: Vec<OrderbookLevel> = Vec::new();
     let mut ask_levels: Vec<OrderbookLevel> = Vec::new();
 
@@ -164,10 +160,8 @@ pub fn to_orderbook(
 pub fn to_funding_rate(fr: &FundingRate) -> Result<CoreFundingRate> {
     Ok(CoreFundingRate {
         symbol: fr.symbol.clone(),
-        funding_rate: Decimal::from_f64(fr.rate)
-            .unwrap_or_else(|| Decimal::from(0)),
-        predicted_rate: Decimal::from_f64(fr.rate)
-            .unwrap_or_else(|| Decimal::from(0)),
+        funding_rate: Decimal::from_f64(fr.rate).unwrap_or_else(|| Decimal::from(0)),
+        predicted_rate: Decimal::from_f64(fr.rate).unwrap_or_else(|| Decimal::from(0)),
         funding_time: Utc::now(),
         next_funding_time: Utc::now() + chrono::Duration::hours(8), // Assume 8 hour funding
         funding_interval: 8, // Assume 8 hour funding interval
@@ -193,18 +187,12 @@ pub fn to_kline(symbol: &str, interval: &str, cs: &Candlestick) -> Result<Kline>
         interval: interval.to_string(),
         open_time,
         close_time,
-        open: Decimal::from_f64(cs.open)
-            .unwrap_or_else(|| Decimal::from(0)),
-        high: Decimal::from_f64(cs.high)
-            .unwrap_or_else(|| Decimal::from(0)),
-        low: Decimal::from_f64(cs.low)
-            .unwrap_or_else(|| Decimal::from(0)),
-        close: Decimal::from_f64(cs.close)
-            .unwrap_or_else(|| Decimal::from(0)),
-        volume: Decimal::from_f64(cs.volume0)
-            .unwrap_or_else(|| Decimal::from(0)),
-        turnover: Decimal::from_f64(cs.volume1)
-            .unwrap_or_else(|| Decimal::from(0)),
+        open: Decimal::from_f64(cs.open).unwrap_or_else(|| Decimal::from(0)),
+        high: Decimal::from_f64(cs.high).unwrap_or_else(|| Decimal::from(0)),
+        low: Decimal::from_f64(cs.low).unwrap_or_else(|| Decimal::from(0)),
+        close: Decimal::from_f64(cs.close).unwrap_or_else(|| Decimal::from(0)),
+        volume: Decimal::from_f64(cs.volume0).unwrap_or_else(|| Decimal::from(0)),
+        turnover: Decimal::from_f64(cs.volume1).unwrap_or_else(|| Decimal::from(0)),
     })
 }
 

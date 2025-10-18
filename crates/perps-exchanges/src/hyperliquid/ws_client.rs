@@ -1,4 +1,7 @@
-use super::ws_types::{HyperliquidWsSubscribeRequest, HyperliquidWsSubscription, HyperliquidWsResponse, HyperliquidWsTrade, HyperliquidWsBook};
+use super::ws_types::{
+    HyperliquidWsBook, HyperliquidWsResponse, HyperliquidWsSubscribeRequest,
+    HyperliquidWsSubscription, HyperliquidWsTrade,
+};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use chrono::{TimeZone, Utc};
@@ -31,7 +34,10 @@ impl HyperliquidWsClient {
         tracing::info!("Connecting to Hyperliquid WebSocket: {}", self.base_url);
         let url = Url::parse(&self.base_url)?;
         let (ws_stream, response) = connect_async(url.as_str()).await?;
-        tracing::info!("Connected to Hyperliquid WebSocket (status: {:?})", response.status());
+        tracing::info!(
+            "Connected to Hyperliquid WebSocket (status: {:?})",
+            response.status()
+        );
         Ok(ws_stream)
     }
 
@@ -123,7 +129,8 @@ impl IPerpsStream for HyperliquidWsClient {
         let mut ws_stream = self.connect().await?;
 
         // Subscribe to allMids for ticker-like data
-        self.subscribe(&mut ws_stream, HyperliquidWsSubscription::AllMids).await?;
+        self.subscribe(&mut ws_stream, HyperliquidWsSubscription::AllMids)
+            .await?;
 
         let _client = self.clone();
         let symbols_set: std::collections::HashSet<String> = symbols.into_iter().collect();
@@ -215,7 +222,9 @@ impl IPerpsStream for HyperliquidWsClient {
         for symbol in &symbols {
             self.subscribe(
                 &mut ws_stream,
-                HyperliquidWsSubscription::Trades { coin: symbol.clone() },
+                HyperliquidWsSubscription::Trades {
+                    coin: symbol.clone(),
+                },
             )
             .await?;
         }
@@ -273,7 +282,9 @@ impl IPerpsStream for HyperliquidWsClient {
         for symbol in &symbols {
             self.subscribe(
                 &mut ws_stream,
-                HyperliquidWsSubscription::L2Book { coin: symbol.clone() },
+                HyperliquidWsSubscription::L2Book {
+                    coin: symbol.clone(),
+                },
             )
             .await?;
         }
@@ -330,8 +341,12 @@ impl IPerpsStream for HyperliquidWsClient {
             for data_type in &config.data_types {
                 let subscription = match data_type {
                     StreamDataType::Ticker => HyperliquidWsSubscription::AllMids,
-                    StreamDataType::Trade => HyperliquidWsSubscription::Trades { coin: symbol.clone() },
-                    StreamDataType::Orderbook => HyperliquidWsSubscription::L2Book { coin: symbol.clone() },
+                    StreamDataType::Trade => HyperliquidWsSubscription::Trades {
+                        coin: symbol.clone(),
+                    },
+                    StreamDataType::Orderbook => HyperliquidWsSubscription::L2Book {
+                        coin: symbol.clone(),
+                    },
                     StreamDataType::FundingRate => continue, // Hyperliquid doesn't have funding rate WebSocket
                     StreamDataType::Kline => continue, // Klines not yet implemented for Hyperliquid WebSocket
                 };
@@ -341,7 +356,8 @@ impl IPerpsStream for HyperliquidWsClient {
         }
 
         let client = self.clone();
-        let symbols_set: std::collections::HashSet<String> = config.symbols.iter().cloned().collect();
+        let symbols_set: std::collections::HashSet<String> =
+            config.symbols.iter().cloned().collect();
 
         let stream = async_stream::stream! {
             while let Some(msg) = ws_stream.next().await {

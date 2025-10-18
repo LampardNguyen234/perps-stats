@@ -1,7 +1,10 @@
 use async_trait::async_trait;
 use perps_core::*;
-use rust_decimal::{Decimal, prelude::ToPrimitive};
-use sqlx::{types::chrono::{DateTime, Utc, NaiveDate}, PgPool, Row};
+use rust_decimal::{prelude::ToPrimitive, Decimal};
+use sqlx::{
+    types::chrono::{DateTime, NaiveDate, Utc},
+    PgPool, Row,
+};
 
 /// Repository trait defines database operations for perps data.
 /// This abstraction allows for easier testing and potential migration to other databases.
@@ -14,40 +17,67 @@ pub trait Repository: Send + Sync {
     async fn store_tickers(&self, tickers: &[Ticker]) -> anyhow::Result<()>;
 
     /// Store ticker data with exchange information
-    async fn store_tickers_with_exchange(&self, exchange: &str, tickers: &[Ticker]) -> anyhow::Result<()>;
+    async fn store_tickers_with_exchange(
+        &self,
+        exchange: &str,
+        tickers: &[Ticker],
+    ) -> anyhow::Result<()>;
 
     /// Store orderbook snapshots
     async fn store_orderbooks(&self, orderbooks: &[Orderbook]) -> anyhow::Result<()>;
 
     /// Store orderbook snapshots with exchange information
-    async fn store_orderbooks_with_exchange(&self, exchange: &str, orderbooks: &[Orderbook]) -> anyhow::Result<()>;
+    async fn store_orderbooks_with_exchange(
+        &self,
+        exchange: &str,
+        orderbooks: &[Orderbook],
+    ) -> anyhow::Result<()>;
 
     /// Store funding rates
     async fn store_funding_rates(&self, rates: &[FundingRate]) -> anyhow::Result<()>;
 
     /// Store funding rates with exchange information
-    async fn store_funding_rates_with_exchange(&self, exchange: &str, rates: &[FundingRate]) -> anyhow::Result<()>;
+    async fn store_funding_rates_with_exchange(
+        &self,
+        exchange: &str,
+        rates: &[FundingRate],
+    ) -> anyhow::Result<()>;
 
     /// Store open interest data
     async fn store_open_interest(&self, oi: &[OpenInterest]) -> anyhow::Result<()>;
 
     /// Store open interest data with exchange information
-    async fn store_open_interest_with_exchange(&self, exchange: &str, oi: &[OpenInterest]) -> anyhow::Result<()>;
+    async fn store_open_interest_with_exchange(
+        &self,
+        exchange: &str,
+        oi: &[OpenInterest],
+    ) -> anyhow::Result<()>;
 
     /// Store klines (OHLCV data)
     async fn store_klines(&self, klines: &[Kline]) -> anyhow::Result<()>;
 
     /// Store klines with exchange information
-    async fn store_klines_with_exchange(&self, exchange: &str, klines: &[Kline]) -> anyhow::Result<()>;
+    async fn store_klines_with_exchange(
+        &self,
+        exchange: &str,
+        klines: &[Kline],
+    ) -> anyhow::Result<()>;
 
     /// Store trades
     async fn store_trades(&self, trades: &[Trade]) -> anyhow::Result<()>;
 
     /// Store trades with exchange information
-    async fn store_trades_with_exchange(&self, exchange: &str, trades: &[Trade]) -> anyhow::Result<()>;
+    async fn store_trades_with_exchange(
+        &self,
+        exchange: &str,
+        trades: &[Trade],
+    ) -> anyhow::Result<()>;
 
     /// Store liquidity depth statistics
-    async fn store_liquidity_depth(&self, depth_stats: &[LiquidityDepthStats]) -> anyhow::Result<()>;
+    async fn store_liquidity_depth(
+        &self,
+        depth_stats: &[LiquidityDepthStats],
+    ) -> anyhow::Result<()>;
 
     // Query methods
 
@@ -62,7 +92,11 @@ pub trait Repository: Send + Sync {
     ) -> anyhow::Result<Vec<Ticker>>;
 
     /// Get latest ticker for a symbol from a specific exchange
-    async fn get_latest_ticker(&self, exchange: &str, symbol: &str) -> anyhow::Result<Option<Ticker>>;
+    async fn get_latest_ticker(
+        &self,
+        exchange: &str,
+        symbol: &str,
+    ) -> anyhow::Result<Option<Ticker>>;
 
     /// Get klines for a symbol from a specific exchange within a time range
     async fn get_klines(
@@ -76,7 +110,12 @@ pub trait Repository: Send + Sync {
     ) -> anyhow::Result<Vec<Kline>>;
 
     /// Get latest kline for a symbol from a specific exchange with specific interval
-    async fn get_latest_kline(&self, exchange: &str, symbol: &str, interval: &str) -> anyhow::Result<Option<Kline>>;
+    async fn get_latest_kline(
+        &self,
+        exchange: &str,
+        symbol: &str,
+        interval: &str,
+    ) -> anyhow::Result<Option<Kline>>;
 
     /// Get trades for a symbol from a specific exchange within a time range
     async fn get_trades(
@@ -99,7 +138,11 @@ pub trait Repository: Send + Sync {
     ) -> anyhow::Result<Vec<FundingRate>>;
 
     /// Get latest funding rate for a symbol from a specific exchange
-    async fn get_latest_funding_rate(&self, exchange: &str, symbol: &str) -> anyhow::Result<Option<FundingRate>>;
+    async fn get_latest_funding_rate(
+        &self,
+        exchange: &str,
+        symbol: &str,
+    ) -> anyhow::Result<Option<FundingRate>>;
 
     /// Get orderbooks for a symbol from a specific exchange within a time range
     async fn get_orderbooks(
@@ -112,7 +155,11 @@ pub trait Repository: Send + Sync {
     ) -> anyhow::Result<Vec<Orderbook>>;
 
     /// Get latest orderbook for a symbol from a specific exchange
-    async fn get_latest_orderbook(&self, exchange: &str, symbol: &str) -> anyhow::Result<Option<Orderbook>>;
+    async fn get_latest_orderbook(
+        &self,
+        exchange: &str,
+        symbol: &str,
+    ) -> anyhow::Result<Option<Orderbook>>;
 
     /// Get liquidity depth statistics for a symbol from a specific exchange within a time range
     async fn get_liquidity_depth(
@@ -125,7 +172,11 @@ pub trait Repository: Send + Sync {
     ) -> anyhow::Result<Vec<LiquidityDepthStats>>;
 
     /// Get latest liquidity depth for a symbol from a specific exchange
-    async fn get_latest_liquidity_depth(&self, exchange: &str, symbol: &str) -> anyhow::Result<Option<LiquidityDepthStats>>;
+    async fn get_latest_liquidity_depth(
+        &self,
+        exchange: &str,
+        symbol: &str,
+    ) -> anyhow::Result<Option<LiquidityDepthStats>>;
 
     /// Get open interest for a symbol from a specific exchange within a time range
     async fn get_open_interest(
@@ -138,10 +189,18 @@ pub trait Repository: Send + Sync {
     ) -> anyhow::Result<Vec<OpenInterest>>;
 
     /// Get latest open interest for a symbol from a specific exchange
-    async fn get_latest_open_interest(&self, exchange: &str, symbol: &str) -> anyhow::Result<Option<OpenInterest>>;
+    async fn get_latest_open_interest(
+        &self,
+        exchange: &str,
+        symbol: &str,
+    ) -> anyhow::Result<Option<OpenInterest>>;
 
     /// Store slippage data with exchange information
-    async fn store_slippage_with_exchange(&self, exchange: &str, slippages: &[Slippage]) -> anyhow::Result<()>;
+    async fn store_slippage_with_exchange(
+        &self,
+        exchange: &str,
+        slippages: &[Slippage],
+    ) -> anyhow::Result<()>;
 
     /// Get slippage data for a symbol from a specific exchange within a time range
     async fn get_slippage(
@@ -154,7 +213,11 @@ pub trait Repository: Send + Sync {
     ) -> anyhow::Result<Vec<Slippage>>;
 
     /// Get latest slippage for a symbol from a specific exchange (all trade amounts)
-    async fn get_latest_slippage(&self, exchange: &str, symbol: &str) -> anyhow::Result<Option<Vec<Slippage>>>;
+    async fn get_latest_slippage(
+        &self,
+        exchange: &str,
+        symbol: &str,
+    ) -> anyhow::Result<Option<Vec<Slippage>>>;
 
     // Discovery cache methods
 
@@ -190,12 +253,10 @@ impl PostgresRepository {
 
     /// Helper method to get exchange_id from exchange name
     async fn get_exchange_id(&self, exchange_name: &str) -> anyhow::Result<i32> {
-        let row: (i32,) = sqlx::query_as(
-            "SELECT id FROM exchanges WHERE name = $1"
-        )
-        .bind(exchange_name)
-        .fetch_one(&self.pool)
-        .await?;
+        let row: (i32,) = sqlx::query_as("SELECT id FROM exchanges WHERE name = $1")
+            .bind(exchange_name)
+            .fetch_one(&self.pool)
+            .await?;
         Ok(row.0)
     }
 
@@ -203,15 +264,16 @@ impl PostgresRepository {
     /// Creates the partition if it doesn't exist
     pub async fn ensure_partition(&self, table: &str, date: NaiveDate) -> anyhow::Result<()> {
         let partition_name = format!("{}_{}", table, date.format("%Y_%m_%d"));
-        let next_date = date.succ_opt().ok_or_else(|| anyhow::anyhow!("Failed to calculate next date"))?;
+        let next_date = date
+            .succ_opt()
+            .ok_or_else(|| anyhow::anyhow!("Failed to calculate next date"))?;
 
         // Check if partition exists
-        let exists: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM pg_class WHERE relname = $1)"
-        )
-        .bind(&partition_name)
-        .fetch_one(&self.pool)
-        .await?;
+        let exists: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_class WHERE relname = $1)")
+                .bind(&partition_name)
+                .fetch_one(&self.pool)
+                .await?;
 
         if !exists {
             let query = format!(
@@ -243,7 +305,9 @@ impl PostgresRepository {
         let mut current_date = start_date;
         while current_date <= end_date {
             self.ensure_partition(table, current_date).await?;
-            current_date = current_date.succ_opt().ok_or_else(|| anyhow::anyhow!("Failed to calculate next date"))?;
+            current_date = current_date
+                .succ_opt()
+                .ok_or_else(|| anyhow::anyhow!("Failed to calculate next date"))?;
         }
 
         Ok(())
@@ -252,13 +316,21 @@ impl PostgresRepository {
     /// Drop old partitions older than the specified number of days
     /// This method helps manage disk space by removing historical data
     pub async fn cleanup_old_partitions(&self, retention_days: i64) -> anyhow::Result<usize> {
-        let tables = vec!["tickers", "orderbooks", "trades", "funding_rates", "liquidity_depth", "klines"];
+        let tables = vec![
+            "tickers",
+            "orderbooks",
+            "trades",
+            "funding_rates",
+            "liquidity_depth",
+            "klines",
+        ];
 
         // Calculate cutoff date manually
         let today = Utc::now().date_naive();
         let mut cutoff_date = today;
         for _ in 0..retention_days {
-            cutoff_date = cutoff_date.pred_opt()
+            cutoff_date = cutoff_date
+                .pred_opt()
                 .ok_or_else(|| anyhow::anyhow!("Failed to calculate cutoff date"))?;
         }
 
@@ -271,9 +343,7 @@ impl PostgresRepository {
                 table
             );
 
-            let rows: Vec<(String,)> = sqlx::query_as(&query)
-                .fetch_all(&self.pool)
-                .await?;
+            let rows: Vec<(String,)> = sqlx::query_as(&query).fetch_all(&self.pool).await?;
 
             for (partition_name,) in rows {
                 // Extract date from partition name (format: table_YYYY_MM_DD)
@@ -286,10 +356,12 @@ impl PostgresRepository {
                             parts[1].parse::<u32>(),
                             parts[2].parse::<u32>(),
                         ) {
-                            if let Some(partition_date) = NaiveDate::from_ymd_opt(year, month, day) {
+                            if let Some(partition_date) = NaiveDate::from_ymd_opt(year, month, day)
+                            {
                                 if partition_date < cutoff_date {
                                     // Drop this partition
-                                    let drop_query = format!("DROP TABLE IF EXISTS {} CASCADE", partition_name);
+                                    let drop_query =
+                                        format!("DROP TABLE IF EXISTS {} CASCADE", partition_name);
                                     sqlx::query(&drop_query).execute(&self.pool).await?;
                                     tracing::info!("Dropped old partition: {}", partition_name);
                                     dropped_count += 1;
@@ -306,7 +378,14 @@ impl PostgresRepository {
 
     /// Get statistics about partition counts per table
     pub async fn get_partition_stats(&self) -> anyhow::Result<Vec<(String, usize)>> {
-        let tables = vec!["tickers", "orderbooks", "trades", "funding_rates", "liquidity_depth", "klines"];
+        let tables = vec![
+            "tickers",
+            "orderbooks",
+            "trades",
+            "funding_rates",
+            "liquidity_depth",
+            "klines",
+        ];
         let mut stats = Vec::new();
 
         for table in &tables {
@@ -315,9 +394,7 @@ impl PostgresRepository {
                 table
             );
 
-            let count: (i64,) = sqlx::query_as(&query)
-                .fetch_one(&self.pool)
-                .await?;
+            let count: (i64,) = sqlx::query_as(&query).fetch_one(&self.pool).await?;
 
             stats.push((table.to_string(), count.0 as usize));
         }
@@ -334,11 +411,17 @@ impl Repository for PostgresRepository {
     }
 
     async fn store_tickers(&self, _tickers: &[Ticker]) -> anyhow::Result<()> {
-        tracing::warn!("store_tickers not yet implemented - use store_tickers_with_exchange instead");
+        tracing::warn!(
+            "store_tickers not yet implemented - use store_tickers_with_exchange instead"
+        );
         Ok(())
     }
 
-    async fn store_tickers_with_exchange(&self, exchange: &str, tickers: &[Ticker]) -> anyhow::Result<()> {
+    async fn store_tickers_with_exchange(
+        &self,
+        exchange: &str,
+        tickers: &[Ticker],
+    ) -> anyhow::Result<()> {
         if tickers.is_empty() {
             return Ok(());
         }
@@ -386,7 +469,11 @@ impl Repository for PostgresRepository {
         }
 
         tx.commit().await?;
-        tracing::info!("✓ Stored {} ticker records to database for exchange {}", tickers.len(), exchange);
+        tracing::info!(
+            "✓ Stored {} ticker records to database for exchange {}",
+            tickers.len(),
+            exchange
+        );
         Ok(())
     }
 
@@ -395,7 +482,11 @@ impl Repository for PostgresRepository {
         Ok(())
     }
 
-    async fn store_orderbooks_with_exchange(&self, exchange: &str, orderbooks: &[Orderbook]) -> anyhow::Result<()> {
+    async fn store_orderbooks_with_exchange(
+        &self,
+        exchange: &str,
+        orderbooks: &[Orderbook],
+    ) -> anyhow::Result<()> {
         if orderbooks.is_empty() {
             return Ok(());
         }
@@ -408,9 +499,7 @@ impl Repository for PostgresRepository {
             let normalized_symbol = extract_base_symbol(&orderbook.symbol);
 
             // Calculate spread in basis points using the new method
-            let spread_bps = orderbook.spread()
-                .and_then(|s| s.to_i32())
-                .unwrap_or(0);
+            let spread_bps = orderbook.spread().and_then(|s| s.to_i32()).unwrap_or(0);
 
             // Get orderbook sizes (number of bid and ask levels)
             let (bid_size, ask_size) = orderbook.size();
@@ -436,7 +525,7 @@ impl Repository for PostgresRepository {
                 )
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
                 ON CONFLICT DO NOTHING
-                "#
+                "#,
             )
             .bind(exchange_id)
             .bind(&normalized_symbol)
@@ -456,7 +545,11 @@ impl Repository for PostgresRepository {
         }
 
         tx.commit().await?;
-        tracing::info!("Stored {} orderbook records to database for exchange {}", orderbooks.len(), exchange);
+        tracing::info!(
+            "Stored {} orderbook records to database for exchange {}",
+            orderbooks.len(),
+            exchange
+        );
         Ok(())
     }
 
@@ -465,7 +558,11 @@ impl Repository for PostgresRepository {
         Ok(())
     }
 
-    async fn store_funding_rates_with_exchange(&self, exchange: &str, rates: &[FundingRate]) -> anyhow::Result<()> {
+    async fn store_funding_rates_with_exchange(
+        &self,
+        exchange: &str,
+        rates: &[FundingRate],
+    ) -> anyhow::Result<()> {
         if rates.is_empty() {
             return Ok(());
         }
@@ -484,7 +581,7 @@ impl Repository for PostgresRepository {
                 )
                 VALUES ($1, $2, $3, $4, $5)
                 ON CONFLICT DO NOTHING
-                "#
+                "#,
             )
             .bind(exchange_id)
             .bind(&normalized_symbol)
@@ -496,16 +593,26 @@ impl Repository for PostgresRepository {
         }
 
         tx.commit().await?;
-        tracing::info!("✓ Stored {} funding rate records to database for exchange {}", rates.len(), exchange);
+        tracing::info!(
+            "✓ Stored {} funding rate records to database for exchange {}",
+            rates.len(),
+            exchange
+        );
         Ok(())
     }
 
     async fn store_open_interest(&self, _oi: &[OpenInterest]) -> anyhow::Result<()> {
-        tracing::warn!("store_open_interest is deprecated - open_interest is now stored with ticker data");
+        tracing::warn!(
+            "store_open_interest is deprecated - open_interest is now stored with ticker data"
+        );
         Ok(())
     }
 
-    async fn store_open_interest_with_exchange(&self, _exchange: &str, _oi: &[OpenInterest]) -> anyhow::Result<()> {
+    async fn store_open_interest_with_exchange(
+        &self,
+        _exchange: &str,
+        _oi: &[OpenInterest],
+    ) -> anyhow::Result<()> {
         tracing::warn!("store_open_interest_with_exchange is deprecated - open_interest is now stored with ticker data");
         Ok(())
     }
@@ -515,7 +622,11 @@ impl Repository for PostgresRepository {
         Ok(())
     }
 
-    async fn store_klines_with_exchange(&self, exchange: &str, klines: &[Kline]) -> anyhow::Result<()> {
+    async fn store_klines_with_exchange(
+        &self,
+        exchange: &str,
+        klines: &[Kline],
+    ) -> anyhow::Result<()> {
         if klines.is_empty() {
             return Ok(());
         }
@@ -537,7 +648,7 @@ impl Repository for PostgresRepository {
                 )
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
                 ON CONFLICT (exchange_id, symbol, interval, open_time) DO NOTHING
-                "#
+                "#,
             )
             .bind(exchange_id)
             .bind(&normalized_symbol)
@@ -549,14 +660,18 @@ impl Repository for PostgresRepository {
             .bind(kline.low)
             .bind(kline.close)
             .bind(kline.volume)
-            .bind(kline.turnover)  // Use turnover as quote_volume
-            .bind(Some(0))  // trade_count is not in Kline, set to 0
+            .bind(kline.turnover) // Use turnover as quote_volume
+            .bind(Some(0)) // trade_count is not in Kline, set to 0
             .execute(&mut *tx)
             .await?;
         }
 
         tx.commit().await?;
-        tracing::info!("✓ Stored {} kline records to database for exchange {}", klines.len(), exchange);
+        tracing::info!(
+            "✓ Stored {} kline records to database for exchange {}",
+            klines.len(),
+            exchange
+        );
         Ok(())
     }
 
@@ -565,7 +680,11 @@ impl Repository for PostgresRepository {
         Ok(())
     }
 
-    async fn store_trades_with_exchange(&self, exchange: &str, trades: &[Trade]) -> anyhow::Result<()> {
+    async fn store_trades_with_exchange(
+        &self,
+        exchange: &str,
+        trades: &[Trade],
+    ) -> anyhow::Result<()> {
         if trades.is_empty() {
             return Ok(());
         }
@@ -589,7 +708,7 @@ impl Repository for PostgresRepository {
                 )
                 VALUES ($1, $2, $3, $4, $5, $6, $7)
                 ON CONFLICT DO NOTHING
-                "#
+                "#,
             )
             .bind(exchange_id)
             .bind(&normalized_symbol)
@@ -603,11 +722,18 @@ impl Repository for PostgresRepository {
         }
 
         tx.commit().await?;
-        tracing::info!("Stored {} trade records to database for exchange {}", trades.len(), exchange);
+        tracing::info!(
+            "Stored {} trade records to database for exchange {}",
+            trades.len(),
+            exchange
+        );
         Ok(())
     }
 
-    async fn store_liquidity_depth(&self, depth_stats: &[LiquidityDepthStats]) -> anyhow::Result<()> {
+    async fn store_liquidity_depth(
+        &self,
+        depth_stats: &[LiquidityDepthStats],
+    ) -> anyhow::Result<()> {
         if depth_stats.is_empty() {
             return Ok(());
         }
@@ -634,7 +760,7 @@ impl Repository for PostgresRepository {
                 )
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
                 ON CONFLICT DO NOTHING
-                "#
+                "#,
             )
             .bind(exchange_id)
             .bind(&normalized_symbol)
@@ -657,7 +783,10 @@ impl Repository for PostgresRepository {
         // Commit the transaction
         tx.commit().await?;
 
-        tracing::info!("✓ Stored {} liquidity depth records to database", depth_stats.len());
+        tracing::info!(
+            "✓ Stored {} liquidity depth records to database",
+            depth_stats.len()
+        );
         Ok(())
     }
 
@@ -719,15 +848,23 @@ impl Repository for PostgresRepository {
                 mark_price: row.get("mark_price"),
                 index_price: row.get("index_price"),
                 best_bid_price: row.get("best_bid_price"),
-                best_bid_qty: row.try_get("best_bid_qty").unwrap_or(rust_decimal::Decimal::ZERO),
+                best_bid_qty: row
+                    .try_get("best_bid_qty")
+                    .unwrap_or(rust_decimal::Decimal::ZERO),
                 best_ask_price: row.get("best_ask_price"),
-                best_ask_qty: row.try_get("best_ask_qty").unwrap_or(rust_decimal::Decimal::ZERO),
+                best_ask_qty: row
+                    .try_get("best_ask_qty")
+                    .unwrap_or(rust_decimal::Decimal::ZERO),
                 volume_24h: row.get("volume_24h"),
                 turnover_24h: row.get("turnover_24h"),
                 open_interest: row.try_get("open_interest").unwrap_or(Decimal::ZERO),
-                open_interest_notional: row.try_get("open_interest_notional").unwrap_or(Decimal::ZERO),
+                open_interest_notional: row
+                    .try_get("open_interest_notional")
+                    .unwrap_or(Decimal::ZERO),
                 price_change_24h: row.get("price_change_24h"),
-                price_change_pct: row.try_get("price_change_pct").unwrap_or(rust_decimal::Decimal::ZERO),
+                price_change_pct: row
+                    .try_get("price_change_pct")
+                    .unwrap_or(rust_decimal::Decimal::ZERO),
                 high_price_24h: row.get("high_24h"),
                 low_price_24h: row.get("low_24h"),
                 timestamp: row.get("ts"),
@@ -737,7 +874,11 @@ impl Repository for PostgresRepository {
         Ok(tickers)
     }
 
-    async fn get_latest_ticker(&self, exchange: &str, symbol: &str) -> anyhow::Result<Option<Ticker>> {
+    async fn get_latest_ticker(
+        &self,
+        exchange: &str,
+        symbol: &str,
+    ) -> anyhow::Result<Option<Ticker>> {
         let exchange_id = self.get_exchange_id(exchange).await?;
         let normalized_symbol = extract_base_symbol(symbol);
 
@@ -752,7 +893,7 @@ impl Repository for PostgresRepository {
             WHERE exchange_id = $1 AND symbol = $2
             ORDER BY ts DESC
             LIMIT 1
-            "#
+            "#,
         )
         .bind(exchange_id)
         .bind(&normalized_symbol)
@@ -765,15 +906,21 @@ impl Repository for PostgresRepository {
             mark_price: r.get("mark_price"),
             index_price: r.get("index_price"),
             best_bid_price: r.get("best_bid_price"),
-            best_bid_qty: r.try_get("best_bid_qty").unwrap_or(rust_decimal::Decimal::ZERO),
+            best_bid_qty: r
+                .try_get("best_bid_qty")
+                .unwrap_or(rust_decimal::Decimal::ZERO),
             best_ask_price: r.get("best_ask_price"),
-            best_ask_qty: r.try_get("best_ask_qty").unwrap_or(rust_decimal::Decimal::ZERO),
+            best_ask_qty: r
+                .try_get("best_ask_qty")
+                .unwrap_or(rust_decimal::Decimal::ZERO),
             volume_24h: r.get("volume_24h"),
             turnover_24h: r.get("turnover_24h"),
             open_interest: r.try_get("open_interest").unwrap_or(Decimal::ZERO),
             open_interest_notional: r.try_get("open_interest_notional").unwrap_or(Decimal::ZERO),
             price_change_24h: r.get("price_change_24h"),
-            price_change_pct: r.try_get("price_change_pct").unwrap_or(rust_decimal::Decimal::ZERO),
+            price_change_pct: r
+                .try_get("price_change_pct")
+                .unwrap_or(rust_decimal::Decimal::ZERO),
             high_price_24h: r.get("high_24h"),
             low_price_24h: r.get("low_24h"),
             timestamp: r.get("ts"),
@@ -836,14 +983,19 @@ impl Repository for PostgresRepository {
                 low: row.get("low_price"),
                 close: row.get("close_price"),
                 volume: row.get("volume"),
-                turnover: row.get("quote_volume"),  // Map quote_volume to turnover
+                turnover: row.get("quote_volume"), // Map quote_volume to turnover
             });
         }
 
         Ok(klines)
     }
 
-    async fn get_latest_kline(&self, exchange: &str, symbol: &str, interval: &str) -> anyhow::Result<Option<Kline>> {
+    async fn get_latest_kline(
+        &self,
+        exchange: &str,
+        symbol: &str,
+        interval: &str,
+    ) -> anyhow::Result<Option<Kline>> {
         let exchange_id = self.get_exchange_id(exchange).await?;
         let normalized_symbol = extract_base_symbol(symbol);
 
@@ -855,7 +1007,7 @@ impl Repository for PostgresRepository {
             WHERE exchange_id = $1 AND symbol = $2 AND interval = $3
             ORDER BY open_time DESC
             LIMIT 1
-            "#
+            "#,
         )
         .bind(exchange_id)
         .bind(&normalized_symbol)
@@ -985,16 +1137,20 @@ impl Repository for PostgresRepository {
                 funding_rate: row.get("rate"),
                 predicted_rate: row.get("next_rate"),
                 funding_time: ts,
-                next_funding_time: ts,  // Default to same as funding_time
-                funding_interval: 8,  // Default 8 hours
-                funding_rate_cap_floor: rust_decimal::Decimal::ZERO,  // Default to 0
+                next_funding_time: ts, // Default to same as funding_time
+                funding_interval: 8,   // Default 8 hours
+                funding_rate_cap_floor: rust_decimal::Decimal::ZERO, // Default to 0
             });
         }
 
         Ok(rates)
     }
 
-    async fn get_latest_funding_rate(&self, exchange: &str, symbol: &str) -> anyhow::Result<Option<FundingRate>> {
+    async fn get_latest_funding_rate(
+        &self,
+        exchange: &str,
+        symbol: &str,
+    ) -> anyhow::Result<Option<FundingRate>> {
         let exchange_id = self.get_exchange_id(exchange).await?;
         let normalized_symbol = extract_base_symbol(symbol);
 
@@ -1005,7 +1161,7 @@ impl Repository for PostgresRepository {
             WHERE exchange_id = $1 AND symbol = $2
             ORDER BY ts DESC
             LIMIT 1
-            "#
+            "#,
         )
         .bind(exchange_id)
         .bind(&normalized_symbol)
@@ -1019,9 +1175,9 @@ impl Repository for PostgresRepository {
                 funding_rate: r.get("rate"),
                 predicted_rate: r.get("next_rate"),
                 funding_time: ts,
-                next_funding_time: ts,  // Default to same as funding_time
-                funding_interval: 8,  // Default 8 hours
-                funding_rate_cap_floor: rust_decimal::Decimal::ZERO,  // Default to 0
+                next_funding_time: ts, // Default to same as funding_time
+                funding_interval: 8,   // Default 8 hours
+                funding_rate_cap_floor: rust_decimal::Decimal::ZERO, // Default to 0
             }
         }))
     }
@@ -1077,7 +1233,11 @@ impl Repository for PostgresRepository {
         Ok(orderbooks)
     }
 
-    async fn get_latest_orderbook(&self, exchange: &str, symbol: &str) -> anyhow::Result<Option<Orderbook>> {
+    async fn get_latest_orderbook(
+        &self,
+        exchange: &str,
+        symbol: &str,
+    ) -> anyhow::Result<Option<Orderbook>> {
         let exchange_id = self.get_exchange_id(exchange).await?;
         let normalized_symbol = extract_base_symbol(symbol);
 
@@ -1088,7 +1248,7 @@ impl Repository for PostgresRepository {
             WHERE exchange_id = $1 AND symbol = $2
             ORDER BY ts DESC
             LIMIT 1
-            "#
+            "#,
         )
         .bind(exchange_id)
         .bind(&normalized_symbol)
@@ -1166,7 +1326,11 @@ impl Repository for PostgresRepository {
         Ok(stats)
     }
 
-    async fn get_latest_liquidity_depth(&self, exchange: &str, symbol: &str) -> anyhow::Result<Option<LiquidityDepthStats>> {
+    async fn get_latest_liquidity_depth(
+        &self,
+        exchange: &str,
+        symbol: &str,
+    ) -> anyhow::Result<Option<LiquidityDepthStats>> {
         let exchange_id = self.get_exchange_id(exchange).await?;
         let normalized_symbol = extract_base_symbol(symbol);
 
@@ -1178,7 +1342,7 @@ impl Repository for PostgresRepository {
             WHERE exchange_id = $1 AND symbol = $2
             ORDER BY ts DESC
             LIMIT 1
-            "#
+            "#,
         )
         .bind(exchange_id)
         .bind(&normalized_symbol)
@@ -1211,16 +1375,26 @@ impl Repository for PostgresRepository {
         _end: DateTime<Utc>,
         _limit: Option<i64>,
     ) -> anyhow::Result<Vec<OpenInterest>> {
-        tracing::warn!("get_open_interest is deprecated - open_interest is now retrieved with ticker data");
+        tracing::warn!(
+            "get_open_interest is deprecated - open_interest is now retrieved with ticker data"
+        );
         Ok(Vec::new())
     }
 
-    async fn get_latest_open_interest(&self, _exchange: &str, _symbol: &str) -> anyhow::Result<Option<OpenInterest>> {
+    async fn get_latest_open_interest(
+        &self,
+        _exchange: &str,
+        _symbol: &str,
+    ) -> anyhow::Result<Option<OpenInterest>> {
         tracing::warn!("get_latest_open_interest is deprecated - open_interest is now retrieved with ticker data");
         Ok(None)
     }
 
-    async fn store_slippage_with_exchange(&self, exchange: &str, slippages: &[Slippage]) -> anyhow::Result<()> {
+    async fn store_slippage_with_exchange(
+        &self,
+        exchange: &str,
+        slippages: &[Slippage],
+    ) -> anyhow::Result<()> {
         if slippages.is_empty() {
             return Ok(());
         }
@@ -1264,7 +1438,11 @@ impl Repository for PostgresRepository {
         }
 
         tx.commit().await?;
-        tracing::info!("✓ Stored {} slippage records to database for exchange {}", slippages.len(), exchange);
+        tracing::info!(
+            "✓ Stored {} slippage records to database for exchange {}",
+            slippages.len(),
+            exchange
+        );
         Ok(())
     }
 
@@ -1337,7 +1515,11 @@ impl Repository for PostgresRepository {
         Ok(slippages)
     }
 
-    async fn get_latest_slippage(&self, exchange: &str, symbol: &str) -> anyhow::Result<Option<Vec<Slippage>>> {
+    async fn get_latest_slippage(
+        &self,
+        exchange: &str,
+        symbol: &str,
+    ) -> anyhow::Result<Option<Vec<Slippage>>> {
         let exchange_id = self.get_exchange_id(exchange).await?;
         let normalized_symbol = extract_base_symbol(symbol);
 
@@ -1347,7 +1529,7 @@ impl Repository for PostgresRepository {
             SELECT MAX(ts)
             FROM slippage
             WHERE exchange_id = $1 AND symbol = $2
-            "#
+            "#,
         )
         .bind(exchange_id)
         .bind(&normalized_symbol)
@@ -1378,7 +1560,7 @@ impl Repository for PostgresRepository {
             SELECT earliest_timestamp, api_calls_used, duration_ms
             FROM kline_discovery_cache
             WHERE exchange_id = $1 AND symbol = $2 AND interval = $3
-            "#
+            "#,
         )
         .bind(exchange_id)
         .bind(&normalized_symbol)
@@ -1386,7 +1568,13 @@ impl Repository for PostgresRepository {
         .fetch_optional(&self.pool)
         .await?;
 
-        Ok(row.map(|r| (r.get("earliest_timestamp"), r.get("api_calls_used"), r.get("duration_ms"))))
+        Ok(row.map(|r| {
+            (
+                r.get("earliest_timestamp"),
+                r.get("api_calls_used"),
+                r.get("duration_ms"),
+            )
+        }))
     }
 
     async fn store_discovery_cache(
@@ -1413,7 +1601,7 @@ impl Repository for PostgresRepository {
                 discovered_at = NOW(),
                 api_calls_used = EXCLUDED.api_calls_used,
                 duration_ms = EXCLUDED.duration_ms
-            "#
+            "#,
         )
         .bind(exchange_id)
         .bind(&normalized_symbol)
@@ -1435,14 +1623,5 @@ impl Repository for PostgresRepository {
         );
 
         Ok(())
-    }
-}
-
-// Implement OrderbookRepository for PostgresRepository to support OrderbookManager
-#[async_trait]
-impl perps_core::orderbook_manager::OrderbookRepository for PostgresRepository {
-    async fn store_orderbooks_with_exchange(&self, exchange: &str, orderbooks: &[perps_core::Orderbook]) -> anyhow::Result<()> {
-        // Delegate to the Repository trait implementation
-        <PostgresRepository as Repository>::store_orderbooks_with_exchange(self, exchange, orderbooks).await
     }
 }

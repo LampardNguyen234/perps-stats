@@ -1,8 +1,11 @@
+use crate::cache::SymbolsCache;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use perps_core::{FundingRate, IPerps, Kline, Market, MarketStats, OpenInterest, Orderbook, Ticker, Trade, RateLimiter, RetryConfig, execute_with_retry};
-use crate::cache::SymbolsCache;
+use perps_core::{
+    execute_with_retry, FundingRate, IPerps, Kline, Market, MarketStats, OpenInterest, Orderbook,
+    RateLimiter, RetryConfig, Ticker, Trade,
+};
 use reqwest::Client;
 use rust_decimal::prelude::FromPrimitive;
 use std::collections::HashMap;
@@ -26,7 +29,6 @@ pub struct LighterClient {
 }
 
 impl LighterClient {
-
     /// Ensure the symbols cache is initialized
     async fn ensure_cache_initialized(&self) -> Result<()> {
         self.symbols_cache
@@ -59,27 +61,33 @@ impl LighterClient {
             let client = client.clone();
             let rate_limiter = rate_limiter.clone();
             async move {
-                rate_limiter.execute(|| {
-                    let url = url.clone();
-                    let client = client.clone();
-                    async move {
-                        tracing::debug!("Requesting: {}", url);
-                        let response = client.get(&url).send().await?;
+                rate_limiter
+                    .execute(|| {
+                        let url = url.clone();
+                        let client = client.clone();
+                        async move {
+                            tracing::debug!("Requesting: {}", url);
+                            let response = client.get(&url).send().await?;
 
-                        // Check HTTP status first
-                        if !response.status().is_success() {
-                            let status = response.status();
-                            let text = response.text().await.unwrap_or_else(|_| "Unable to read response body".to_string());
-                            return Err(anyhow!("HTTP {}: {}", status, text));
+                            // Check HTTP status first
+                            if !response.status().is_success() {
+                                let status = response.status();
+                                let text = response
+                                    .text()
+                                    .await
+                                    .unwrap_or_else(|_| "Unable to read response body".to_string());
+                                return Err(anyhow!("HTTP {}: {}", status, text));
+                            }
+
+                            // Try to decode as the expected type
+                            let data = response.json::<T>().await?;
+                            Ok(data)
                         }
-
-                        // Try to decode as the expected type
-                        let data = response.json::<T>().await?;
-                        Ok(data)
-                    }
-                }).await
+                    })
+                    .await
             }
-        }).await
+        })
+        .await
     }
 
     /// Get market ID for a symbol
@@ -236,7 +244,12 @@ impl IPerps for LighterClient {
     async fn get_orderbook(&self, symbol: &str, depth: u32) -> Result<Orderbook> {
         // Lighter API has a maximum limit of 100
         let capped_depth = depth.min(100);
-        tracing::debug!("Fetching orderbook for {} from Lighter (depth: {}, capped: {})", symbol, depth, capped_depth);
+        tracing::debug!(
+            "Fetching orderbook for {} from Lighter (depth: {}, capped: {})",
+            symbol,
+            depth,
+            capped_depth
+        );
 
         // Need to get market_id first
         let market_id = self.clone().get_market_id(symbol).await?;
@@ -284,7 +297,9 @@ impl IPerps for LighterClient {
     ) -> Result<Vec<FundingRate>> {
         // Lighter API doesn't provide historical funding rates endpoint
         // Would need /fundings endpoint with proper filtering
-        Err(anyhow!("Funding rate history not yet implemented for Lighter"))
+        Err(anyhow!(
+            "Funding rate history not yet implemented for Lighter"
+        ))
     }
 
     async fn get_open_interest(&self, symbol: &str) -> Result<OpenInterest> {
@@ -296,8 +311,10 @@ impl IPerps for LighterClient {
             symbol: symbol.to_string(),
             open_interest: rust_decimal::Decimal::from_f64(detail.open_interest)
                 .unwrap_or_else(|| rust_decimal::Decimal::from(0)),
-            open_value: rust_decimal::Decimal::from_f64(detail.open_interest * detail.last_trade_price)
-                .unwrap_or_else(|| rust_decimal::Decimal::from(0)),
+            open_value: rust_decimal::Decimal::from_f64(
+                detail.open_interest * detail.last_trade_price,
+            )
+            .unwrap_or_else(|| rust_decimal::Decimal::from(0)),
             timestamp: Utc::now(),
         })
     }
@@ -310,7 +327,11 @@ impl IPerps for LighterClient {
         end_time: Option<DateTime<Utc>>,
         limit: Option<u32>,
     ) -> Result<Vec<Kline>> {
-        tracing::debug!("Fetching klines for {} from Lighter (interval: {})", symbol, interval);
+        tracing::debug!(
+            "Fetching klines for {} from Lighter (interval: {})",
+            symbol,
+            interval
+        );
 
         // Get market_id for the symbol
         let market_id = self.clone().get_market_id(symbol).await?;

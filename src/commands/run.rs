@@ -35,7 +35,11 @@ pub async fn execute(args: RunArgs) -> Result<()> {
         ex.split(',').map(|s| s.trim().to_string()).collect()
     } else {
         // Get all supported exchanges from the factory
-        all_exchanges().await.into_iter().map(|(name, _)| name).collect()
+        all_exchanges()
+            .await
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect()
     };
 
     tracing::info!(
@@ -51,7 +55,12 @@ pub async fn execute(args: RunArgs) -> Result<()> {
 
     // Read symbols from file
     let symbols = read_symbols_from_file(&symbols_file)?;
-    tracing::info!("Loaded {} symbols from {}: {}", symbols.len(), symbols_file, symbols.join(", "));
+    tracing::info!(
+        "Loaded {} symbols from {}: {}",
+        symbols.len(),
+        symbols_file,
+        symbols.join(", ")
+    );
 
     // Create exchange clients
     let mut clients: Vec<(String, Arc<Box<dyn IPerps + Send + Sync>>)> = Vec::new();
@@ -82,7 +91,11 @@ pub async fn execute(args: RunArgs) -> Result<()> {
         match validate_symbols(client.as_ref().as_ref(), &parsed_symbols).await {
             Ok(valid_symbols) => {
                 if !valid_symbols.is_empty() {
-                    tracing::info!("✓ Validated {} symbols for {}", valid_symbols.len(), ex_name);
+                    tracing::info!(
+                        "✓ Validated {} symbols for {}",
+                        valid_symbols.len(),
+                        ex_name
+                    );
                     exchange_symbols.insert(ex_name.clone(), valid_symbols);
                 } else {
                     tracing::warn!("No valid symbols found for {}", ex_name);
@@ -99,15 +112,22 @@ pub async fn execute(args: RunArgs) -> Result<()> {
     }
 
     // Storage for data - keyed by symbol, then exchange
-    let mut liquidity_data: HashMap<String, HashMap<String, Vec<LiquidityDepthStats>>> = HashMap::new();
+    let mut liquidity_data: HashMap<String, HashMap<String, Vec<LiquidityDepthStats>>> =
+        HashMap::new();
     let mut ticker_data: HashMap<String, HashMap<String, Vec<Ticker>>> = HashMap::new();
 
     for symbol in &symbols {
         liquidity_data.insert(symbol.clone(), HashMap::new());
         ticker_data.insert(symbol.clone(), HashMap::new());
         for (ex_name, _) in &clients {
-            liquidity_data.get_mut(symbol).unwrap().insert(ex_name.clone(), Vec::new());
-            ticker_data.get_mut(symbol).unwrap().insert(ex_name.clone(), Vec::new());
+            liquidity_data
+                .get_mut(symbol)
+                .unwrap()
+                .insert(ex_name.clone(), Vec::new());
+            ticker_data
+                .get_mut(symbol)
+                .unwrap()
+                .insert(ex_name.clone(), Vec::new());
         }
     }
 
@@ -153,7 +173,12 @@ pub async fn execute(args: RunArgs) -> Result<()> {
                                 results.0 = Some(ticker);
                             }
                             Err(e) => {
-                                tracing::error!("Failed to fetch ticker for {} @ {}: {}", symbol_clone, ex_name_clone, e);
+                                tracing::error!(
+                                    "Failed to fetch ticker for {} @ {}: {}",
+                                    symbol_clone,
+                                    ex_name_clone,
+                                    e
+                                );
                             }
                         }
 
@@ -162,11 +187,19 @@ pub async fn execute(args: RunArgs) -> Result<()> {
                             Ok(orderbook) => {
                                 // Extract global symbol
                                 let symbol_string = symbol_clone.to_string();
-                                let global_symbol = symbols_clone.iter().find(|s| {
-                                    client_clone.parse_symbol(s) == symbol_clone
-                                }).unwrap_or(&symbol_string);
+                                let global_symbol = symbols_clone
+                                    .iter()
+                                    .find(|s| client_clone.parse_symbol(s) == symbol_clone)
+                                    .unwrap_or(&symbol_string);
 
-                                match aggregator_clone.calculate_liquidity_depth(&orderbook, &ex_name_clone, global_symbol).await {
+                                match aggregator_clone
+                                    .calculate_liquidity_depth(
+                                        &orderbook,
+                                        &ex_name_clone,
+                                        global_symbol,
+                                    )
+                                    .await
+                                {
                                     Ok(depth_stats) => {
                                         tracing::debug!(
                                             "✓ {} @ {} liquidity - Mid: ${:.2}, Bid 10bps: ${:.2}, Ask 10bps: ${:.2}",
@@ -179,12 +212,22 @@ pub async fn execute(args: RunArgs) -> Result<()> {
                                         results.1 = Some(depth_stats);
                                     }
                                     Err(e) => {
-                                        tracing::error!("Failed to calculate liquidity for {} @ {}: {}", symbol_clone, ex_name_clone, e);
+                                        tracing::error!(
+                                            "Failed to calculate liquidity for {} @ {}: {}",
+                                            symbol_clone,
+                                            ex_name_clone,
+                                            e
+                                        );
                                     }
                                 }
                             }
                             Err(e) => {
-                                tracing::error!("Failed to fetch orderbook for {} @ {}: {}", symbol_clone, ex_name_clone, e);
+                                tracing::error!(
+                                    "Failed to fetch orderbook for {} @ {}: {}",
+                                    symbol_clone,
+                                    ex_name_clone,
+                                    e
+                                );
                             }
                         }
 
@@ -200,14 +243,19 @@ pub async fn execute(args: RunArgs) -> Result<()> {
         let results = join_all(tasks).await;
 
         // Process results - filter out errors and process successful results
-        for (ex_name, symbol, (ticker_opt, liquidity_opt)) in results.into_iter().filter_map(Result::ok) {
+        for (ex_name, symbol, (ticker_opt, liquidity_opt)) in
+            results.into_iter().filter_map(Result::ok)
+        {
             // Find the global symbol for this parsed symbol
-            let global_symbol = symbols.iter().find(|s| {
-                // Check all clients to see which one parses to this symbol
-                clients.iter().any(|(client_ex_name, client)| {
-                    client_ex_name == &ex_name && client.parse_symbol(s) == symbol
+            let global_symbol = symbols
+                .iter()
+                .find(|s| {
+                    // Check all clients to see which one parses to this symbol
+                    clients.iter().any(|(client_ex_name, client)| {
+                        client_ex_name == &ex_name && client.parse_symbol(s) == symbol
+                    })
                 })
-            }).unwrap_or(&symbol);
+                .unwrap_or(&symbol);
 
             if let Some(ticker) = ticker_opt {
                 ticker_data
@@ -257,7 +305,10 @@ pub async fn execute(args: RunArgs) -> Result<()> {
         sleep(Duration::from_secs(interval)).await;
     }
 
-    tracing::info!("✓ Data collection service completed. Total snapshots: {}", snapshot_count);
+    tracing::info!(
+        "✓ Data collection service completed. Total snapshots: {}",
+        snapshot_count
+    );
     Ok(())
 }
 
@@ -351,17 +402,61 @@ fn write_liquidity_to_excel_multi(
             )?;
             worksheet.write_string(row, 1, exchange.as_str())?;
             worksheet.write_string(row, 2, &stats.symbol)?;
-            worksheet.write_number(row, 3, stats.mid_price.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 4, stats.bid_1bps.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 5, stats.bid_2_5bps.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 6, stats.bid_5bps.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 7, stats.bid_10bps.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 8, stats.bid_20bps.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 9, stats.ask_1bps.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 10, stats.ask_2_5bps.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 11, stats.ask_5bps.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 12, stats.ask_10bps.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 13, stats.ask_20bps.to_string().parse::<f64>().unwrap_or(0.0))?;
+            worksheet.write_number(
+                row,
+                3,
+                stats.mid_price.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                4,
+                stats.bid_1bps.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                5,
+                stats.bid_2_5bps.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                6,
+                stats.bid_5bps.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                7,
+                stats.bid_10bps.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                8,
+                stats.bid_20bps.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                9,
+                stats.ask_1bps.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                10,
+                stats.ask_2_5bps.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                11,
+                stats.ask_5bps.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                12,
+                stats.ask_10bps.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                13,
+                stats.ask_20bps.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
         }
 
         // Auto-fit columns
@@ -454,23 +549,135 @@ fn write_ticker_to_excel_multi(
             )?;
             worksheet.write_string(row, 1, exchange.as_str())?;
             worksheet.write_string(row, 2, &ticker.symbol)?;
-            worksheet.write_number(row, 3, ticker.last_price.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 4, ticker.mark_price.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 5, ticker.index_price.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 6, ticker.best_bid_price.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 7, ticker.best_bid_qty.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 8, bid_notional.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 9, ticker.best_ask_price.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 10, ticker.best_ask_qty.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 11, ask_notional.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 12, ticker.volume_24h.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 13, ticker.turnover_24h.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 14, ticker.open_interest.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 15, ticker.open_interest_notional.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 16, ticker.price_change_24h.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 17, ticker.price_change_pct.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 18, ticker.high_price_24h.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 19, ticker.low_price_24h.to_string().parse::<f64>().unwrap_or(0.0))?;
+            worksheet.write_number(
+                row,
+                3,
+                ticker.last_price.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                4,
+                ticker.mark_price.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                5,
+                ticker.index_price.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                6,
+                ticker
+                    .best_bid_price
+                    .to_string()
+                    .parse::<f64>()
+                    .unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                7,
+                ticker
+                    .best_bid_qty
+                    .to_string()
+                    .parse::<f64>()
+                    .unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                8,
+                bid_notional.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                9,
+                ticker
+                    .best_ask_price
+                    .to_string()
+                    .parse::<f64>()
+                    .unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                10,
+                ticker
+                    .best_ask_qty
+                    .to_string()
+                    .parse::<f64>()
+                    .unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                11,
+                ask_notional.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                12,
+                ticker.volume_24h.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                13,
+                ticker
+                    .turnover_24h
+                    .to_string()
+                    .parse::<f64>()
+                    .unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                14,
+                ticker
+                    .open_interest
+                    .to_string()
+                    .parse::<f64>()
+                    .unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                15,
+                ticker
+                    .open_interest_notional
+                    .to_string()
+                    .parse::<f64>()
+                    .unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                16,
+                ticker
+                    .price_change_24h
+                    .to_string()
+                    .parse::<f64>()
+                    .unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                17,
+                ticker
+                    .price_change_pct
+                    .to_string()
+                    .parse::<f64>()
+                    .unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                18,
+                ticker
+                    .high_price_24h
+                    .to_string()
+                    .parse::<f64>()
+                    .unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                19,
+                ticker
+                    .low_price_24h
+                    .to_string()
+                    .parse::<f64>()
+                    .unwrap_or(0.0),
+            )?;
         }
 
         // Auto-fit columns
@@ -540,17 +747,61 @@ fn write_liquidity_to_excel(
             )?;
             worksheet.write_string(row, 1, exchange)?;
             worksheet.write_string(row, 2, &stats.symbol)?;
-            worksheet.write_number(row, 3, stats.mid_price.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 4, stats.bid_1bps.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 5, stats.bid_2_5bps.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 6, stats.bid_5bps.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 7, stats.bid_10bps.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 8, stats.bid_20bps.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 9, stats.ask_1bps.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 10, stats.ask_2_5bps.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 11, stats.ask_5bps.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 12, stats.ask_10bps.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 13, stats.ask_20bps.to_string().parse::<f64>().unwrap_or(0.0))?;
+            worksheet.write_number(
+                row,
+                3,
+                stats.mid_price.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                4,
+                stats.bid_1bps.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                5,
+                stats.bid_2_5bps.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                6,
+                stats.bid_5bps.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                7,
+                stats.bid_10bps.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                8,
+                stats.bid_20bps.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                9,
+                stats.ask_1bps.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                10,
+                stats.ask_2_5bps.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                11,
+                stats.ask_5bps.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                12,
+                stats.ask_10bps.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                13,
+                stats.ask_20bps.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
         }
 
         // Auto-fit columns
@@ -629,23 +880,135 @@ fn write_ticker_to_excel(
             )?;
             worksheet.write_string(row, 1, exchange)?;
             worksheet.write_string(row, 2, &ticker.symbol)?;
-            worksheet.write_number(row, 3, ticker.last_price.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 4, ticker.mark_price.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 5, ticker.index_price.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 6, ticker.best_bid_price.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 7, ticker.best_bid_qty.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 8, bid_notional.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 9, ticker.best_ask_price.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 10, ticker.best_ask_qty.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 11, ask_notional.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 12, ticker.volume_24h.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 13, ticker.turnover_24h.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 14, ticker.open_interest.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 15, ticker.open_interest_notional.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 16, ticker.price_change_24h.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 17, ticker.price_change_pct.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 18, ticker.high_price_24h.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 19, ticker.low_price_24h.to_string().parse::<f64>().unwrap_or(0.0))?;
+            worksheet.write_number(
+                row,
+                3,
+                ticker.last_price.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                4,
+                ticker.mark_price.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                5,
+                ticker.index_price.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                6,
+                ticker
+                    .best_bid_price
+                    .to_string()
+                    .parse::<f64>()
+                    .unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                7,
+                ticker
+                    .best_bid_qty
+                    .to_string()
+                    .parse::<f64>()
+                    .unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                8,
+                bid_notional.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                9,
+                ticker
+                    .best_ask_price
+                    .to_string()
+                    .parse::<f64>()
+                    .unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                10,
+                ticker
+                    .best_ask_qty
+                    .to_string()
+                    .parse::<f64>()
+                    .unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                11,
+                ask_notional.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                12,
+                ticker.volume_24h.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                13,
+                ticker
+                    .turnover_24h
+                    .to_string()
+                    .parse::<f64>()
+                    .unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                14,
+                ticker
+                    .open_interest
+                    .to_string()
+                    .parse::<f64>()
+                    .unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                15,
+                ticker
+                    .open_interest_notional
+                    .to_string()
+                    .parse::<f64>()
+                    .unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                16,
+                ticker
+                    .price_change_24h
+                    .to_string()
+                    .parse::<f64>()
+                    .unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                17,
+                ticker
+                    .price_change_pct
+                    .to_string()
+                    .parse::<f64>()
+                    .unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                18,
+                ticker
+                    .high_price_24h
+                    .to_string()
+                    .parse::<f64>()
+                    .unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                19,
+                ticker
+                    .low_price_24h
+                    .to_string()
+                    .parse::<f64>()
+                    .unwrap_or(0.0),
+            )?;
         }
 
         // Auto-fit columns
@@ -833,10 +1196,7 @@ mod tests {
             result.is_err(),
             "Should return error for empty symbols file"
         );
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("No symbols found"));
+        assert!(result.unwrap_err().to_string().contains("No symbols found"));
 
         dir.close().unwrap();
     }

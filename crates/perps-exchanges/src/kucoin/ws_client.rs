@@ -29,18 +29,20 @@ impl KuCoinWsClient {
     /// Get WebSocket token and endpoint
     async fn get_ws_token(&self) -> Result<(String, String)> {
         let url = format!("{}/api/v1/bullet-public", self.api_base_url);
-        let response = reqwest::Client::new()
-            .post(&url)
-            .send()
-            .await?;
+        let response = reqwest::Client::new().post(&url).send().await?;
 
         let token_response: KuCoinWsTokenResponse = response.json().await?;
 
         if token_response.code != "200000" {
-            return Err(anyhow!("Failed to get WebSocket token: {}", token_response.code));
+            return Err(anyhow!(
+                "Failed to get WebSocket token: {}",
+                token_response.code
+            ));
         }
 
-        let server = token_response.data.instance_servers
+        let server = token_response
+            .data
+            .instance_servers
             .first()
             .ok_or_else(|| anyhow!("No WebSocket server available"))?;
 
@@ -55,7 +57,10 @@ impl KuCoinWsClient {
         tracing::info!("Connecting to KuCoin WebSocket: {}", endpoint);
         let url = Url::parse(&ws_url)?;
         let (ws_stream, response) = connect_async(url.as_str()).await?;
-        tracing::info!("Connected to KuCoin WebSocket (status: {:?})", response.status());
+        tracing::info!(
+            "Connected to KuCoin WebSocket (status: {:?})",
+            response.status()
+        );
         Ok(ws_stream)
     }
 
@@ -83,30 +88,42 @@ impl KuCoinWsClient {
     fn convert_ticker(&self, ws_ticker: &KuCoinWsTicker) -> Result<Ticker> {
         Ok(Ticker {
             symbol: ws_ticker.symbol.clone(),
-            last_price: ws_ticker.last_traded_price.as_ref()
+            last_price: ws_ticker
+                .last_traded_price
+                .as_ref()
                 .map(|p| Decimal::from_str(p))
                 .transpose()?
                 .unwrap_or(Decimal::ZERO),
-            mark_price: ws_ticker.mark_price.as_ref()
+            mark_price: ws_ticker
+                .mark_price
+                .as_ref()
                 .map(|p| Decimal::from_str(p))
                 .transpose()?
                 .unwrap_or(Decimal::ZERO),
-            index_price: ws_ticker.index_price.as_ref()
+            index_price: ws_ticker
+                .index_price
+                .as_ref()
                 .map(|p| Decimal::from_str(p))
                 .transpose()?
                 .unwrap_or(Decimal::ZERO),
-            best_bid_price: ws_ticker.best_bid_price.as_ref()
+            best_bid_price: ws_ticker
+                .best_bid_price
+                .as_ref()
                 .map(|p| Decimal::from_str(p))
                 .transpose()?
                 .unwrap_or(Decimal::ZERO),
-            best_bid_qty: ws_ticker.best_bid_size
+            best_bid_qty: ws_ticker
+                .best_bid_size
                 .map(|s| Decimal::from(s))
                 .unwrap_or(Decimal::ZERO),
-            best_ask_price: ws_ticker.best_ask_price.as_ref()
+            best_ask_price: ws_ticker
+                .best_ask_price
+                .as_ref()
                 .map(|p| Decimal::from_str(p))
                 .transpose()?
                 .unwrap_or(Decimal::ZERO),
-            best_ask_qty: ws_ticker.best_ask_size
+            best_ask_qty: ws_ticker
+                .best_ask_size
                 .map(|s| Decimal::from(s))
                 .unwrap_or(Decimal::ZERO),
             volume_24h: Decimal::ZERO, // Not available in ticker stream
@@ -117,7 +134,10 @@ impl KuCoinWsClient {
             price_change_pct: Decimal::ZERO,
             high_price_24h: Decimal::ZERO,
             low_price_24h: Decimal::ZERO,
-            timestamp: Utc.timestamp_millis_opt(ws_ticker.timestamp).single().unwrap_or_else(Utc::now),
+            timestamp: Utc
+                .timestamp_millis_opt(ws_ticker.timestamp)
+                .single()
+                .unwrap_or_else(Utc::now),
         })
     }
 
@@ -137,7 +157,9 @@ impl KuCoinWsClient {
                 // KuCoin timestamps are in nanoseconds
                 let seconds = ws_execution.timestamp / 1_000_000_000;
                 let nanos = (ws_execution.timestamp % 1_000_000_000) as u32;
-                Utc.timestamp_opt(seconds, nanos).single().unwrap_or_else(Utc::now)
+                Utc.timestamp_opt(seconds, nanos)
+                    .single()
+                    .unwrap_or_else(Utc::now)
             },
         })
     }
@@ -169,11 +191,16 @@ impl KuCoinWsClient {
 
         // Candles format: [start_time, open, close, high, low, volume, amount]
         if ws_kline.candles.len() < 7 {
-            return Err(anyhow!("Invalid kline data: expected 7 fields, got {}", ws_kline.candles.len()));
+            return Err(anyhow!(
+                "Invalid kline data: expected 7 fields, got {}",
+                ws_kline.candles.len()
+            ));
         }
 
         let start_time_secs = i64::from_str(&ws_kline.candles[0])?;
-        let open_time = Utc.timestamp_opt(start_time_secs, 0).single()
+        let open_time = Utc
+            .timestamp_opt(start_time_secs, 0)
+            .single()
             .ok_or_else(|| anyhow!("Invalid timestamp"))?;
 
         // Calculate close_time based on interval
@@ -212,12 +239,18 @@ impl KuCoinWsClient {
 
     /// Stream klines for a single symbol (one-time fetch for REST API compatibility)
     /// This is a helper method for the REST API to fetch klines via WebSocket
-    pub async fn stream_klines_single(&self, symbol: String, interval: String, _limit: u32) -> Result<DataStream<Kline>> {
+    pub async fn stream_klines_single(
+        &self,
+        symbol: String,
+        interval: String,
+        _limit: u32,
+    ) -> Result<DataStream<Kline>> {
         let mut ws_stream = self.connect().await?;
 
         // Subscribe to klines topic
         let topic = format!("/contractMarket/limitCandle:{}_{}", symbol, interval);
-        self.subscribe(&mut ws_stream, topic.clone(), "klines-single".to_string()).await?;
+        self.subscribe(&mut ws_stream, topic.clone(), "klines-single".to_string())
+            .await?;
 
         let client = self.clone();
         let interval_clone = interval.clone();
@@ -314,7 +347,8 @@ impl IPerpsStream for KuCoinWsClient {
         // Subscribe to tickers for each symbol
         for (i, symbol) in symbols.iter().enumerate() {
             let topic = format!("/contractMarket/ticker:{}", symbol);
-            self.subscribe(&mut ws_stream, topic, format!("ticker-{}", i)).await?;
+            self.subscribe(&mut ws_stream, topic, format!("ticker-{}", i))
+                .await?;
         }
 
         let client = self.clone();
@@ -380,7 +414,8 @@ impl IPerpsStream for KuCoinWsClient {
         // Subscribe to executions for each symbol
         for (i, symbol) in symbols.iter().enumerate() {
             let topic = format!("/contractMarket/execution:{}", symbol);
-            self.subscribe(&mut ws_stream, topic, format!("execution-{}", i)).await?;
+            self.subscribe(&mut ws_stream, topic, format!("execution-{}", i))
+                .await?;
         }
 
         let client = self.clone();
@@ -439,7 +474,9 @@ impl IPerpsStream for KuCoinWsClient {
 
         // Get kline interval if streaming klines
         let kline_interval = if config.data_types.contains(&StreamDataType::Kline) {
-            let interval = config.kline_interval.as_ref()
+            let interval = config
+                .kline_interval
+                .as_ref()
                 .ok_or_else(|| anyhow!("kline_interval must be specified when streaming klines"))?;
             Some(self.convert_interval(interval))
         } else {
@@ -463,7 +500,8 @@ impl IPerpsStream for KuCoinWsClient {
                         }
                     }
                 };
-                self.subscribe(&mut ws_stream, topic, format!("multi-{}", topic_id)).await?;
+                self.subscribe(&mut ws_stream, topic, format!("multi-{}", topic_id))
+                    .await?;
                 topic_id += 1;
             }
         }

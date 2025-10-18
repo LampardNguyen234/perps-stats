@@ -25,8 +25,11 @@ target
 
 /target
 /data
+/exports
 
 # Environment variables (may contain secrets)
 .env
 .env.local
 .env.*.local
+.claude
+CLAUDE.md

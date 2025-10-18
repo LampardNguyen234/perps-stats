@@ -81,10 +81,7 @@ impl RetryConfig {
 /// # Ok(())
 /// # }
 /// ```
-pub async fn execute_with_retry<F, Fut, T>(
-    config: &RetryConfig,
-    mut request_fn: F,
-) -> Result<T>
+pub async fn execute_with_retry<F, Fut, T>(config: &RetryConfig, mut request_fn: F) -> Result<T>
 where
     F: FnMut() -> Fut,
     Fut: Future<Output = Result<T>>,
@@ -97,7 +94,8 @@ where
             Err(e) => {
                 // Check if this is a 429 error
                 let error_string = e.to_string();
-                let is_429 = error_string.contains("429") || error_string.contains("Too Many Requests");
+                let is_429 =
+                    error_string.contains("429") || error_string.contains("Too Many Requests");
 
                 if is_429 && attempt < config.max_retries {
                     // Calculate exponential backoff: base_delay * 2^attempt
@@ -118,7 +116,9 @@ where
         }
     }
 
-    Err(anyhow::anyhow!("Unexpected: retry loop exhausted without returning"))
+    Err(anyhow::anyhow!(
+        "Unexpected: retry loop exhausted without returning"
+    ))
 }
 
 #[cfg(test)]

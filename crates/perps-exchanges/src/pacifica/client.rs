@@ -83,17 +83,9 @@ impl PacificaClient {
                             // Parse response wrapper
                             let wrapper: PacificaResponse<T> = response.json().await?;
                             if !wrapper.success {
-                                let error = wrapper
-                                    .error
-                                    .unwrap_or(String::from("Unknown error"));
-                                let code = wrapper
-                                    .code
-                                    .unwrap_or(String::from("UNKNOWN"));
-                                return Err(anyhow!(
-                                    "Pacifica API error: {} - {}",
-                                    code,
-                                    error
-                                ));
+                                let error = wrapper.error.unwrap_or(String::from("Unknown error"));
+                                let code = wrapper.code.unwrap_or(String::from("UNKNOWN"));
+                                return Err(anyhow!("Pacifica API error: {} - {}", code, error));
                             }
 
                             wrapper
@@ -131,13 +123,17 @@ impl IPerps for PacificaClient {
         let markets = markets
             .into_iter()
             .map(|m| {
-                let price_scale = m.tick_size.find('.').map(|pos| {
-                    (m.tick_size.len() - pos - 1) as i32
-                }).unwrap_or(0);
+                let price_scale = m
+                    .tick_size
+                    .find('.')
+                    .map(|pos| (m.tick_size.len() - pos - 1) as i32)
+                    .unwrap_or(0);
 
-                let quantity_scale = m.lot_size.find('.').map(|pos| {
-                    (m.lot_size.len() - pos - 1) as i32
-                }).unwrap_or(0);
+                let quantity_scale = m
+                    .lot_size
+                    .find('.')
+                    .map(|pos| (m.lot_size.len() - pos - 1) as i32)
+                    .unwrap_or(0);
 
                 Market {
                     symbol: m.symbol.clone(),
@@ -222,7 +218,7 @@ impl IPerps for PacificaClient {
             best_bid_qty,
             best_ask_price,
             best_ask_qty,
-            volume_24h: volume_24h/mark_price,
+            volume_24h: volume_24h / mark_price,
             turnover_24h: volume_24h,
             open_interest,
             open_interest_notional: open_interest * mark_price,
@@ -244,7 +240,8 @@ impl IPerps for PacificaClient {
             let index_price = Decimal::from_str(&price.oracle).unwrap_or(Decimal::ZERO);
             let open_interest = Decimal::from_str(&price.open_interest).unwrap_or(Decimal::ZERO);
             let volume_24h = Decimal::from_str(&price.volume_24h).unwrap_or(Decimal::ZERO);
-            let yesterday_price = Decimal::from_str(&price.yesterday_price).unwrap_or(Decimal::ZERO);
+            let yesterday_price =
+                Decimal::from_str(&price.yesterday_price).unwrap_or(Decimal::ZERO);
 
             let price_change_24h = last_price - yesterday_price;
             let price_change_pct = if yesterday_price > Decimal::ZERO {
@@ -385,7 +382,7 @@ impl IPerps for PacificaClient {
             predicted_rate: next_funding_rate,
             funding_time: Utc.timestamp_millis_opt(price.timestamp).unwrap(),
             next_funding_time,
-            funding_interval: 8, // 8 hours (standard)
+            funding_interval: 8,                   // 8 hours (standard)
             funding_rate_cap_floor: Decimal::ZERO, // Not provided
         })
     }
@@ -549,7 +546,11 @@ mod tests {
     async fn test_get_markets() {
         let client = PacificaClient::default();
         let markets = client.get_markets().await;
-        assert!(markets.is_ok(), "Failed to get markets: {:?}", markets.err());
+        assert!(
+            markets.is_ok(),
+            "Failed to get markets: {:?}",
+            markets.err()
+        );
         let markets = markets.unwrap();
         assert!(!markets.is_empty(), "Markets list should not be empty");
     }
@@ -568,7 +569,11 @@ mod tests {
     async fn test_get_orderbook() {
         let client = PacificaClient::default();
         let orderbook = client.get_orderbook("BTC", 10).await;
-        assert!(orderbook.is_ok(), "Failed to get orderbook: {:?}", orderbook.err());
+        assert!(
+            orderbook.is_ok(),
+            "Failed to get orderbook: {:?}",
+            orderbook.err()
+        );
         let orderbook = orderbook.unwrap();
         assert_eq!(orderbook.symbol, "BTC");
         assert!(!orderbook.bids.is_empty());

@@ -58,11 +58,11 @@ pub struct BybitWsBookLevel {
 /// Topic: orderbook.{depth}.{symbol}
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct BybitWsOrderbook {
-    pub s: String, // Symbol
+    pub s: String,           // Symbol
     pub b: Vec<Vec<String>>, // Bids [[price, size], ...]
     pub a: Vec<Vec<String>>, // Asks [[price, size], ...]
-    pub u: i64, // Update ID
-    pub seq: i64, // Sequence number
+    pub u: i64,              // Update ID
+    pub seq: i64,            // Sequence number
     #[serde(rename = "cts")]
     pub timestamp: i64, // Cross sequence timestamp
 }

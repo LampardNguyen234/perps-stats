@@ -11,7 +11,9 @@ use std::collections::HashMap;
 use std::fs::File;
 use tokio::time::{sleep, Duration};
 
-use super::common::{determine_output_config, format_output_description, validate_symbols, OutputConfig};
+use super::common::{
+    determine_output_config, format_output_description, validate_symbols, OutputConfig,
+};
 
 /// Arguments for the ticker command
 pub struct TickerArgs {
@@ -54,7 +56,8 @@ pub async fn execute(args: TickerArgs) -> Result<()> {
 
     // Check if periodic fetching is enabled
     if let Some(interval_secs) = interval {
-        let output_config = determine_output_config(&format, output, &output_dir, database_url).await?;
+        let output_config =
+            determine_output_config(&format, output, &output_dir, database_url).await?;
 
         run_periodic_fetcher(
             client.as_ref(),
@@ -74,9 +77,7 @@ pub async fn execute(args: TickerArgs) -> Result<()> {
         );
 
         for symbol in &symbol_list {
-            match fetch_and_display_ticker_data(client.as_ref(), symbol, &format, &exchange)
-                .await
-            {
+            match fetch_and_display_ticker_data(client.as_ref(), symbol, &format, &exchange).await {
                 Ok(_) => {}
                 Err(e) => {
                     tracing::error!("Failed to fetch ticker for {}: {}", symbol, e);
@@ -103,7 +104,11 @@ async fn run_periodic_fetcher(
     tracing::info!(
         "Starting periodic ticker fetcher (interval: {}s, max_snapshots: {}, {})",
         interval_secs,
-        if max_snapshots == 0 { "unlimited".to_string() } else { max_snapshots.to_string() },
+        if max_snapshots == 0 {
+            "unlimited".to_string()
+        } else {
+            max_snapshots.to_string()
+        },
         output_desc
     );
 
@@ -120,14 +125,19 @@ async fn run_periodic_fetcher(
 
     loop {
         let now = Utc::now();
-        tracing::info!("[Snapshot #{}] Fetching tickers at {}", snapshot_count + 1, now.format("%Y-%m-%d %H:%M:%S UTC"));
+        tracing::info!(
+            "[Snapshot #{}] Fetching tickers at {}",
+            snapshot_count + 1,
+            now.format("%Y-%m-%d %H:%M:%S UTC")
+        );
 
         // Fetch data for all symbols
         let mut batch_tickers = Vec::new();
         for symbol in symbols {
             match fetch_ticker_data(client, symbol).await {
                 Ok(ticker) => {
-                    tracing::debug!("✓ {} - Last: ${:.2}, Volume: {:.2}, BestBidQty: {:.2}, BestAskQty: {:.2}",
+                    tracing::debug!(
+                        "✓ {} - Last: ${:.2}, Volume: {:.2}, BestBidQty: {:.2}, BestAskQty: {:.2}",
                         ticker.symbol,
                         ticker.last_price,
                         ticker.volume_24h,
@@ -154,21 +164,31 @@ async fn run_periodic_fetcher(
 
         // Write to output
         match &config {
-            OutputConfig::File { output_file, output_dir, format } => {
+            OutputConfig::File {
+                output_file,
+                output_dir,
+                format,
+            } => {
                 match format.as_str() {
                     "csv" => write_to_csv(&data_by_symbol, output_file, output_dir, exchange)?,
                     "excel" => write_to_excel(&data_by_symbol, output_file, output_dir, exchange)?,
                     _ => unreachable!("Format already validated"),
                 }
-                tracing::info!("✓ Written snapshot #{} to {}{}",
+                tracing::info!(
+                    "✓ Written snapshot #{} to {}{}",
                     snapshot_count,
-                    output_dir.as_ref().map(|d| format!("{}/", d)).unwrap_or_default(),
+                    output_dir
+                        .as_ref()
+                        .map(|d| format!("{}/", d))
+                        .unwrap_or_default(),
                     output_file
                 );
             }
             OutputConfig::Database { repository } => {
                 if !batch_tickers.is_empty() {
-                    repository.store_tickers_with_exchange(exchange, &batch_tickers).await?;
+                    repository
+                        .store_tickers_with_exchange(exchange, &batch_tickers)
+                        .await?;
                 }
             }
         }
@@ -184,15 +204,15 @@ async fn run_periodic_fetcher(
         sleep(Duration::from_secs(interval_secs)).await;
     }
 
-    tracing::info!("✓ Periodic fetcher completed. Total snapshots: {}", snapshot_count);
+    tracing::info!(
+        "✓ Periodic fetcher completed. Total snapshots: {}",
+        snapshot_count
+    );
     Ok(())
 }
 
 /// Fetch ticker data for a single symbol (without displaying)
-async fn fetch_ticker_data(
-    client: &dyn IPerps,
-    symbol: &str,
-) -> Result<Ticker> {
+async fn fetch_ticker_data(client: &dyn IPerps, symbol: &str) -> Result<Ticker> {
     let ticker = client.get_ticker(symbol).await?;
     Ok(ticker)
 }
@@ -361,23 +381,135 @@ fn write_to_excel(
             )?;
             worksheet.write_string(row, 1, exchange)?;
             worksheet.write_string(row, 2, &ticker.symbol)?;
-            worksheet.write_number(row, 3, ticker.last_price.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 4, ticker.mark_price.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 5, ticker.index_price.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 6, ticker.best_bid_price.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 7, ticker.best_bid_qty.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 8, bid_notional.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 9, ticker.best_ask_price.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 10, ticker.best_ask_qty.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 11, ask_notional.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 12, ticker.volume_24h.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 13, ticker.turnover_24h.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 14, ticker.open_interest.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 15, ticker.open_interest_notional.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 16, ticker.price_change_24h.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 17, ticker.price_change_pct.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 18, ticker.high_price_24h.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 19, ticker.low_price_24h.to_string().parse::<f64>().unwrap_or(0.0))?;
+            worksheet.write_number(
+                row,
+                3,
+                ticker.last_price.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                4,
+                ticker.mark_price.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                5,
+                ticker.index_price.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                6,
+                ticker
+                    .best_bid_price
+                    .to_string()
+                    .parse::<f64>()
+                    .unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                7,
+                ticker
+                    .best_bid_qty
+                    .to_string()
+                    .parse::<f64>()
+                    .unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                8,
+                bid_notional.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                9,
+                ticker
+                    .best_ask_price
+                    .to_string()
+                    .parse::<f64>()
+                    .unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                10,
+                ticker
+                    .best_ask_qty
+                    .to_string()
+                    .parse::<f64>()
+                    .unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                11,
+                ask_notional.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                12,
+                ticker.volume_24h.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                13,
+                ticker
+                    .turnover_24h
+                    .to_string()
+                    .parse::<f64>()
+                    .unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                14,
+                ticker
+                    .open_interest
+                    .to_string()
+                    .parse::<f64>()
+                    .unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                15,
+                ticker
+                    .open_interest_notional
+                    .to_string()
+                    .parse::<f64>()
+                    .unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                16,
+                ticker
+                    .price_change_24h
+                    .to_string()
+                    .parse::<f64>()
+                    .unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                17,
+                ticker
+                    .price_change_pct
+                    .to_string()
+                    .parse::<f64>()
+                    .unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                18,
+                ticker
+                    .high_price_24h
+                    .to_string()
+                    .parse::<f64>()
+                    .unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                19,
+                ticker
+                    .low_price_24h
+                    .to_string()
+                    .parse::<f64>()
+                    .unwrap_or(0.0),
+            )?;
         }
 
         // Auto-fit columns for better readability
@@ -436,15 +568,24 @@ fn display_table(ticker: &Ticker, exchange: &str) -> Result<()> {
     ]));
     table.add_row(Row::new(vec![
         Cell::new("  Last"),
-        Cell::new_align(&format!("${:.2}", ticker.last_price), format::Alignment::RIGHT),
+        Cell::new_align(
+            &format!("${:.2}", ticker.last_price),
+            format::Alignment::RIGHT,
+        ),
     ]));
     table.add_row(Row::new(vec![
         Cell::new("  Mark"),
-        Cell::new_align(&format!("${:.2}", ticker.mark_price), format::Alignment::RIGHT),
+        Cell::new_align(
+            &format!("${:.2}", ticker.mark_price),
+            format::Alignment::RIGHT,
+        ),
     ]));
     table.add_row(Row::new(vec![
         Cell::new("  Index"),
-        Cell::new_align(&format!("${:.2}", ticker.index_price), format::Alignment::RIGHT),
+        Cell::new_align(
+            &format!("${:.2}", ticker.index_price),
+            format::Alignment::RIGHT,
+        ),
     ]));
 
     // Best Bid/Ask
@@ -458,11 +599,23 @@ fn display_table(ticker: &Ticker, exchange: &str) -> Result<()> {
 
     table.add_row(Row::new(vec![
         Cell::new("  Bid"),
-        Cell::new_align(&format!("${:.2} @ {} (${:.2})", ticker.best_bid_price, ticker.best_bid_qty, bid_notional), format::Alignment::RIGHT),
+        Cell::new_align(
+            &format!(
+                "${:.2} @ {} (${:.2})",
+                ticker.best_bid_price, ticker.best_bid_qty, bid_notional
+            ),
+            format::Alignment::RIGHT,
+        ),
     ]));
     table.add_row(Row::new(vec![
         Cell::new("  Ask"),
-        Cell::new_align(&format!("${:.2} @ {} (${:.2})", ticker.best_ask_price, ticker.best_ask_qty, ask_notional), format::Alignment::RIGHT),
+        Cell::new_align(
+            &format!(
+                "${:.2} @ {} (${:.2})",
+                ticker.best_ask_price, ticker.best_ask_qty, ask_notional
+            ),
+            format::Alignment::RIGHT,
+        ),
     ]));
 
     // 24H Statistics
@@ -476,7 +629,10 @@ fn display_table(ticker: &Ticker, exchange: &str) -> Result<()> {
     ]));
     table.add_row(Row::new(vec![
         Cell::new("  Turnover"),
-        Cell::new_align(&format!("${:.2}", ticker.turnover_24h), format::Alignment::RIGHT),
+        Cell::new_align(
+            &format!("${:.2}", ticker.turnover_24h),
+            format::Alignment::RIGHT,
+        ),
     ]));
     table.add_row(Row::new(vec![
         Cell::new("  Open Interest"),
@@ -484,25 +640,44 @@ fn display_table(ticker: &Ticker, exchange: &str) -> Result<()> {
     ]));
     table.add_row(Row::new(vec![
         Cell::new("  OI Notional"),
-        Cell::new_align(&format!("${:.2}", ticker.open_interest_notional), format::Alignment::RIGHT),
+        Cell::new_align(
+            &format!("${:.2}", ticker.open_interest_notional),
+            format::Alignment::RIGHT,
+        ),
     ]));
     table.add_row(Row::new(vec![
         Cell::new("  Change"),
         Cell::new_align(
-            &format!("{:.2} ({:.2}%)", ticker.price_change_24h, ticker.price_change_pct * rust_decimal::Decimal::new(100, 0)),
-            format::Alignment::RIGHT
+            &format!(
+                "{:.2} ({:.2}%)",
+                ticker.price_change_24h,
+                ticker.price_change_pct * rust_decimal::Decimal::new(100, 0)
+            ),
+            format::Alignment::RIGHT,
         ),
     ]));
     table.add_row(Row::new(vec![
         Cell::new("  High"),
-        Cell::new_align(&format!("${:.2}", ticker.high_price_24h), format::Alignment::RIGHT),
+        Cell::new_align(
+            &format!("${:.2}", ticker.high_price_24h),
+            format::Alignment::RIGHT,
+        ),
     ]));
     table.add_row(Row::new(vec![
         Cell::new("  Low"),
-        Cell::new_align(&format!("${:.2}", ticker.low_price_24h), format::Alignment::RIGHT),
+        Cell::new_align(
+            &format!("${:.2}", ticker.low_price_24h),
+            format::Alignment::RIGHT,
+        ),
     ]));
 
-    table.add_row(Row::new(vec![Cell::new("Timestamp").with_style(prettytable::Attr::Bold), Cell::new_align(&ticker.timestamp.format("%Y-%m-%d %H:%M:%S UTC").to_string(), format::Alignment::RIGHT)]));
+    table.add_row(Row::new(vec![
+        Cell::new("Timestamp").with_style(prettytable::Attr::Bold),
+        Cell::new_align(
+            &ticker.timestamp.format("%Y-%m-%d %H:%M:%S UTC").to_string(),
+            format::Alignment::RIGHT,
+        ),
+    ]));
 
     println!();
     table.printstd();
@@ -548,4 +723,3 @@ fn display_json(ticker: &Ticker, exchange: &str) -> Result<()> {
     println!("{}", serde_json::to_string_pretty(&output)?);
     Ok(())
 }
-

@@ -80,6 +80,8 @@ pub struct BinanceWsDepthUpdate {
     pub first_update_id: i64,
     #[serde(rename = "u")]
     pub final_update_id: i64,
+    #[serde(rename = "pu", default)]
+    pub previous_update_id: i64, // Previous final update ID (optional, may be 0)
     #[serde(rename = "b")]
     pub bids: Vec<(String, String)>, // (price, quantity)
     #[serde(rename = "a")]

@@ -110,10 +110,19 @@ services:
     command:
       - perps-stats
       - start
+<<<<<<< Updated upstream
       - -e
       - "extended,aster,pacifica,lighter,hyperliquid,paradex,binance"
       - --report-interval
       - "${REPORT_INTERVAL:-30}"
+=======
+      - -ex
+      - "extended,aster,pacifica,lighter,hyperliquid,paradex,binance"
+      - --report-interval
+      - "${REPORT_INTERVAL:-30}"
+      - --klines-timeframes
+      - "1h"
+>>>>>>> Stashed changes
 
     # Alternative commands (comment out above, uncomment one below):
 

@@ -4,7 +4,7 @@ use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, TimeZone, Utc};
 use perps_core::types::*;
-use perps_core::{IPerps, RateLimiter, RetryConfig, execute_with_retry};
+use perps_core::{execute_with_retry, IPerps, RateLimiter, RetryConfig};
 use rust_decimal::Decimal;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -51,21 +51,28 @@ impl ParadexClient {
             let http = http.clone();
             let rate_limiter = rate_limiter.clone();
             async move {
-                rate_limiter.execute(|| {
-                    let url = url.clone();
-                    let http = http.clone();
-                    async move {
-                        tracing::debug!("Requesting: {}", url);
-                        let response = http.get(&url).send().await?;
-                        if !response.status().is_success() {
-                            return Err(anyhow!("GET request to {} failed with status: {}", url, response.status()));
+                rate_limiter
+                    .execute(|| {
+                        let url = url.clone();
+                        let http = http.clone();
+                        async move {
+                            tracing::debug!("Requesting: {}", url);
+                            let response = http.get(&url).send().await?;
+                            if !response.status().is_success() {
+                                return Err(anyhow!(
+                                    "GET request to {} failed with status: {}",
+                                    url,
+                                    response.status()
+                                ));
+                            }
+                            let data = response.json().await?;
+                            Ok(data)
                         }
-                        let data = response.json().await?;
-                        Ok(data)
-                    }
-                }).await
+                    })
+                    .await
             }
-        }).await
+        })
+        .await
     }
 }
 
@@ -91,8 +98,10 @@ impl IPerps for ParadexClient {
             .results
             .into_iter()
             .map(|m| {
-                let price_tick_size = Decimal::from_str(&m.price_tick_size).unwrap_or(Decimal::new(1, 2));
-                let order_size_increment = Decimal::from_str(&m.order_size_increment).unwrap_or(Decimal::new(1, 3));
+                let price_tick_size =
+                    Decimal::from_str(&m.price_tick_size).unwrap_or(Decimal::new(1, 2));
+                let order_size_increment =
+                    Decimal::from_str(&m.order_size_increment).unwrap_or(Decimal::new(1, 3));
 
                 // Calculate precision from tick size
                 let price_scale = if price_tick_size > Decimal::ZERO {
@@ -132,23 +141,37 @@ impl IPerps for ParadexClient {
     }
 
     async fn get_orderbook(&self, symbol: &str, _depth: u32) -> Result<Orderbook> {
-        let response: OrderbookResponse = self.get(&format!("/orderbook/{}?depth=100", symbol)).await?;
+        let response: OrderbookResponse = self
+            .get(&format!("/orderbook/{}?depth=100", symbol))
+            .await?;
         let bids = response
             .bids
             .into_iter()
-            .map(|(price, quantity)| Ok(OrderbookLevel { price: Decimal::from_str(&price)?, quantity: Decimal::from_str(&quantity)? }))
+            .map(|(price, quantity)| {
+                Ok(OrderbookLevel {
+                    price: Decimal::from_str(&price)?,
+                    quantity: Decimal::from_str(&quantity)?,
+                })
+            })
             .collect::<Result<Vec<_>>>()?;
         let asks = response
             .asks
             .into_iter()
-            .map(|(price, quantity)| Ok(OrderbookLevel { price: Decimal::from_str(&price)?, quantity: Decimal::from_str(&quantity)? }))
+            .map(|(price, quantity)| {
+                Ok(OrderbookLevel {
+                    price: Decimal::from_str(&price)?,
+                    quantity: Decimal::from_str(&quantity)?,
+                })
+            })
             .collect::<Result<Vec<_>>>()?;
 
         Ok(Orderbook {
             symbol: response.market,
             bids,
             asks,
-            timestamp: Utc.timestamp_millis_opt(response.last_updated_at as i64).unwrap(),
+            timestamp: Utc
+                .timestamp_millis_opt(response.last_updated_at as i64)
+                .unwrap(),
         })
     }
 
@@ -157,21 +180,32 @@ impl IPerps for ParadexClient {
         let trades = response
             .trades
             .into_iter()
-            .map(|t| Ok(Trade {
-                id: t.timestamp.to_string(), // No unique trade ID provided
-                symbol: symbol.to_string(),
-                price: Decimal::from_str(&t.price)?,
-                quantity: Decimal::from_str(&t.size)?,
-                side: if t.side == "buy" { OrderSide::Buy } else { OrderSide::Sell },
-                timestamp: Utc.timestamp_opt(t.timestamp, 0).unwrap(),
-            }))
+            .map(|t| {
+                Ok(Trade {
+                    id: t.timestamp.to_string(), // No unique trade ID provided
+                    symbol: symbol.to_string(),
+                    price: Decimal::from_str(&t.price)?,
+                    quantity: Decimal::from_str(&t.size)?,
+                    side: if t.side == "buy" {
+                        OrderSide::Buy
+                    } else {
+                        OrderSide::Sell
+                    },
+                    timestamp: Utc.timestamp_opt(t.timestamp, 0).unwrap(),
+                })
+            })
             .collect::<Result<Vec<_>>>()?;
         Ok(trades)
     }
 
     async fn get_funding_rate(&self, symbol: &str) -> Result<FundingRate> {
-        let response: FundingRateResponse = self.get(&format!("/funding/data?market={}", symbol)).await?;
-        let rate = response.results.first().ok_or_else(|| anyhow!("No funding rate data found for {}", symbol))?;
+        let response: FundingRateResponse = self
+            .get(&format!("/funding/data?market={}", symbol))
+            .await?;
+        let rate = response
+            .results
+            .first()
+            .ok_or_else(|| anyhow!("No funding rate data found for {}", symbol))?;
         Ok(FundingRate {
             symbol: rate.market.clone(),
             funding_rate: Decimal::from_str(&rate.funding_rate)?,
@@ -202,25 +236,34 @@ impl IPerps for ParadexClient {
             "1h" => ("60", 3600),
             _ => ("1", 60), // Default to 1m
         };
-        let start = start_time.unwrap_or_else(|| Utc::now() - chrono::Duration::days(1)).timestamp_millis();
+        let start = start_time
+            .unwrap_or_else(|| Utc::now() - chrono::Duration::days(1))
+            .timestamp_millis();
         let end = end_time.unwrap_or_else(Utc::now).timestamp_millis();
-        let endpoint = format!("/markets/klines?symbol={}&resolution={}&start_at={}&end_at={}", symbol, resolution, start, end);
+        let endpoint = format!(
+            "/markets/klines?symbol={}&resolution={}&start_at={}&end_at={}",
+            symbol, resolution, start, end
+        );
         let response: KlinesResponse = self.get(&endpoint).await?;
         let klines = response
             .results
             .into_iter()
-            .map(|k| Ok(Kline {
-                symbol: symbol.to_string(),
-                interval: interval.to_string(),
-                open_time: Utc.timestamp_millis_opt(k.0 as i64).unwrap(),
-                close_time: Utc.timestamp_millis_opt(k.0 as i64 + (resolution_seconds * 1000)).unwrap(),
-                open: Decimal::try_from(k.1).unwrap_or(Decimal::ZERO),
-                high: Decimal::try_from(k.2).unwrap_or(Decimal::ZERO),
-                low: Decimal::try_from(k.3).unwrap_or(Decimal::ZERO),
-                close: Decimal::try_from(k.4).unwrap_or(Decimal::ZERO),
-                volume: Decimal::try_from(k.5).unwrap_or(Decimal::ZERO),
-                turnover: Decimal::ZERO, // Not available
-            }))
+            .map(|k| {
+                Ok(Kline {
+                    symbol: symbol.to_string(),
+                    interval: interval.to_string(),
+                    open_time: Utc.timestamp_millis_opt(k.0 as i64).unwrap(),
+                    close_time: Utc
+                        .timestamp_millis_opt(k.0 as i64 + (resolution_seconds * 1000))
+                        .unwrap(),
+                    open: Decimal::try_from(k.1).unwrap_or(Decimal::ZERO),
+                    high: Decimal::try_from(k.2).unwrap_or(Decimal::ZERO),
+                    low: Decimal::try_from(k.3).unwrap_or(Decimal::ZERO),
+                    close: Decimal::try_from(k.4).unwrap_or(Decimal::ZERO),
+                    volume: Decimal::try_from(k.5).unwrap_or(Decimal::ZERO),
+                    turnover: Decimal::ZERO, // Not available
+                })
+            })
             .collect::<Result<Vec<_>>>()?;
         Ok(klines)
     }
@@ -234,8 +277,13 @@ impl IPerps for ParadexClient {
 
     async fn get_ticker(&self, symbol: &str) -> Result<Ticker> {
         // Fetch market summary for 24h statistics
-        let summary_response: MarketSummaryResponse = self.get(&format!("/markets/summary?market={}", symbol)).await?;
-        let summary = summary_response.results.first().ok_or_else(|| anyhow!("No summary data found for {}", symbol))?;
+        let summary_response: MarketSummaryResponse = self
+            .get(&format!("/markets/summary?market={}", symbol))
+            .await?;
+        let summary = summary_response
+            .results
+            .first()
+            .ok_or_else(|| anyhow!("No summary data found for {}", symbol))?;
 
         // Fetch BBO for best bid/ask with quantities
         let bbo: BboResponse = self.get(&format!("/bbo/{}", symbol)).await?;
@@ -304,7 +352,13 @@ impl IPerps for ParadexClient {
         Ok(tickers)
     }
 
-    async fn get_funding_rate_history(&self, _symbol: &str, _start_time: Option<DateTime<Utc>>, _end_time: Option<DateTime<Utc>>, _limit: Option<u32>) -> Result<Vec<FundingRate>> {
+    async fn get_funding_rate_history(
+        &self,
+        _symbol: &str,
+        _start_time: Option<DateTime<Utc>>,
+        _end_time: Option<DateTime<Utc>>,
+        _limit: Option<u32>,
+    ) -> Result<Vec<FundingRate>> {
         unimplemented!("get_funding_rate_history is not implemented for Paradex yet.")
     }
 

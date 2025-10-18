@@ -146,11 +146,11 @@ pub struct BybitTicker {
 // For /v5/market/orderbook?category=linear&symbol=...
 #[derive(Debug, Deserialize, Clone)]
 pub struct OrderbookResult {
-    pub s: String, // symbol
+    pub s: String,                // symbol
     pub b: Vec<(String, String)>, // bids: [price, size]
     pub a: Vec<(String, String)>, // asks: [price, size]
-    pub ts: i64, // timestamp
-    pub u: i64, // update id
+    pub ts: i64,                  // timestamp
+    pub u: i64,                   // update id
 }
 
 // For /v5/market/recent-trade?category=linear&symbol=...

@@ -31,7 +31,10 @@ impl BybitWsClient {
         tracing::info!("Connecting to Bybit WebSocket: {}", self.base_url);
         let url = Url::parse(&self.base_url)?;
         let (ws_stream, response) = connect_async(url.as_str()).await?;
-        tracing::info!("Connected to Bybit WebSocket (status: {:?})", response.status());
+        tracing::info!(
+            "Connected to Bybit WebSocket (status: {:?})",
+            response.status()
+        );
         Ok(ws_stream)
     }
 
@@ -100,7 +103,8 @@ impl BybitWsClient {
 
     /// Convert Bybit orderbook to our Orderbook type
     fn convert_orderbook(&self, ws_book: &BybitWsOrderbook) -> Result<Orderbook> {
-        let bids: Vec<OrderbookLevel> = ws_book.b
+        let bids: Vec<OrderbookLevel> = ws_book
+            .b
             .iter()
             .map(|level| {
                 if level.len() >= 2 {
@@ -114,7 +118,8 @@ impl BybitWsClient {
             })
             .collect::<Result<Vec<_>>>()?;
 
-        let asks: Vec<OrderbookLevel> = ws_book.a
+        let asks: Vec<OrderbookLevel> = ws_book
+            .a
             .iter()
             .map(|level| {
                 if level.len() >= 2 {
@@ -153,9 +158,7 @@ impl IPerpsStream for BybitWsClient {
         let mut ws_stream = self.connect().await?;
 
         // Subscribe to tickers for each symbol
-        let topics: Vec<String> = symbols.iter()
-            .map(|s| format!("tickers.{}", s))
-            .collect();
+        let topics: Vec<String> = symbols.iter().map(|s| format!("tickers.{}", s)).collect();
         self.subscribe(&mut ws_stream, topics).await?;
 
         let client = self.clone();
@@ -215,7 +218,8 @@ impl IPerpsStream for BybitWsClient {
         let mut ws_stream = self.connect().await?;
 
         // Subscribe to trades for each symbol
-        let topics: Vec<String> = symbols.iter()
+        let topics: Vec<String> = symbols
+            .iter()
             .map(|s| format!("publicTrade.{}", s))
             .collect();
         self.subscribe(&mut ws_stream, topics).await?;
@@ -271,7 +275,8 @@ impl IPerpsStream for BybitWsClient {
         let mut ws_stream = self.connect().await?;
 
         // Subscribe to orderbook for each symbol (depth 50)
-        let topics: Vec<String> = symbols.iter()
+        let topics: Vec<String> = symbols
+            .iter()
             .map(|s| format!("orderbook.50.{}", s))
             .collect();
         self.subscribe(&mut ws_stream, topics).await?;

@@ -50,12 +50,13 @@ impl Ticker {
     pub fn is_empty(&self) -> bool {
         if self.last_price == Decimal::ZERO
             && self.mark_price == Decimal::ZERO
-            && self.index_price == Decimal::ZERO {
-            return true
+            && self.index_price == Decimal::ZERO
+        {
+            return true;
         }
 
         if self.volume_24h == Decimal::ZERO && self.turnover_24h == Decimal::ZERO {
-            return true
+            return true;
         }
 
         self.best_bid_price == Decimal::ZERO
@@ -127,6 +128,14 @@ impl Orderbook {
 
         let mid_price = self.mid_price()?;
         let spread = best_ask - best_bid;
+        if spread < Decimal::ZERO {
+            tracing::warn!(
+                "Negative spread {}, best_bid {}, best_ask {}",
+                spread,
+                best_bid,
+                best_ask
+            );
+        }
 
         Some((spread / mid_price) * Decimal::from(10000))
     }
@@ -171,12 +180,14 @@ impl Orderbook {
     /// Calculate total notional value for all bids and all asks.
     /// Returns (total_bid_notional, total_ask_notional)
     pub fn total_notional(&self) -> (Decimal, Decimal) {
-        let bid_notional: Decimal = self.bids
+        let bid_notional: Decimal = self
+            .bids
             .iter()
             .map(|level| level.price * level.quantity)
             .sum();
 
-        let ask_notional: Decimal = self.asks
+        let ask_notional: Decimal = self
+            .asks
             .iter()
             .map(|level| level.price * level.quantity)
             .sum();
@@ -434,10 +445,16 @@ mod tests {
             symbol: "BTC".to_string(),
             timestamp: Utc::now(),
             bids: vec![
-                OrderbookLevel { price: dec!(100000), quantity: dec!(0.1) }, // $10,000
+                OrderbookLevel {
+                    price: dec!(100000),
+                    quantity: dec!(0.1),
+                }, // $10,000
             ],
             asks: vec![
-                OrderbookLevel { price: dec!(100100), quantity: dec!(0.1) }, // $10,010
+                OrderbookLevel {
+                    price: dec!(100100),
+                    quantity: dec!(0.1),
+                }, // $10,010
             ],
         };
 
@@ -456,10 +473,16 @@ mod tests {
             symbol: "BTC".to_string(),
             timestamp: Utc::now(),
             bids: vec![
-                OrderbookLevel { price: dec!(100000), quantity: dec!(0.1) }, // $10,000
+                OrderbookLevel {
+                    price: dec!(100000),
+                    quantity: dec!(0.1),
+                }, // $10,000
             ],
             asks: vec![
-                OrderbookLevel { price: dec!(100100), quantity: dec!(0.1) }, // $10,010
+                OrderbookLevel {
+                    price: dec!(100100),
+                    quantity: dec!(0.1),
+                }, // $10,010
             ],
         };
 
@@ -477,13 +500,23 @@ mod tests {
         let orderbook = Orderbook {
             symbol: "BTC".to_string(),
             timestamp: Utc::now(),
-            bids: vec![
-                OrderbookLevel { price: dec!(100000), quantity: dec!(0.1) },
-            ],
+            bids: vec![OrderbookLevel {
+                price: dec!(100000),
+                quantity: dec!(0.1),
+            }],
             asks: vec![
-                OrderbookLevel { price: dec!(100100), quantity: dec!(0.05) }, // $5,005
-                OrderbookLevel { price: dec!(100200), quantity: dec!(0.05) }, // $5,010
-                OrderbookLevel { price: dec!(100300), quantity: dec!(0.05) }, // $5,015
+                OrderbookLevel {
+                    price: dec!(100100),
+                    quantity: dec!(0.05),
+                }, // $5,005
+                OrderbookLevel {
+                    price: dec!(100200),
+                    quantity: dec!(0.05),
+                }, // $5,010
+                OrderbookLevel {
+                    price: dec!(100300),
+                    quantity: dec!(0.05),
+                }, // $5,015
             ],
         };
 
@@ -504,13 +537,23 @@ mod tests {
             symbol: "BTC".to_string(),
             timestamp: Utc::now(),
             bids: vec![
-                OrderbookLevel { price: dec!(100000), quantity: dec!(0.05) }, // $5,000
-                OrderbookLevel { price: dec!(99900), quantity: dec!(0.05) },  // $4,995
-                OrderbookLevel { price: dec!(99800), quantity: dec!(0.05) },  // $4,990
+                OrderbookLevel {
+                    price: dec!(100000),
+                    quantity: dec!(0.05),
+                }, // $5,000
+                OrderbookLevel {
+                    price: dec!(99900),
+                    quantity: dec!(0.05),
+                }, // $4,995
+                OrderbookLevel {
+                    price: dec!(99800),
+                    quantity: dec!(0.05),
+                }, // $4,990
             ],
-            asks: vec![
-                OrderbookLevel { price: dec!(100100), quantity: dec!(0.1) },
-            ],
+            asks: vec![OrderbookLevel {
+                price: dec!(100100),
+                quantity: dec!(0.1),
+            }],
         };
 
         // Sell $10,000 requires first two levels plus partial third
@@ -527,10 +570,16 @@ mod tests {
             symbol: "BTC".to_string(),
             timestamp: Utc::now(),
             bids: vec![
-                OrderbookLevel { price: dec!(100000), quantity: dec!(0.05) }, // $5,000
+                OrderbookLevel {
+                    price: dec!(100000),
+                    quantity: dec!(0.05),
+                }, // $5,000
             ],
             asks: vec![
-                OrderbookLevel { price: dec!(100100), quantity: dec!(0.05) }, // $5,005
+                OrderbookLevel {
+                    price: dec!(100100),
+                    quantity: dec!(0.05),
+                }, // $5,005
             ],
         };
 
@@ -565,9 +614,10 @@ mod tests {
         let orderbook1 = Orderbook {
             symbol: "BTC".to_string(),
             timestamp: Utc::now(),
-            bids: vec![
-                OrderbookLevel { price: dec!(100000), quantity: dec!(0.1) },
-            ],
+            bids: vec![OrderbookLevel {
+                price: dec!(100000),
+                quantity: dec!(0.1),
+            }],
             asks: vec![],
         };
 
@@ -582,9 +632,10 @@ mod tests {
             symbol: "BTC".to_string(),
             timestamp: Utc::now(),
             bids: vec![],
-            asks: vec![
-                OrderbookLevel { price: dec!(100100), quantity: dec!(0.1) },
-            ],
+            asks: vec![OrderbookLevel {
+                price: dec!(100100),
+                quantity: dec!(0.1),
+            }],
         };
 
         let slippage = orderbook2.get_slippage(dec!(5000), OrderSide::Buy);
@@ -601,12 +652,14 @@ mod tests {
         let orderbook = Orderbook {
             symbol: "BTC".to_string(),
             timestamp: Utc::now(),
-            bids: vec![
-                OrderbookLevel { price: dec!(100000), quantity: dec!(1.0) },
-            ],
-            asks: vec![
-                OrderbookLevel { price: dec!(100000), quantity: dec!(1.0) },
-            ],
+            bids: vec![OrderbookLevel {
+                price: dec!(100000),
+                quantity: dec!(1.0),
+            }],
+            asks: vec![OrderbookLevel {
+                price: dec!(100000),
+                quantity: dec!(1.0),
+            }],
         };
 
         // Mid price = 100000
@@ -626,14 +679,32 @@ mod tests {
             symbol: "BTC".to_string(),
             timestamp: Utc::now(),
             bids: vec![
-                OrderbookLevel { price: dec!(100000), quantity: dec!(0.5) },  // $50,000
-                OrderbookLevel { price: dec!(99000), quantity: dec!(0.5) },   // $49,500
-                OrderbookLevel { price: dec!(98000), quantity: dec!(0.5) },   // $49,000
+                OrderbookLevel {
+                    price: dec!(100000),
+                    quantity: dec!(0.5),
+                }, // $50,000
+                OrderbookLevel {
+                    price: dec!(99000),
+                    quantity: dec!(0.5),
+                }, // $49,500
+                OrderbookLevel {
+                    price: dec!(98000),
+                    quantity: dec!(0.5),
+                }, // $49,000
             ],
             asks: vec![
-                OrderbookLevel { price: dec!(101000), quantity: dec!(0.5) },  // $50,500
-                OrderbookLevel { price: dec!(102000), quantity: dec!(0.5) },  // $51,000
-                OrderbookLevel { price: dec!(103000), quantity: dec!(0.5) },  // $51,500
+                OrderbookLevel {
+                    price: dec!(101000),
+                    quantity: dec!(0.5),
+                }, // $50,500
+                OrderbookLevel {
+                    price: dec!(102000),
+                    quantity: dec!(0.5),
+                }, // $51,000
+                OrderbookLevel {
+                    price: dec!(103000),
+                    quantity: dec!(0.5),
+                }, // $51,500
             ],
         };
 

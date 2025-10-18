@@ -109,13 +109,34 @@ pub async fn execute(args: ExportArgs) -> Result<()> {
     // Export based on format
     match format.as_str() {
         "csv" => {
-            export_to_csv(&pool, &args.output_dir, &tables_to_export, args.max_rows, args.last_hours).await?;
+            export_to_csv(
+                &pool,
+                &args.output_dir,
+                &tables_to_export,
+                args.max_rows,
+                args.last_hours,
+            )
+            .await?;
         }
         "xlsx" => {
             if args.separate_files {
-                export_to_xlsx_separate(&pool, &args.output_dir, &tables_to_export, args.max_rows, args.last_hours).await?;
+                export_to_xlsx_separate(
+                    &pool,
+                    &args.output_dir,
+                    &tables_to_export,
+                    args.max_rows,
+                    args.last_hours,
+                )
+                .await?;
             } else {
-                export_to_xlsx_combined(&pool, &args.output_dir, &tables_to_export, args.max_rows, args.last_hours).await?;
+                export_to_xlsx_combined(
+                    &pool,
+                    &args.output_dir,
+                    &tables_to_export,
+                    args.max_rows,
+                    args.last_hours,
+                )
+                .await?;
             }
         }
         _ => unreachable!(),
@@ -344,11 +365,7 @@ fn build_query(table: &str, max_rows: usize, last_hours: i64) -> String {
 fn format_cell_value(row: &sqlx::postgres::PgRow, col_name: &str) -> String {
     use sqlx::TypeInfo;
 
-    let col = row
-        .columns()
-        .iter()
-        .find(|c| c.name() == col_name)
-        .unwrap();
+    let col = row.columns().iter().find(|c| c.name() == col_name).unwrap();
 
     let type_name = col.type_info().name();
 

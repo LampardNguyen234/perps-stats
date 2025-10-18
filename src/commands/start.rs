@@ -1,19 +1,19 @@
 use anyhow::Result;
 use chrono;
 use clap::Args;
-use perps_core::types::{FundingRate, Kline, Orderbook, Ticker, Trade};
+use futures::StreamExt as _;
+use perps_aggregator::{Aggregator, IAggregator};
 use perps_core::streaming::StreamEvent;
+use perps_core::types::{FundingRate, Kline, Orderbook, Ticker, Trade};
 use perps_database::{PostgresRepository, Repository};
 use perps_exchanges::factory;
-use perps_aggregator::{Aggregator, IAggregator};
 use sqlx::PgPool;
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use tokio::signal;
 use tokio::sync::Mutex;
 use tokio::time::{interval, Duration};
-use futures::StreamExt as _;
-use tokio::signal;
 
 #[derive(Args)]
 pub struct StartArgs {
@@ -75,7 +75,11 @@ async fn load_symbols(file_path: &str) -> Result<Vec<String>> {
 
         // Support comma-separated symbols on a single line
         if line.contains(',') {
-            symbols.extend(line.split(',').map(|s| s.trim().to_uppercase()).filter(|s| !s.is_empty()));
+            symbols.extend(
+                line.split(',')
+                    .map(|s| s.trim().to_uppercase())
+                    .filter(|s| !s.is_empty()),
+            );
         } else {
             symbols.push(line.to_uppercase());
         }
@@ -86,7 +90,11 @@ async fn load_symbols(file_path: &str) -> Result<Vec<String>> {
 
 /// Validate symbols against exchange
 async fn validate_symbols(exchange: &str, symbols: &[String]) -> Result<Vec<String>> {
-    tracing::info!("Validating {} symbols for exchange: {}", symbols.len(), exchange);
+    tracing::info!(
+        "Validating {} symbols for exchange: {}",
+        symbols.len(),
+        exchange
+    );
 
     let client = factory::get_exchange(exchange).await?;
     let mut valid_symbols = Vec::new();
@@ -101,7 +109,12 @@ async fn validate_symbols(exchange: &str, symbols: &[String]) -> Result<Vec<Stri
         }
     }
 
-    tracing::info!("Validated {}/{} symbols for exchange {}", valid_symbols.len(), symbols.len(), exchange);
+    tracing::info!(
+        "Validated {}/{} symbols for exchange {}",
+        valid_symbols.len(),
+        symbols.len(),
+        exchange
+    );
     Ok(valid_symbols)
 }
 
@@ -171,7 +184,10 @@ async fn spawn_streaming_task(
     max_reconnect_delay_seconds: u64,
 ) -> Result<tokio::task::JoinHandle<Result<()>>> {
     Ok(tokio::spawn(async move {
-        tracing::info!("Starting WebSocket streaming task for exchange: {} (auto-reconnect enabled)", exchange);
+        tracing::info!(
+            "Starting WebSocket streaming task for exchange: {} (auto-reconnect enabled)",
+            exchange
+        );
 
         // Parse symbols to exchange-specific format (done once, reused across reconnections)
         let rest_client = factory::get_exchange(&exchange).await?;
@@ -209,7 +225,10 @@ async fn spawn_streaming_task(
         loop {
             // Check shutdown signal before attempting connection
             if shutdown.load(Ordering::Relaxed) {
-                tracing::info!("Shutdown signal received before connection attempt for exchange {}", exchange);
+                tracing::info!(
+                    "Shutdown signal received before connection attempt for exchange {}",
+                    exchange
+                );
                 break;
             }
 
@@ -217,10 +236,15 @@ async fn spawn_streaming_task(
             if reconnect_attempt == 0 {
                 tracing::info!("Connecting to {} WebSocket (initial attempt)", exchange);
             } else {
-                tracing::info!("Reconnecting to {} WebSocket (attempt {}/{})",
+                tracing::info!(
+                    "Reconnecting to {} WebSocket (attempt {}/{})",
                     exchange,
                     reconnect_attempt,
-                    if max_reconnect_attempts == 0 { "unlimited".to_string() } else { max_reconnect_attempts.to_string() }
+                    if max_reconnect_attempts == 0 {
+                        "unlimited".to_string()
+                    } else {
+                        max_reconnect_attempts.to_string()
+                    }
                 );
             }
 
@@ -256,12 +280,23 @@ async fn spawn_streaming_task(
 
                     // Check if we should retry
                     if max_reconnect_attempts > 0 && reconnect_attempt >= max_reconnect_attempts {
-                        tracing::error!("Max reconnection attempts ({}) reached for exchange {}", max_reconnect_attempts, exchange);
-                        return Err(anyhow::anyhow!("Failed to connect after {} attempts", max_reconnect_attempts));
+                        tracing::error!(
+                            "Max reconnection attempts ({}) reached for exchange {}",
+                            max_reconnect_attempts,
+                            exchange
+                        );
+                        return Err(anyhow::anyhow!(
+                            "Failed to connect after {} attempts",
+                            max_reconnect_attempts
+                        ));
                     }
 
                     // Wait before retrying with exponential backoff
-                    tracing::info!("Waiting {} seconds before reconnecting to {}...", current_delay, exchange);
+                    tracing::info!(
+                        "Waiting {} seconds before reconnecting to {}...",
+                        current_delay,
+                        exchange
+                    );
                     tokio::time::sleep(Duration::from_secs(current_delay)).await;
 
                     // Exponential backoff with max cap
@@ -404,46 +439,76 @@ async fn spawn_streaming_task(
             // Final flush for this connection before reconnecting
             let repo = repository.lock().await;
             if !ticker_buffer.is_empty() {
-                if let Err(e) = repo.store_tickers_with_exchange(&exchange, &ticker_buffer).await {
+                if let Err(e) = repo
+                    .store_tickers_with_exchange(&exchange, &ticker_buffer)
+                    .await
+                {
                     tracing::error!("Failed to flush ticker buffer: {}", e);
                 }
             }
             if !trade_buffer.is_empty() {
-                if let Err(e) = repo.store_trades_with_exchange(&exchange, &trade_buffer).await {
+                if let Err(e) = repo
+                    .store_trades_with_exchange(&exchange, &trade_buffer)
+                    .await
+                {
                     tracing::error!("Failed to flush trade buffer: {}", e);
                 }
             }
             if !orderbook_buffer.is_empty() {
-                if let Err(e) = repo.store_orderbooks_with_exchange(&exchange, &orderbook_buffer).await {
+                if let Err(e) = repo
+                    .store_orderbooks_with_exchange(&exchange, &orderbook_buffer)
+                    .await
+                {
                     tracing::error!("Failed to flush orderbook buffer: {}", e);
                 }
             }
             if !funding_rate_buffer.is_empty() {
-                if let Err(e) = repo.store_funding_rates_with_exchange(&exchange, &funding_rate_buffer).await {
+                if let Err(e) = repo
+                    .store_funding_rates_with_exchange(&exchange, &funding_rate_buffer)
+                    .await
+                {
                     tracing::error!("Failed to flush funding rate buffer: {}", e);
                 }
             }
             if !kline_buffer.is_empty() {
-                if let Err(e) = repo.store_klines_with_exchange(&exchange, &kline_buffer).await {
+                if let Err(e) = repo
+                    .store_klines_with_exchange(&exchange, &kline_buffer)
+                    .await
+                {
                     tracing::error!("Failed to flush kline buffer: {}", e);
                 }
             }
 
             // Check if we should exit (shutdown signal)
             if shutdown.load(Ordering::Relaxed) {
-                tracing::info!("Exchange {} streaming task stopped due to shutdown signal. Total events: {}", exchange, total_events);
+                tracing::info!(
+                    "Exchange {} streaming task stopped due to shutdown signal. Total events: {}",
+                    exchange,
+                    total_events
+                );
                 break; // Exit reconnection loop
             }
 
             // Check reconnection limit
             if max_reconnect_attempts > 0 && reconnect_attempt >= max_reconnect_attempts {
-                tracing::error!("Max reconnection attempts ({}) reached for exchange {}", max_reconnect_attempts, exchange);
-                return Err(anyhow::anyhow!("Failed to maintain connection after {} attempts", max_reconnect_attempts));
+                tracing::error!(
+                    "Max reconnection attempts ({}) reached for exchange {}",
+                    max_reconnect_attempts,
+                    exchange
+                );
+                return Err(anyhow::anyhow!(
+                    "Failed to maintain connection after {} attempts",
+                    max_reconnect_attempts
+                ));
             }
 
             // Wait before reconnecting with exponential backoff
             if reconnect_attempt > 0 {
-                tracing::info!("Waiting {} seconds before reconnecting to {}...", current_delay, exchange);
+                tracing::info!(
+                    "Waiting {} seconds before reconnecting to {}...",
+                    current_delay,
+                    exchange
+                );
                 tokio::time::sleep(Duration::from_secs(current_delay)).await;
 
                 // Exponential backoff with max cap
@@ -453,7 +518,11 @@ async fn spawn_streaming_task(
             // Loop back to reconnect
         }
 
-        tracing::info!("Exchange {} streaming task completed. Total events: {}", exchange, total_events);
+        tracing::info!(
+            "Exchange {} streaming task completed. Total events: {}",
+            exchange,
+            total_events
+        );
         Ok(())
     }))
 }
@@ -468,13 +537,21 @@ async fn spawn_klines_task(
     shutdown: Arc<AtomicBool>,
 ) -> Result<tokio::task::JoinHandle<Result<()>>> {
     Ok(tokio::spawn(async move {
-        tracing::info!("Starting klines fetching task for exchange: {} (interval: {}s, timeframe: {})",
-                      exchange, klines_interval, klines_timeframe);
+        tracing::info!(
+            "Starting klines fetching task for exchange: {} (interval: {}s, timeframe: {})",
+            exchange,
+            klines_interval,
+            klines_timeframe
+        );
 
         let client = factory::get_exchange(&exchange).await?;
 
         // Perform initial historical backfill for each symbol (if no data exists)
-        tracing::info!("Checking for existing klines data for {} symbols on {}", symbols.len(), exchange);
+        tracing::info!(
+            "Checking for existing klines data for {} symbols on {}",
+            symbols.len(),
+            exchange
+        );
         for symbol in &symbols {
             if shutdown.load(Ordering::Relaxed) {
                 tracing::info!("Shutdown signal received during initial backfill check");
@@ -485,14 +562,20 @@ async fn spawn_klines_task(
             let repo = repository.lock().await;
 
             // Check if we have any klines for this symbol/exchange/interval
-            let latest_kline = repo.get_latest_kline(&exchange, symbol, &klines_timeframe).await?;
+            let latest_kline = repo
+                .get_latest_kline(&exchange, symbol, &klines_timeframe)
+                .await?;
             drop(repo); // Release lock before long operation
 
             match latest_kline {
                 None => {
                     // No data exists - fetch from earliest available until now
-                    tracing::info!("No existing klines for {}/{} ({}), fetching from earliest available data",
-                                  exchange, symbol, klines_timeframe);
+                    tracing::info!(
+                        "No existing klines for {}/{} ({}), fetching from earliest available data",
+                        exchange,
+                        symbol,
+                        klines_timeframe
+                    );
 
                     // Determine start time based on exchange capabilities
                     // Most exchanges support 1-2 years of history via REST API
@@ -502,9 +585,9 @@ async fn spawn_klines_task(
                         "bybit" => now - chrono::Duration::days(365 * 2),   // 2 years
                         "hyperliquid" => now - chrono::Duration::days(365), // 1 year (conservative)
                         "kucoin" => now - chrono::Duration::days(365),      // 1 year
-                        "lighter" => now - chrono::Duration::days(180),     // 6 months (conservative)
-                        "paradex" => now - chrono::Duration::days(180),     // 6 months (conservative)
-                        _ => now - chrono::Duration::days(365),             // 1 year default
+                        "lighter" => now - chrono::Duration::days(180), // 6 months (conservative)
+                        "paradex" => now - chrono::Duration::days(180), // 6 months (conservative)
+                        _ => now - chrono::Duration::days(365),         // 1 year default
                     };
 
                     // Use smart chunking based on interval (from backfill logic)
@@ -534,8 +617,14 @@ async fn spawn_klines_task(
                         _ => 1000,
                     };
 
-                    tracing::info!("Fetching historical klines for {}/{} from {} to {} (chunk size: {})",
-                                  exchange, symbol, start_time, now, chunk_size);
+                    tracing::info!(
+                        "Fetching historical klines for {}/{} from {} to {} (chunk size: {})",
+                        exchange,
+                        symbol,
+                        start_time,
+                        now,
+                        chunk_size
+                    );
 
                     // Fetch in chunks with progress tracking
                     let mut current_start = start_time;
@@ -548,15 +637,28 @@ async fn spawn_klines_task(
                         }
 
                         // Calculate chunk end time
-                        let chunk_duration = chrono::Duration::milliseconds(interval_ms * chunk_size as i64);
+                        let chunk_duration =
+                            chrono::Duration::milliseconds(interval_ms * chunk_size as i64);
                         let chunk_end = (current_start + chunk_duration).min(now);
 
                         // Fetch chunk
-                        match client.get_klines(&parsed_symbol, &klines_timeframe,
-                                              Some(current_start), Some(chunk_end), Some(chunk_size as u32)).await {
+                        match client
+                            .get_klines(
+                                &parsed_symbol,
+                                &klines_timeframe,
+                                Some(current_start),
+                                Some(chunk_end),
+                                Some(chunk_size as u32),
+                            )
+                            .await
+                        {
                             Ok(klines) => {
                                 if klines.is_empty() {
-                                    tracing::debug!("No more klines available for {}/{}", exchange, symbol);
+                                    tracing::debug!(
+                                        "No more klines available for {}/{}",
+                                        exchange,
+                                        symbol
+                                    );
                                     break;
                                 }
 
@@ -564,24 +666,36 @@ async fn spawn_klines_task(
                                 total_fetched += klines_count;
 
                                 // Get latest timestamp to advance correctly
-                                let latest_kline_time = klines.iter().map(|k| k.open_time).max().unwrap();
+                                let latest_kline_time =
+                                    klines.iter().map(|k| k.open_time).max().unwrap();
 
                                 // Store klines
                                 let repo = repository.lock().await;
                                 match repo.store_klines_with_exchange(&exchange, &klines).await {
                                     Ok(_) => {
-                                        tracing::debug!("Stored {} klines for {}/{} (total: {})",
-                                                      klines_count, exchange, symbol, total_fetched);
+                                        tracing::debug!(
+                                            "Stored {} klines for {}/{} (total: {})",
+                                            klines_count,
+                                            exchange,
+                                            symbol,
+                                            total_fetched
+                                        );
                                     }
                                     Err(e) => {
-                                        tracing::error!("Failed to store klines for {}/{}: {}", exchange, symbol, e);
+                                        tracing::error!(
+                                            "Failed to store klines for {}/{}: {}",
+                                            exchange,
+                                            symbol,
+                                            e
+                                        );
                                         break;
                                     }
                                 }
                                 drop(repo);
 
                                 // Move to next interval after latest fetched kline
-                                current_start = latest_kline_time + chrono::Duration::milliseconds(interval_ms);
+                                current_start =
+                                    latest_kline_time + chrono::Duration::milliseconds(interval_ms);
 
                                 // If we've reached or passed the chunk_end, adjust
                                 if current_start >= chunk_end {
@@ -597,23 +711,45 @@ async fn spawn_klines_task(
                             }
                             Err(e) => {
                                 let error_msg = e.to_string();
-                                if error_msg.contains("not available") || error_msg.contains("not implemented") {
-                                    tracing::warn!("Klines not available for {}/{}: {}", exchange, symbol, e);
+                                if error_msg.contains("not available")
+                                    || error_msg.contains("not implemented")
+                                {
+                                    tracing::warn!(
+                                        "Klines not available for {}/{}: {}",
+                                        exchange,
+                                        symbol,
+                                        e
+                                    );
                                 } else {
-                                    tracing::error!("Failed to fetch klines for {}/{}: {}", exchange, symbol, e);
+                                    tracing::error!(
+                                        "Failed to fetch klines for {}/{}: {}",
+                                        exchange,
+                                        symbol,
+                                        e
+                                    );
                                 }
                                 break;
                             }
                         }
                     }
 
-                    tracing::info!("Initial backfill complete for {}/{} ({}): {} klines fetched",
-                                  exchange, symbol, klines_timeframe, total_fetched);
+                    tracing::info!(
+                        "Initial backfill complete for {}/{} ({}): {} klines fetched",
+                        exchange,
+                        symbol,
+                        klines_timeframe,
+                        total_fetched
+                    );
                 }
                 Some(latest) => {
                     // Data exists - fetch from last kline until now to fill any gaps
-                    tracing::info!("Found existing klines for {}/{} ({}), latest at {}",
-                                  exchange, symbol, klines_timeframe, latest.open_time);
+                    tracing::info!(
+                        "Found existing klines for {}/{} ({}), latest at {}",
+                        exchange,
+                        symbol,
+                        klines_timeframe,
+                        latest.open_time
+                    );
 
                     let now = chrono::Utc::now();
                     let start_from = latest.open_time + chrono::Duration::milliseconds(1);
@@ -642,8 +778,14 @@ async fn spawn_klines_task(
                             _ => 1000,
                         };
 
-                        tracing::info!("Fetching missing klines for {}/{} from {} to {} (chunk size: {})",
-                                      exchange, symbol, start_from, now, chunk_size);
+                        tracing::info!(
+                            "Fetching missing klines for {}/{} from {} to {} (chunk size: {})",
+                            exchange,
+                            symbol,
+                            start_from,
+                            now,
+                            chunk_size
+                        );
 
                         let mut current_start = start_from;
                         let mut total_filled = 0;
@@ -654,11 +796,20 @@ async fn spawn_klines_task(
                                 break;
                             }
 
-                            let chunk_duration = chrono::Duration::milliseconds(interval_ms * chunk_size as i64);
+                            let chunk_duration =
+                                chrono::Duration::milliseconds(interval_ms * chunk_size as i64);
                             let chunk_end = (current_start + chunk_duration).min(now);
 
-                            match client.get_klines(&parsed_symbol, &klines_timeframe,
-                                                  Some(current_start), Some(chunk_end), Some(chunk_size as u32)).await {
+                            match client
+                                .get_klines(
+                                    &parsed_symbol,
+                                    &klines_timeframe,
+                                    Some(current_start),
+                                    Some(chunk_end),
+                                    Some(chunk_size as u32),
+                                )
+                                .await
+                            {
                                 Ok(klines) => {
                                     if klines.is_empty() {
                                         break;
@@ -667,23 +818,36 @@ async fn spawn_klines_task(
                                     let klines_count = klines.len();
                                     total_filled += klines_count;
 
-                                    let latest_kline_time = klines.iter().map(|k| k.open_time).max().unwrap();
+                                    let latest_kline_time =
+                                        klines.iter().map(|k| k.open_time).max().unwrap();
 
                                     let repo = repository.lock().await;
-                                    match repo.store_klines_with_exchange(&exchange, &klines).await {
+                                    match repo.store_klines_with_exchange(&exchange, &klines).await
+                                    {
                                         Ok(_) => {
-                                            tracing::debug!("Filled {} klines for {}/{} (total: {})",
-                                                          klines_count, exchange, symbol, total_filled);
+                                            tracing::debug!(
+                                                "Filled {} klines for {}/{} (total: {})",
+                                                klines_count,
+                                                exchange,
+                                                symbol,
+                                                total_filled
+                                            );
                                         }
                                         Err(e) => {
-                                            tracing::error!("Failed to store klines for {}/{}: {}", exchange, symbol, e);
+                                            tracing::error!(
+                                                "Failed to store klines for {}/{}: {}",
+                                                exchange,
+                                                symbol,
+                                                e
+                                            );
                                             break;
                                         }
                                     }
                                     drop(repo);
 
                                     // Move to next interval
-                                    current_start = latest_kline_time + chrono::Duration::milliseconds(interval_ms);
+                                    current_start = latest_kline_time
+                                        + chrono::Duration::milliseconds(interval_ms);
                                     if current_start >= chunk_end {
                                         current_start = chunk_end;
                                     }
@@ -695,21 +859,36 @@ async fn spawn_klines_task(
                                     // Note: Rate limiting is handled automatically by the RateLimiter
                                 }
                                 Err(e) => {
-                                    tracing::error!("Failed to fetch missing klines for {}/{}: {}", exchange, symbol, e);
+                                    tracing::error!(
+                                        "Failed to fetch missing klines for {}/{}: {}",
+                                        exchange,
+                                        symbol,
+                                        e
+                                    );
                                     break;
                                 }
                             }
                         }
 
                         if total_filled > 0 {
-                            tracing::info!("Filled {} missing klines for {}/{}", total_filled, exchange, symbol);
+                            tracing::info!(
+                                "Filled {} missing klines for {}/{}",
+                                total_filled,
+                                exchange,
+                                symbol
+                            );
                         }
                     }
                 }
             }
         }
 
-        tracing::info!("Initial klines check/backfill complete for {} on {} ({})", symbols.len(), exchange, klines_timeframe);
+        tracing::info!(
+            "Initial klines check/backfill complete for {} on {} ({})",
+            symbols.len(),
+            exchange,
+            klines_timeframe
+        );
 
         // Now start periodic fetching
         let mut ticker = interval(Duration::from_secs(klines_interval));
@@ -730,7 +909,12 @@ async fn spawn_klines_task(
                 }
             }
 
-            tracing::debug!("Fetching recent klines for exchange {} ({}, {} symbols)", exchange, klines_timeframe, symbols.len());
+            tracing::debug!(
+                "Fetching recent klines for exchange {} ({}, {} symbols)",
+                exchange,
+                klines_timeframe,
+                symbols.len()
+            );
 
             let now = chrono::Utc::now();
 
@@ -743,7 +927,9 @@ async fn spawn_klines_task(
 
                 let parsed_symbol = client.parse_symbol(symbol);
                 let repo = repository.lock().await;
-                let latest_kline = repo.get_latest_kline(&exchange, symbol, &klines_timeframe).await?;
+                let latest_kline = repo
+                    .get_latest_kline(&exchange, symbol, &klines_timeframe)
+                    .await?;
                 drop(repo);
 
                 // Fetch from latest kline or last hour if no data
@@ -752,30 +938,66 @@ async fn spawn_klines_task(
                     None => now - chrono::Duration::hours(1), // Fallback to last hour
                 };
 
-                match client.get_klines(&parsed_symbol, &klines_timeframe, Some(start_time), Some(now), Some(500)).await {
+                match client
+                    .get_klines(
+                        &parsed_symbol,
+                        &klines_timeframe,
+                        Some(start_time),
+                        Some(now),
+                        Some(500),
+                    )
+                    .await
+                {
                     Ok(klines) => {
                         if !klines.is_empty() {
                             let repo = repository.lock().await;
                             match repo.store_klines_with_exchange(&exchange, &klines).await {
                                 Ok(_) => {
-                                    tracing::debug!("Stored {} klines for {}/{}", klines.len(), exchange, symbol);
+                                    tracing::debug!(
+                                        "Stored {} klines for {}/{}",
+                                        klines.len(),
+                                        exchange,
+                                        symbol
+                                    );
                                 }
                                 Err(e) => {
-                                    tracing::error!("Failed to store klines for {}/{}: {}", exchange, symbol, e);
+                                    tracing::error!(
+                                        "Failed to store klines for {}/{}: {}",
+                                        exchange,
+                                        symbol,
+                                        e
+                                    );
                                 }
                             }
                         }
                     }
                     Err(e) => {
                         let error_msg = e.to_string();
-                        if error_msg.contains("not available") || error_msg.contains("not implemented") {
-                            tracing::warn!("Klines not available for {}/{}: {}", exchange, symbol, e);
+                        if error_msg.contains("not available")
+                            || error_msg.contains("not implemented")
+                        {
+                            tracing::warn!(
+                                "Klines not available for {}/{}: {}",
+                                exchange,
+                                symbol,
+                                e
+                            );
                         } else {
-                            tracing::error!("Failed to fetch klines for {}/{}: {}", exchange, symbol, e);
+                            tracing::error!(
+                                "Failed to fetch klines for {}/{}: {}",
+                                exchange,
+                                symbol,
+                                e
+                            );
                         }
                     }
                 }
-                tracing::info!("Symbol {}/{} ({}): Completed periodic klines fetch cycle", exchange, symbol, klines_timeframe);
+                tracing::info!(
+                    "Symbol {}/{} ({}): Completed periodic klines fetch cycle",
+                    exchange,
+                    symbol,
+                    klines_timeframe
+                );
             }
         }
 
@@ -792,13 +1014,17 @@ async fn spawn_liquidity_report_task(
     shutdown: Arc<AtomicBool>,
 ) -> Result<tokio::task::JoinHandle<Result<()>>> {
     Ok(tokio::spawn(async move {
-        tracing::info!("Starting liquidity depth report generation task (interval: {}s)", report_interval);
+        tracing::info!(
+            "Starting liquidity depth report generation task (interval: {}s)",
+            report_interval
+        );
 
         let mut ticker = interval(Duration::from_secs(report_interval));
         let aggregator = Aggregator::new();
 
         // Create REST API clients for each exchange
-        let mut clients: HashMap<String, Box<dyn perps_core::IPerps + Send + Sync>> = HashMap::new();
+        let mut clients: HashMap<String, Box<dyn perps_core::IPerps + Send + Sync>> =
+            HashMap::new();
         for exchange in exchange_symbols.keys() {
             match factory::get_exchange(exchange).await {
                 Ok(client) => {
@@ -827,7 +1053,10 @@ async fn spawn_liquidity_report_task(
                 }
             }
 
-            tracing::info!("Generating liquidity depth report for {} exchanges", exchange_symbols.len());
+            tracing::info!(
+                "Generating liquidity depth report for {} exchanges",
+                exchange_symbols.len()
+            );
 
             for (exchange, symbols) in &exchange_symbols {
                 // Check shutdown before processing each exchange
@@ -848,7 +1077,9 @@ async fn spawn_liquidity_report_task(
                 for symbol in symbols {
                     // Check shutdown before processing each symbol
                     if shutdown.load(Ordering::Relaxed) {
-                        tracing::info!("Shutdown signal received during liquidity report generation");
+                        tracing::info!(
+                            "Shutdown signal received during liquidity report generation"
+                        );
                         break;
                     }
 
@@ -859,24 +1090,39 @@ async fn spawn_liquidity_report_task(
                     match client.get_orderbook(&parsed_symbol, 1000).await {
                         Ok(orderbook) => {
                             // Calculate liquidity depth
-                            match aggregator.calculate_liquidity_depth(&orderbook, exchange, symbol).await {
+                            match aggregator
+                                .calculate_liquidity_depth(&orderbook, exchange, symbol)
+                                .await
+                            {
                                 Ok(depth_stats) => {
                                     // Store liquidity depth
                                     let repo = repository.lock().await;
                                     match repo.store_liquidity_depth(&[depth_stats]).await {
                                         Ok(_) => {
-                                            tracing::debug!("Stored liquidity depth for {}/{}", exchange, symbol);
+                                            tracing::debug!(
+                                                "Stored liquidity depth for {}/{}",
+                                                exchange,
+                                                symbol
+                                            );
                                         }
                                         Err(e) => {
-                                            tracing::error!("Failed to store liquidity depth for {}/{}: {}",
-                                                          exchange, symbol, e);
+                                            tracing::error!(
+                                                "Failed to store liquidity depth for {}/{}: {}",
+                                                exchange,
+                                                symbol,
+                                                e
+                                            );
                                         }
                                     }
                                     drop(repo);
                                 }
                                 Err(e) => {
-                                    tracing::error!("Failed to calculate liquidity depth for {}/{}: {}",
-                                                  exchange, symbol, e);
+                                    tracing::error!(
+                                        "Failed to calculate liquidity depth for {}/{}: {}",
+                                        exchange,
+                                        symbol,
+                                        e
+                                    );
                                 }
                             }
 
@@ -885,20 +1131,55 @@ async fn spawn_liquidity_report_task(
 
                             // Store slippage
                             let repo = repository.lock().await;
-                            match repo.store_slippage_with_exchange(exchange, &slippages).await {
+                            match repo
+                                .store_slippage_with_exchange(exchange, &slippages)
+                                .await
+                            {
                                 Ok(_) => {
-                                    tracing::debug!("Stored {} slippage entries for {}/{}",
-                                                  slippages.len(), exchange, symbol);
+                                    tracing::debug!(
+                                        "Stored {} slippage entries for {}/{}",
+                                        slippages.len(),
+                                        exchange,
+                                        symbol
+                                    );
                                 }
                                 Err(e) => {
-                                    tracing::error!("Failed to store slippage for {}/{}: {}",
-                                                  exchange, symbol, e);
+                                    tracing::error!(
+                                        "Failed to store slippage for {}/{}: {}",
+                                        exchange,
+                                        symbol,
+                                        e
+                                    );
+                                }
+                            }
+                            drop(repo);
+
+                            // Store orderbook
+                            let repo = repository.lock().await;
+                            match repo
+                                .store_orderbooks_with_exchange(exchange, &[orderbook])
+                                .await
+                            {
+                                Ok(_) => {
+                                    tracing::debug!("Stored orderbook for {}/{}", exchange, symbol);
+                                }
+                                Err(e) => {
+                                    tracing::error!(
+                                        "Failed to store orderbook for {}/{}: {}",
+                                        exchange,
+                                        symbol,
+                                        e
+                                    );
                                 }
                             }
                         }
                         Err(e) => {
-                            tracing::error!("Failed to fetch orderbook for {}/{}: {}",
-                                          exchange, symbol, e);
+                            tracing::error!(
+                                "Failed to fetch orderbook for {}/{}: {}",
+                                exchange,
+                                symbol,
+                                e
+                            );
                         }
                     }
                 }
@@ -920,12 +1201,16 @@ async fn spawn_ticker_report_task(
     shutdown: Arc<AtomicBool>,
 ) -> Result<tokio::task::JoinHandle<Result<()>>> {
     Ok(tokio::spawn(async move {
-        tracing::info!("Starting ticker report generation task (interval: {}s)", report_interval);
+        tracing::info!(
+            "Starting ticker report generation task (interval: {}s)",
+            report_interval
+        );
 
         let mut ticker_interval = interval(Duration::from_secs(report_interval));
 
         // Create REST API clients for each exchange
-        let mut clients: HashMap<String, Box<dyn perps_core::IPerps + Send + Sync>> = HashMap::new();
+        let mut clients: HashMap<String, Box<dyn perps_core::IPerps + Send + Sync>> =
+            HashMap::new();
         for exchange in exchange_symbols.keys() {
             match factory::get_exchange(exchange).await {
                 Ok(client) => {
@@ -954,7 +1239,10 @@ async fn spawn_ticker_report_task(
                 }
             }
 
-            tracing::info!("Generating ticker report for {} exchanges", exchange_symbols.len());
+            tracing::info!(
+                "Generating ticker report for {} exchanges",
+                exchange_symbols.len()
+            );
 
             // Group tickers by exchange for storage
             let mut tickers_by_exchange: HashMap<String, Vec<Ticker>> = HashMap::new();
@@ -989,13 +1277,25 @@ async fn spawn_ticker_report_task(
                     match client.get_ticker(&parsed_symbol).await {
                         Ok(ticker) => {
                             if !ticker.is_empty() {
-                                tickers_by_exchange.entry(exchange.clone()).or_insert_with(Vec::new).push(ticker);
+                                tickers_by_exchange
+                                    .entry(exchange.clone())
+                                    .or_insert_with(Vec::new)
+                                    .push(ticker);
                             } else {
-                                tracing::error!("Ticker {} empty for exchange {}", symbol, exchange);
+                                tracing::error!(
+                                    "Ticker {} empty for exchange {}",
+                                    symbol,
+                                    exchange
+                                );
                             }
                         }
                         Err(e) => {
-                            tracing::error!("Failed to fetch ticker for {}/{}: {}", exchange, symbol, e);
+                            tracing::error!(
+                                "Failed to fetch ticker for {}/{}: {}",
+                                exchange,
+                                symbol,
+                                e
+                            );
                         }
                     }
                 }
@@ -1009,10 +1309,18 @@ async fn spawn_ticker_report_task(
                 for (exchange, tickers) in tickers_by_exchange {
                     match repo.store_tickers_with_exchange(&exchange, &tickers).await {
                         Ok(_) => {
-                            tracing::debug!("Stored {} tickers for exchange {}", tickers.len(), exchange);
+                            tracing::debug!(
+                                "Stored {} tickers for exchange {}",
+                                tickers.len(),
+                                exchange
+                            );
                         }
                         Err(e) => {
-                            tracing::error!("Failed to store tickers for exchange {}: {}", exchange, e);
+                            tracing::error!(
+                                "Failed to store tickers for exchange {}: {}",
+                                exchange,
+                                e
+                            );
                         }
                     }
                 }
@@ -1026,18 +1334,31 @@ async fn spawn_ticker_report_task(
     }))
 }
 
-
 pub async fn execute(args: StartArgs) -> Result<()> {
     tracing::info!("Starting unified data collection service");
 
     // Determine which exchanges to use
-    let supported_exchanges = vec!["aster", "binance", "extended", "hyperliquid", "bybit", "kucoin", "lighter", "pacifica", "paradex"];
+    let supported_exchanges = vec![
+        "aster",
+        "binance",
+        "extended",
+        "hyperliquid",
+        "bybit",
+        "kucoin",
+        "lighter",
+        "pacifica",
+        "paradex",
+    ];
     let exchanges = match args.exchanges {
         Some(ref exs) if !exs.is_empty() => {
             // Validate provided exchanges
             for exchange in exs {
                 if !supported_exchanges.contains(&exchange.as_str()) {
-                    anyhow::bail!("Unsupported exchange: {}. Supported: {:?}", exchange, supported_exchanges);
+                    anyhow::bail!(
+                        "Unsupported exchange: {}. Supported: {:?}",
+                        exchange,
+                        supported_exchanges
+                    );
                 }
             }
             exs.clone()
@@ -1059,7 +1380,11 @@ pub async fn execute(args: StartArgs) -> Result<()> {
     tracing::info!("Symbols file: {}", args.symbols_file);
     tracing::info!("Batch size: {}", args.batch_size);
     tracing::info!("Klines backfill enabled: {}", args.enable_backfill);
-    tracing::info!("Klines interval: {}s (timeframes: {:?})", args.klines_interval, klines_timeframes);
+    tracing::info!(
+        "Klines interval: {}s (timeframes: {:?})",
+        args.klines_interval,
+        klines_timeframes
+    );
     tracing::info!("Report interval: {}s", args.report_interval);
 
     // Load symbols from file
@@ -1102,11 +1427,18 @@ pub async fn execute(args: StartArgs) -> Result<()> {
 
     // Spawn klines fetching tasks (one per exchange per timeframe) - only if backfill is enabled
     if args.enable_backfill {
-        tracing::info!("Klines backfill enabled, spawning klines tasks for {} exchanges and {} timeframes",
-                      exchange_symbols.len(), klines_timeframes.len());
+        tracing::info!(
+            "Klines backfill enabled, spawning klines tasks for {} exchanges and {} timeframes",
+            exchange_symbols.len(),
+            klines_timeframes.len()
+        );
         for (exchange, symbols) in &exchange_symbols {
             for timeframe in &klines_timeframes {
-                tracing::info!("Spawning klines task for exchange: {} with timeframe: {}", exchange, timeframe);
+                tracing::info!(
+                    "Spawning klines task for exchange: {} with timeframe: {}",
+                    exchange,
+                    timeframe
+                );
                 let task = spawn_klines_task(
                     exchange.clone(),
                     symbols.clone(),
@@ -1114,7 +1446,8 @@ pub async fn execute(args: StartArgs) -> Result<()> {
                     timeframe.clone(),
                     repository.clone(),
                     shutdown.clone(),
-                ).await?;
+                )
+                .await?;
                 tasks.push(task);
             }
         }
@@ -1128,7 +1461,8 @@ pub async fn execute(args: StartArgs) -> Result<()> {
         args.report_interval,
         repository.clone(),
         shutdown.clone(),
-    ).await?;
+    )
+    .await?;
     tasks.push(liquidity_report_task);
 
     // Spawn ticker report generation task (single task for all exchanges)
@@ -1137,10 +1471,14 @@ pub async fn execute(args: StartArgs) -> Result<()> {
         args.report_interval,
         repository.clone(),
         shutdown.clone(),
-    ).await?;
+    )
+    .await?;
     tasks.push(ticker_report_task);
 
-    tracing::info!("All tasks spawned successfully. Running {} tasks total", tasks.len());
+    tracing::info!(
+        "All tasks spawned successfully. Running {} tasks total",
+        tasks.len()
+    );
     tracing::info!("Press Ctrl+C to stop");
 
     // Setup Ctrl+C handler

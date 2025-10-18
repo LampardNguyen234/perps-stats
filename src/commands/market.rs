@@ -72,12 +72,24 @@ pub async fn execute(args: MarketArgs) -> Result<()> {
         "json" => display_all_json(&market_data_list, &timeframe)?,
         "table" => {
             for data in &market_data_list {
-                display_table(&data.ticker, &data.funding, &data.open_interest, &data.orderbook, &timeframe)?;
+                display_table(
+                    &data.ticker,
+                    &data.funding,
+                    &data.open_interest,
+                    &data.orderbook,
+                    &timeframe,
+                )?;
             }
         }
         _ => {
             for data in &market_data_list {
-                display_table(&data.ticker, &data.funding, &data.open_interest, &data.orderbook, &timeframe)?;
+                display_table(
+                    &data.ticker,
+                    &data.funding,
+                    &data.open_interest,
+                    &data.orderbook,
+                    &timeframe,
+                )?;
             }
         }
     }
@@ -244,7 +256,10 @@ fn display_table(
     table.add_row(Row::new(vec![
         Cell::new("  Next Funding"),
         Cell::new_align(
-            &funding.next_funding_time.format("%Y-%m-%d %H:%M:%S UTC").to_string(),
+            &funding
+                .next_funding_time
+                .format("%Y-%m-%d %H:%M:%S UTC")
+                .to_string(),
             format::Alignment::RIGHT,
         ),
     ]));
@@ -285,7 +300,9 @@ fn display_table(
     if let Some(book) = orderbook {
         let mut book_table = Table::new();
         book_table.set_format(*format::consts::FORMAT_CLEAN);
-        book_table.set_titles(Row::new(vec![Cell::new("Orderbook Depth (Top 10)").with_hspan(4)]));
+        book_table.set_titles(Row::new(vec![
+            Cell::new("Orderbook Depth (Top 10)").with_hspan(4)
+        ]));
         book_table.add_row(Row::new(vec![
             Cell::new("Bid Price").with_style(prettytable::Attr::Bold),
             Cell::new("Bid Qty").with_style(prettytable::Attr::Bold),
@@ -295,10 +312,22 @@ fn display_table(
 
         let max_len = book.bids.len().max(book.asks.len()).min(10);
         for i in 0..max_len {
-            let bid_price = book.bids.get(i).map_or("-".to_string(), |l| l.price.to_string());
-            let bid_qty = book.bids.get(i).map_or("-".to_string(), |l| l.quantity.to_string());
-            let ask_price = book.asks.get(i).map_or("-".to_string(), |l| l.price.to_string());
-            let ask_qty = book.asks.get(i).map_or("-".to_string(), |l| l.quantity.to_string());
+            let bid_price = book
+                .bids
+                .get(i)
+                .map_or("-".to_string(), |l| l.price.to_string());
+            let bid_qty = book
+                .bids
+                .get(i)
+                .map_or("-".to_string(), |l| l.quantity.to_string());
+            let ask_price = book
+                .asks
+                .get(i)
+                .map_or("-".to_string(), |l| l.price.to_string());
+            let ask_qty = book
+                .asks
+                .get(i)
+                .map_or("-".to_string(), |l| l.quantity.to_string());
 
             book_table.add_row(Row::new(vec![
                 Cell::new_align(&bid_price, format::Alignment::RIGHT),
@@ -318,7 +347,15 @@ fn display_table(
 fn display_all_json(market_data_list: &[MarketData], timeframe: &str) -> Result<()> {
     let json_array: Vec<serde_json::Value> = market_data_list
         .iter()
-        .map(|data| build_json_object(&data.ticker, &data.funding, &data.open_interest, &data.orderbook, timeframe))
+        .map(|data| {
+            build_json_object(
+                &data.ticker,
+                &data.funding,
+                &data.open_interest,
+                &data.orderbook,
+                timeframe,
+            )
+        })
         .collect();
 
     println!("{}", serde_json::to_string_pretty(&json_array)?);
@@ -396,4 +433,3 @@ fn build_json_object(
 
     data
 }
-

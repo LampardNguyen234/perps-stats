@@ -79,6 +79,8 @@ pub struct AsterWsDepthUpdate {
     pub first_update_id: i64,
     #[serde(rename = "u")]
     pub final_update_id: i64,
+    #[serde(rename = "pu")]
+    pub previous_update_id: i64, // Previous update ID for continuity checking
     #[serde(rename = "b")]
     pub bids: Vec<(String, String)>, // (price, quantity)
     #[serde(rename = "a")]

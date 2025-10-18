@@ -1,15 +1,15 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use perps_core::*;
+use perps_core::{execute_with_retry, RetryConfig};
 use rust_decimal::Decimal;
 use std::sync::Arc;
 use tracing::{debug, warn};
-use perps_core::{RetryConfig, execute_with_retry};
 
-use crate::cache::SymbolsCache;
 use super::conversions::*;
 use super::error::BinanceError;
 use super::ticker_calculator::{calculate_ticker_from_klines, parse_timeframe};
+use crate::cache::SymbolsCache;
 
 const DEFAULT_STALENESS: u64 = 2;
 
@@ -29,8 +29,22 @@ pub struct BinanceClient {
     symbols_cache: SymbolsCache,
     /// Rate limiter for API calls
     rate_limiter: Arc<RateLimiter>,
-    /// Optional orderbook manager for local orderbook maintenance
-    orderbook_manager: Option<Arc<perps_core::OrderbookManager>>,
+    /// Optional stream manager for WebSocket-based orderbook streaming
+    stream_manager: Option<Arc<perps_core::StreamManager>>,
+}
+
+impl Clone for BinanceClient {
+    fn clone(&self) -> Self {
+        Self {
+            api_key: self.api_key.clone(),
+            secret_key: self.secret_key.clone(),
+            base_url: self.base_url.clone(),
+            client: self.client.clone(),
+            symbols_cache: self.symbols_cache.clone(),
+            rate_limiter: Arc::clone(&self.rate_limiter),
+            stream_manager: self.stream_manager.clone(),
+        }
+    }
 }
 
 impl BinanceClient {
@@ -76,33 +90,25 @@ impl BinanceClient {
             client: reqwest::Client::new(),
             symbols_cache: SymbolsCache::new(),
             rate_limiter: Arc::new(RateLimiter::binance()),
-            orderbook_manager: None,
+            stream_manager: None,
         }
     }
 
-    /// Try to initialize with streaming support using OrderbookManager
+    /// Try to initialize with streaming support using StreamManager
     #[cfg(feature = "streaming")]
     async fn try_init_streaming() -> anyhow::Result<Self> {
-        use perps_core::{OrderbookManager, OrderbookManagerConfig};
+        use super::ws_client::BinanceWsClient;
+        use perps_core::{StreamConfig, StreamManager};
 
-        // Get database URL
-        let database_url = std::env::var("DATABASE_URL")
-            .map_err(|_| anyhow::anyhow!("DATABASE_URL not set"))?;
+        tracing::info!("Initializing BinanceClient with StreamManager");
 
-        tracing::info!("Initializing BinanceClient with OrderbookManager (lazy symbol detection)");
+        // Create WebSocket client
+        let ws_client = Arc::new(BinanceWsClient::new());
 
-        // Connect to database
-        let pool = sqlx::PgPool::connect(&database_url).await?;
-        let repository = Arc::new(perps_database::PostgresRepository::new(pool));
-
-        // Create OrderbookManager
-        let orderbook_manager = Arc::new(OrderbookManager::new(
-            "binance".to_string(),
-            Some(repository),
-            OrderbookManagerConfig {
-                staleness_threshold: std::time::Duration::from_secs(DEFAULT_STALENESS),
-                database_write_interval: std::time::Duration::from_secs(1),
-            },
+        // Create StreamManager with default config
+        let stream_manager = Arc::new(StreamManager::new(
+            ws_client as Arc<dyn perps_core::OrderbookStreamer>,
+            StreamConfig::default(),
         ));
 
         Ok(Self {
@@ -112,7 +118,7 @@ impl BinanceClient {
             client: reqwest::Client::new(),
             symbols_cache: SymbolsCache::new(),
             rate_limiter: Arc::new(RateLimiter::binance()),
-            orderbook_manager: Some(orderbook_manager),
+            stream_manager: Some(stream_manager),
         })
     }
 
@@ -131,7 +137,7 @@ impl BinanceClient {
             client: reqwest::Client::new(),
             symbols_cache: SymbolsCache::new(),
             rate_limiter: Arc::new(RateLimiter::binance()),
-            orderbook_manager: None,
+            stream_manager: None,
         }
     }
 
@@ -144,7 +150,7 @@ impl BinanceClient {
             client: reqwest::Client::new(),
             symbols_cache: SymbolsCache::new(),
             rate_limiter,
-            orderbook_manager: None,
+            stream_manager: None,
         }
     }
 
@@ -157,7 +163,7 @@ impl BinanceClient {
             client: reqwest::Client::new(),
             symbols_cache: SymbolsCache::new(),
             rate_limiter: Arc::new(RateLimiter::binance()),
-            orderbook_manager: None,
+            stream_manager: None,
         }
     }
 
@@ -172,10 +178,7 @@ impl BinanceClient {
     }
 
     /// Helper to make GET requests to Binance API with rate limiting and retry
-    async fn get<T: serde::de::DeserializeOwned>(
-        &self,
-        endpoint: &str,
-    ) -> anyhow::Result<T> {
+    async fn get<T: serde::de::DeserializeOwned>(&self, endpoint: &str) -> anyhow::Result<T> {
         let config = RetryConfig::default();
         let url = format!("{}{}", self.base_url, endpoint);
         let client = self.client.clone();
@@ -186,30 +189,33 @@ impl BinanceClient {
             let client = client.clone();
             let rate_limiter = rate_limiter.clone();
             async move {
-                rate_limiter.execute(|| {
-                    let url = url.clone();
-                    let client = client.clone();
-                    async move {
-                        debug!("Requesting: {}", url);
+                rate_limiter
+                    .execute(|| {
+                        let url = url.clone();
+                        let client = client.clone();
+                        async move {
+                            debug!("Requesting: {}", url);
 
-                        let response = client.get(&url).send().await?;
+                            let response = client.get(&url).send().await?;
 
-                        if !response.status().is_success() {
-                            let status = response.status();
-                            let text = response.text().await?;
-                            return Err(BinanceError::ApiError(format!(
-                                "HTTP {}: {}",
-                                status, text
-                            ))
-                            .into());
+                            if !response.status().is_success() {
+                                let status = response.status();
+                                let text = response.text().await?;
+                                return Err(BinanceError::ApiError(format!(
+                                    "HTTP {}: {}",
+                                    status, text
+                                ))
+                                .into());
+                            }
+
+                            let data = response.json::<T>().await?;
+                            Ok(data)
                         }
-
-                        let data = response.json::<T>().await?;
-                        Ok(data)
-                    }
-                }).await
+                    })
+                    .await
             }
-        }).await
+        })
+        .await
     }
 
     /// Convert Binance exchange info to our Market type
@@ -218,17 +224,11 @@ impl BinanceClient {
             .as_str()
             .ok_or_else(|| BinanceError::ConversionError("Missing symbol".to_string()))?;
 
-        let contract_type = info["contractType"]
-            .as_str()
-            .unwrap_or("PERPETUAL");
+        let contract_type = info["contractType"].as_str().unwrap_or("PERPETUAL");
 
-        let price_precision = info["pricePrecision"]
-            .as_i64()
-            .unwrap_or(2) as i32;
+        let price_precision = info["pricePrecision"].as_i64().unwrap_or(2) as i32;
 
-        let quantity_precision = info["quantityPrecision"]
-            .as_i64()
-            .unwrap_or(3) as i32;
+        let quantity_precision = info["quantityPrecision"].as_i64().unwrap_or(3) as i32;
 
         // Extract filter information
         let mut min_qty = Decimal::ZERO;
@@ -287,7 +287,8 @@ impl BinanceClient {
         let volume = str_to_decimal(ticker["volume"].as_str().unwrap_or("0"))?;
         let quote_volume = str_to_decimal(ticker["quoteVolume"].as_str().unwrap_or("0"))?;
         let price_change = str_to_decimal(ticker["priceChange"].as_str().unwrap_or("0"))?;
-        let price_change_pct = str_to_decimal(ticker["priceChangePercent"].as_str().unwrap_or("0"))?;
+        let price_change_pct =
+            str_to_decimal(ticker["priceChangePercent"].as_str().unwrap_or("0"))?;
         let high_price = str_to_decimal(ticker["highPrice"].as_str().unwrap_or("0"))?;
         let low_price = str_to_decimal(ticker["lowPrice"].as_str().unwrap_or("0"))?;
 
@@ -390,10 +391,12 @@ impl BinanceClient {
         Ok((orderbook, last_update_id))
     }
 
-    /// Start background WebSocket task with buffering (following Binance's specification)
-    /// 1. Connects to WebSocket and buffers events
-    /// 2. Waits for orderbook to be initialized via initialize_orderbook()
-    /// 3. Processes buffered events following Binance's rules
+    /// Start background WebSocket task with automatic buffering (following Binance's specification)
+    ///
+    /// New Flow (uses LocalOrderbook's built-in buffer):
+    /// 1. Connects to WebSocket
+    /// 2. All events are automatically buffered by LocalOrderbook
+    /// 3. When apply_snapshot() is called, buffered events are replayed
     /// 4. Continues with real-time processing
     #[cfg(feature = "streaming")]
     async fn start_orderbook_stream_with_buffering(
@@ -406,16 +409,18 @@ impl BinanceClient {
         use futures::{SinkExt, StreamExt};
         use tokio_tungstenite::{connect_async, tungstenite::Message};
         use url::Url;
-        use std::collections::VecDeque;
 
         // Build WebSocket URL for depth@100ms stream
         let stream_url = format!(
-            "wss://fstream.binance.com/ws/{}@depth@100ms",
+            "wss://fstream.binance.com/ws/{}@depth@500ms",
             binance_symbol.to_lowercase()
         );
         let url = Url::parse(&stream_url)?;
 
-        tracing::info!("Starting WebSocket orderbook stream with buffering for {}", binance_symbol);
+        tracing::info!(
+            "[Binance] Starting WebSocket stream for {} (automatic buffering)",
+            binance_symbol
+        );
 
         // Spawn background task
         tokio::spawn(async move {
@@ -425,20 +430,16 @@ impl BinanceClient {
             // Connect to WebSocket
             let mut ws_stream = match connect_async(url.as_str()).await {
                 Ok((stream, _)) => {
-                    tracing::info!("Connected to orderbook stream for {}", symbol_for_log);
+                    tracing::info!("[Binance] Connected to WebSocket for {}", symbol_for_log);
                     stream
                 }
                 Err(e) => {
-                    tracing::error!("Failed to connect to orderbook stream for {}: {}", symbol_for_log, e);
+                    tracing::error!("[Binance] Failed to connect for {}: {}", symbol_for_log, e);
                     return;
                 }
             };
 
-            // Buffer for events received before orderbook initialization
-            let mut buffered_events: VecDeque<(u64, u64, Vec<perps_core::OrderbookLevel>, Vec<perps_core::OrderbookLevel>)> = VecDeque::new();
-            let mut orderbook_initialized = false;
-
-            // Process messages
+            // Process messages - all events are automatically buffered by LocalOrderbook
             while let Some(msg_result) = ws_stream.next().await {
                 match msg_result {
                     Ok(Message::Text(text)) => {
@@ -447,86 +448,81 @@ impl BinanceClient {
                             Ok(ws_depth) => {
                                 // Convert to structured data
                                 match ws_client.convert_depth_update(&ws_depth) {
-                                    Ok((_symbol, first_update_id, final_update_id, bids, asks)) => {
-                                        // Check if orderbook has been initialized
-                                        if !orderbook_initialized {
-                                            // Check if initialization happened
-                                            if manager.get_orderbook(&binance_symbol, 1).await.is_some() {
-                                                orderbook_initialized = true;
-                                                tracing::info!(
-                                                    "Orderbook initialized for {}, processing {} buffered events",
-                                                    binance_symbol,
-                                                    buffered_events.len()
-                                                );
-
-                                                // Process buffered events following Binance's rules
-                                                for (buf_first, buf_final, buf_bids, buf_asks) in buffered_events.drain(..) {
-                                                    if let Err(e) = manager
-                                                        .apply_update(&binance_symbol, buf_first, buf_final, buf_bids, buf_asks)
-                                                        .await
-                                                    {
-                                                        tracing::debug!(
-                                                            "Skipped buffered update for {}: {}",
-                                                            binance_symbol,
-                                                            e
-                                                        );
-                                                    }
-                                                }
-                                            } else {
-                                                // Still buffering - add to buffer
-                                                buffered_events.push_back((first_update_id, final_update_id, bids, asks));
-
-                                                // Limit buffer size to prevent memory issues
-                                                if buffered_events.len() > 1000 {
-                                                    buffered_events.pop_front();
-                                                    tracing::warn!("Buffer full for {}, dropping oldest event", binance_symbol);
-                                                }
-                                                continue;
-                                            }
-                                        }
-
-                                        // Apply delta update to OrderbookManager (real-time or from buffer)
+                                    Ok((
+                                        _symbol,
+                                        first_update_id,
+                                        final_update_id,
+                                        previous_id,
+                                        bids,
+                                        asks,
+                                    )) => {
+                                        // Apply delta update - LocalOrderbook automatically buffers
+                                        // Binance uses full price updates (is_incremental_delta = false)
                                         if let Err(e) = manager
-                                            .apply_update(&binance_symbol, first_update_id, final_update_id, bids, asks)
+                                            .apply_update(
+                                                &binance_symbol,
+                                                first_update_id,
+                                                final_update_id,
+                                                previous_id,
+                                                bids,
+                                                asks,
+                                                false,
+                                            )
                                             .await
                                         {
                                             tracing::debug!(
-                                                "Failed to apply orderbook update for {}: {}",
+                                                "[Binance] Failed to apply update for {}: {}",
                                                 binance_symbol,
                                                 e
                                             );
                                         }
                                     }
                                     Err(e) => {
-                                        tracing::warn!("Failed to convert depth update for {}: {}", symbol_for_log, e);
+                                        tracing::warn!(
+                                            "[Binance] Failed to convert depth update for {}: {}",
+                                            symbol_for_log,
+                                            e
+                                        );
                                     }
                                 }
                             }
                             Err(e) => {
-                                tracing::debug!("Failed to parse depth update for {}: {}", symbol_for_log, e);
+                                tracing::debug!(
+                                    "[Binance] Failed to parse depth update for {}: {}",
+                                    symbol_for_log,
+                                    e
+                                );
                             }
                         }
                     }
                     Ok(Message::Ping(payload)) => {
                         // Respond to ping with pong
                         if let Err(e) = ws_stream.send(Message::Pong(payload)).await {
-                            tracing::error!("Failed to send pong for {}: {}", symbol_for_log, e);
+                            tracing::error!(
+                                "[Binance] Failed to send pong for {}: {}",
+                                symbol_for_log,
+                                e
+                            );
                             break;
                         }
                     }
                     Ok(Message::Close(frame)) => {
-                        tracing::info!("WebSocket closed for {}: {:?}", symbol_for_log, frame);
+                        tracing::info!(
+                            "[Binance] WebSocket closed for {}: {:?}",
+                            symbol_for_log,
+                            frame
+                        );
                         break;
                     }
                     Err(e) => {
-                        tracing::error!("WebSocket error for {}: {}", symbol_for_log, e);
+                        tracing::error!("[Binance] WebSocket error for {}: {}", symbol_for_log, e);
                         break;
                     }
                     _ => {}
                 }
             }
 
-            tracing::info!("Orderbook stream ended for {}", symbol_for_log);
+            tracing::info!("[Binance] WebSocket stream ended for {}", symbol_for_log);
         });
 
         Ok(())
@@ -603,7 +599,12 @@ impl BinanceClient {
     }
 
     /// Convert Binance kline to our Kline type
-    fn convert_kline(&self, symbol: &str, interval: &str, data: &[serde_json::Value]) -> anyhow::Result<Kline> {
+    fn convert_kline(
+        &self,
+        symbol: &str,
+        interval: &str,
+        data: &[serde_json::Value],
+    ) -> anyhow::Result<Kline> {
         if data.len() < 11 {
             return Err(BinanceError::ConversionError("Invalid kline data".to_string()).into());
         }
@@ -695,16 +696,22 @@ impl BinanceClient {
         let start_time = end_time - duration;
 
         // Fetch klines for the timeframe
-        let klines = self.get_klines(
-            symbol,
-            &binance_interval,
-            Some(start_time),
-            Some(end_time),
-            None,
-        ).await?;
+        let klines = self
+            .get_klines(
+                symbol,
+                &binance_interval,
+                Some(start_time),
+                Some(end_time),
+                None,
+            )
+            .await?;
 
         if klines.is_empty() {
-            return Err(anyhow::anyhow!("No klines data available for {} in timeframe {}", symbol, timeframe));
+            return Err(anyhow::anyhow!(
+                "No klines data available for {} in timeframe {}",
+                symbol,
+                timeframe
+            ));
         }
 
         // Get current prices from ticker for accurate current state
@@ -805,7 +812,12 @@ impl IPerps for BinanceClient {
         // Fetch open interest
         let oi = self.get_open_interest(symbol).await?;
 
-        self.convert_ticker(ticker_data, premium_data, book_ticker_data, oi.open_interest)
+        self.convert_ticker(
+            ticker_data,
+            premium_data,
+            book_ticker_data,
+            oi.open_interest,
+        )
     }
 
     async fn get_all_tickers(&self) -> anyhow::Result<Vec<Ticker>> {
@@ -856,10 +868,19 @@ impl IPerps for BinanceClient {
         for ticker_item in tickers_array {
             if let Some(symbol) = ticker_item["symbol"].as_str() {
                 if let (Some(premium_item), Some(book_item)) =
-                    (premium_map.get(symbol), book_ticker_map.get(symbol)) {
+                    (premium_map.get(symbol), book_ticker_map.get(symbol))
+                {
                     // Get open interest or use zero if not available
-                    let oi = open_interest_map.get(symbol).copied().unwrap_or(Decimal::ZERO);
-                    match self.convert_ticker(ticker_item.clone(), premium_item.clone(), book_item.clone(), oi) {
+                    let oi = open_interest_map
+                        .get(symbol)
+                        .copied()
+                        .unwrap_or(Decimal::ZERO);
+                    match self.convert_ticker(
+                        ticker_item.clone(),
+                        premium_item.clone(),
+                        book_item.clone(),
+                        oi,
+                    ) {
                         Ok(ticker) => tickers.push(ticker),
                         Err(e) => warn!("Failed to convert ticker for {}: {}", symbol, e),
                     }
@@ -871,71 +892,29 @@ impl IPerps for BinanceClient {
     }
 
     async fn get_orderbook(&self, symbol: &str, depth: u32) -> anyhow::Result<Orderbook> {
-        // Check if OrderbookManager is available
-        if let Some(ref manager) = self.orderbook_manager {
+        // Check if StreamManager is available
+        if let Some(ref manager) = self.stream_manager {
             let binance_symbol = denormalize_symbol(symbol);
 
-            // Try to get from OrderbookManager cache
-            if let Some(cached_orderbook) = manager.get_orderbook(&binance_symbol, depth as usize).await {
-                // Check if cached data is fresh
-                if manager.is_fresh(&binance_symbol).await {
-                    tracing::debug!(
-                        "Returning cached orderbook for {} (age: {:?})",
-                        binance_symbol,
-                        Utc::now().signed_duration_since(cached_orderbook.timestamp).to_string()
-                    );
-                    return Ok(cached_orderbook);
-                }
-            }
+            // Subscribe (idempotent, auto-starts streaming)
+            manager.subscribe(binance_symbol.clone()).await?;
 
-            // If not cached or stale, initialize following Binance's specification:
-            // 1. Start WebSocket and buffer events
-            // 2. Get REST snapshot
-            // 3. Initialize local orderbook
-            // 4. WebSocket task will process buffered events
-
-            tracing::debug!("Initializing orderbook for {} following Binance spec", binance_symbol);
-
-            // Step 1: Start WebSocket FIRST (will buffer events)
-            self.start_orderbook_stream_with_buffering(binance_symbol.clone(), manager.clone())
+            // Get orderbook (auto cache + fallback)
+            let client_clone = self.clone();
+            let symbol_clone = symbol.to_string();
+            let orderbook = manager
+                .get_orderbook(&binance_symbol, depth, || async move {
+                    // REST fallback returns (Orderbook, lastUpdateId) for snapshot initialization
+                    client_clone
+                        .get_orderbook_snapshot_with_update_id(&symbol_clone, depth)
+                        .await
+                })
                 .await?;
 
-            // Small delay to ensure WebSocket is connected and buffering
-            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-
-            // Step 2: Get snapshot from REST API with lastUpdateId
-            tracing::debug!("Fetching REST API snapshot for {}", binance_symbol);
-            let (orderbook, last_update_id) = self
-                .get_orderbook_snapshot_with_update_id(symbol, 1000)
-                .await?;
-
-            // Step 3: Initialize local orderbook in OrderbookManager
-            // This will cause the WebSocket task to start processing buffered events
-            manager
-                .initialize_orderbook(
-                    binance_symbol.clone(),
-                    orderbook.bids.clone(),
-                    orderbook.asks.clone(),
-                    last_update_id,
-                )
-                .await;
-
-            tracing::info!(
-                "Initialized local orderbook for {} with lastUpdateId={}",
-                binance_symbol,
-                last_update_id
-            );
-
-            // Return the snapshot (limited to requested depth)
-            return Ok(Orderbook {
-                symbol: orderbook.symbol.clone(),
-                bids: orderbook.bids.iter().take(depth as usize).cloned().collect(),
-                asks: orderbook.asks.iter().take(depth as usize).cloned().collect(),
-                timestamp: orderbook.timestamp,
-            });
+            return Ok(orderbook);
         }
 
-        // Fallback when OrderbookManager is not available: direct REST API call
+        // Fallback when StreamManager is not available: direct REST API call
         let binance_symbol = denormalize_symbol(symbol);
         let endpoint = format!("/fapi/v1/depth?symbol={}&limit={}", binance_symbol, depth);
         let data: serde_json::Value = self.get(&endpoint).await?;
@@ -970,9 +949,7 @@ impl IPerps for BinanceClient {
         }
 
         let data: serde_json::Value = self.get(&endpoint).await?;
-        let rates_array = data
-            .as_array()
-            .ok_or(BinanceError::InvalidResponse)?;
+        let rates_array = data.as_array().ok_or(BinanceError::InvalidResponse)?;
 
         let mut rates = Vec::new();
         for rate_data in rates_array {
@@ -1034,9 +1011,7 @@ impl IPerps for BinanceClient {
         }
 
         let data: serde_json::Value = self.get(&endpoint).await?;
-        let klines_array = data
-            .as_array()
-            .ok_or(BinanceError::InvalidResponse)?;
+        let klines_array = data.as_array().ok_or(BinanceError::InvalidResponse)?;
 
         let mut klines = Vec::new();
         for kline_data in klines_array {
@@ -1056,9 +1031,7 @@ impl IPerps for BinanceClient {
         let endpoint = format!("/fapi/v1/trades?symbol={}&limit={}", binance_symbol, limit);
         let data: serde_json::Value = self.get(&endpoint).await?;
 
-        let trades_array = data
-            .as_array()
-            .ok_or(BinanceError::InvalidResponse)?;
+        let trades_array = data.as_array().ok_or(BinanceError::InvalidResponse)?;
 
         let mut trades = Vec::new();
         for trade_data in trades_array {
@@ -1111,7 +1084,7 @@ impl IPerps for BinanceClient {
                 volume_24h: ticker.volume_24h,
                 turnover_24h: ticker.turnover_24h,
                 open_interest: Decimal::ZERO, // Would need separate call per symbol
-                funding_rate: Decimal::ZERO,   // Would need separate call per symbol
+                funding_rate: Decimal::ZERO,  // Would need separate call per symbol
                 last_price: ticker.last_price,
                 mark_price: ticker.mark_price,
                 index_price: ticker.index_price,

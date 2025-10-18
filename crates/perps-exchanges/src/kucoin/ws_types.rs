@@ -87,7 +87,7 @@ pub struct KuCoinWsLevel2 {
 pub struct KuCoinWsKline {
     pub symbol: String,
     pub candles: Vec<String>, // [start_time, open, close, high, low, volume, amount]
-    pub time: i64, // Milliseconds
+    pub time: i64,            // Milliseconds
 }
 
 /// KuCoin WebSocket response wrapper

@@ -3,7 +3,10 @@ use crate::cache::SymbolsCache;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, TimeZone, Utc};
-use perps_core::types::{FundingRate, Kline, Market, MarketStats, OpenInterest, Orderbook, OrderbookLevel, OrderSide, Ticker, Trade};
+use perps_core::types::{
+    FundingRate, Kline, Market, MarketStats, OpenInterest, OrderSide, Orderbook, OrderbookLevel,
+    Ticker, Trade,
+};
 use perps_core::{execute_with_retry, IPerps, RateLimiter, RetryConfig};
 use rust_decimal::Decimal;
 use std::collections::HashMap;
@@ -12,6 +15,7 @@ use std::sync::{Arc, RwLock};
 
 const BASE_URL: &str = "https://fapi.asterdex.com";
 const BOOK_TICKER_CACHE_TTL_SECS: i64 = 5; // Cache book tickers for 5 seconds
+const DEFAULT_STALENESS: u64 = 2; // 2 seconds staleness threshold for orderbook cache
 
 /// Cached book ticker data with expiration
 #[derive(Clone, Debug)]
@@ -43,16 +47,78 @@ pub struct AsterClient {
     rate_limiter: Arc<RateLimiter>,
     /// Cached book ticker data
     book_ticker_cache: Arc<RwLock<Option<BookTickerCache>>>,
+    /// Optional stream manager for WebSocket orderbook streaming
+    stream_manager: Option<Arc<perps_core::StreamManager>>,
 }
 
 impl AsterClient {
-    pub fn new() -> Self {
+    pub async fn new() -> Result<Self> {
+        // Check if streaming should be enabled
+        let should_enable_streaming = std::env::var("DATABASE_URL").is_ok()
+            && std::env::var("ENABLE_ORDERBOOK_STREAMING")
+                .map(|v| v.to_lowercase() != "false")
+                .unwrap_or(true);
+
+        if !should_enable_streaming {
+            tracing::debug!("AsterClient: Streaming disabled, using REST-only mode");
+            return Ok(Self::new_rest_only());
+        }
+
+        // Try to initialize with streaming
+        match Self::try_init_streaming().await {
+            Ok(client) => {
+                tracing::info!("✓ AsterClient initialized with WebSocket streaming");
+                Ok(client)
+            }
+            Err(e) => {
+                tracing::warn!("Failed to initialize streaming for AsterClient: {}", e);
+                tracing::warn!("Falling back to REST-only mode");
+                Ok(Self::new_rest_only())
+            }
+        }
+    }
+
+    /// Create a REST-only client (no streaming)
+    pub fn new_rest_only() -> Self {
         Self {
             http: reqwest::Client::new(),
             symbols_cache: SymbolsCache::new(),
             rate_limiter: Arc::new(RateLimiter::aster()),
             book_ticker_cache: Arc::new(RwLock::new(None)),
+            stream_manager: None,
         }
+    }
+
+    /// Try to initialize with streaming support using StreamManager
+    #[cfg(feature = "streaming")]
+    async fn try_init_streaming() -> Result<Self> {
+        use crate::aster::ws_client::AsterWsClient;
+        use perps_core::{StreamConfig, StreamManager};
+
+        tracing::info!("Initializing AsterClient with StreamManager");
+
+        // Create AsterWsClient as the OrderbookStreamer implementation
+        let ws_client = Arc::new(AsterWsClient::new());
+
+        // Create StreamManager with default config
+        let stream_manager = Arc::new(StreamManager::new(
+            ws_client as Arc<dyn perps_core::streaming::OrderbookStreamer>,
+            StreamConfig::default(),
+        ));
+
+        Ok(Self {
+            http: reqwest::Client::new(),
+            symbols_cache: SymbolsCache::new(),
+            rate_limiter: Arc::new(RateLimiter::aster()),
+            book_ticker_cache: Arc::new(RwLock::new(None)),
+            stream_manager: Some(stream_manager),
+        })
+    }
+
+    /// Fallback when streaming feature is disabled
+    #[cfg(not(feature = "streaming"))]
+    async fn try_init_streaming() -> Result<Self> {
+        Err(anyhow!("Streaming feature not enabled"))
     }
 
     /// Ensure the symbols cache is initialized
@@ -72,7 +138,10 @@ impl AsterClient {
             let cache = self.book_ticker_cache.read().unwrap();
             if let Some(cached) = cache.as_ref() {
                 if !cached.is_expired() {
-                    tracing::debug!("Using cached book ticker data ({} symbols)", cached.data.len());
+                    tracing::debug!(
+                        "Using cached book ticker data ({} symbols)",
+                        cached.data.len()
+                    );
                     return Ok(cached.data.clone());
                 }
             }
@@ -144,11 +213,7 @@ impl AsterClient {
     }
 }
 
-impl Default for AsterClient {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+// Note: Cannot implement Default trait because new() is async
 
 #[async_trait]
 impl IPerps for AsterClient {
@@ -264,24 +329,43 @@ impl IPerps for AsterClient {
                 if let Some(book_ticker) = book_ticker_map.get(&ticker.symbol) {
                     (
                         Decimal::from_str(&book_ticker.bid_price).unwrap_or_else(|e| {
-                            tracing::warn!("Failed to parse bid price for {}: {}", ticker.symbol, e);
+                            tracing::warn!(
+                                "Failed to parse bid price for {}: {}",
+                                ticker.symbol,
+                                e
+                            );
                             Decimal::ZERO
                         }),
                         Decimal::from_str(&book_ticker.bid_qty).unwrap_or_else(|e| {
-                            tracing::warn!("Failed to parse bid quantity for {}: {}", ticker.symbol, e);
+                            tracing::warn!(
+                                "Failed to parse bid quantity for {}: {}",
+                                ticker.symbol,
+                                e
+                            );
                             Decimal::ZERO
                         }),
                         Decimal::from_str(&book_ticker.ask_price).unwrap_or_else(|e| {
-                            tracing::warn!("Failed to parse ask price for {}: {}", ticker.symbol, e);
+                            tracing::warn!(
+                                "Failed to parse ask price for {}: {}",
+                                ticker.symbol,
+                                e
+                            );
                             Decimal::ZERO
                         }),
                         Decimal::from_str(&book_ticker.ask_qty).unwrap_or_else(|e| {
-                            tracing::warn!("Failed to parse ask quantity for {}: {}", ticker.symbol, e);
+                            tracing::warn!(
+                                "Failed to parse ask quantity for {}: {}",
+                                ticker.symbol,
+                                e
+                            );
                             Decimal::ZERO
                         }),
                     )
                 } else {
-                    tracing::debug!("Book ticker data not available for {}, using zeros for best bid/ask", ticker.symbol);
+                    tracing::debug!(
+                        "Book ticker data not available for {}, using zeros for best bid/ask",
+                        ticker.symbol
+                    );
                     (Decimal::ZERO, Decimal::ZERO, Decimal::ZERO, Decimal::ZERO)
                 };
 
@@ -299,44 +383,29 @@ impl IPerps for AsterClient {
     }
 
     async fn get_orderbook(&self, symbol: &str, depth: u32) -> Result<Orderbook> {
-        let limit = depth.min(1000); // Aster max depth is 1000
-        let orderbook: Depth = self
-            .get(&format!(
-                "/fapi/v1/depth?symbol={}&limit={}",
-                symbol, limit
-            ))
-            .await?;
+        // Check if StreamManager is available
+        if let Some(ref manager) = self.stream_manager {
+            // Subscribe to symbol (idempotent - no-op if already subscribed)
+            manager.subscribe(symbol.to_string()).await?;
 
-        let bids = orderbook
-            .bids
-            .into_iter()
-            .map(|(price, quantity)| {
-                Ok(OrderbookLevel {
-                    price: Decimal::from_str(&price)?,
-                    quantity: Decimal::from_str(&quantity)?,
+            // Get orderbook from cache or REST fallback
+            // StreamManager handles all complexity: caching, staleness checks, WebSocket streaming
+            let client_clone = self.clone();
+            let symbol_clone = symbol.to_string();
+            let orderbook = manager
+                .get_orderbook(symbol, depth, || async move {
+                    // REST API fallback closure - returns (Orderbook, lastUpdateId) for snapshot initialization
+                    client_clone
+                        .fetch_orderbook_snapshot_with_update_id(&symbol_clone, depth)
+                        .await
                 })
-            })
-            .collect::<Result<Vec<_>>>()?;
+                .await?;
 
-        let asks = orderbook
-            .asks
-            .into_iter()
-            .map(|(price, quantity)| {
-                Ok(OrderbookLevel {
-                    price: Decimal::from_str(&price)?,
-                    quantity: Decimal::from_str(&quantity)?,
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
+            return Ok(orderbook);
+        }
 
-        Ok(Orderbook {
-            symbol: symbol.to_string(),
-            bids,
-            asks,
-            timestamp: Utc
-                .timestamp_millis_opt(orderbook.transaction_time)
-                .unwrap(),
-        })
+        // Fallback when StreamManager is not available: direct REST API call
+        self.fetch_orderbook_rest(symbol, depth).await
     }
 
     async fn get_recent_trades(&self, symbol: &str, limit: u32) -> Result<Vec<Trade>> {
@@ -561,6 +630,95 @@ impl IPerps for AsterClient {
 }
 
 impl AsterClient {
+    /// Fetch orderbook snapshot with lastUpdateId from REST API
+    /// Returns (Orderbook, lastUpdateId) for StreamManager initialization
+    async fn fetch_orderbook_snapshot_with_update_id(
+        &self,
+        symbol: &str,
+        depth: u32,
+    ) -> Result<(Orderbook, u64)> {
+        let limit = depth.min(1000); // Aster max depth is 1000
+        let orderbook: Depth = self
+            .get(&format!("/fapi/v1/depth?symbol={}&limit={}", symbol, limit))
+            .await?;
+
+        // Extract lastUpdateId
+        let last_update_id = orderbook.last_update_id as u64;
+
+        let bids = orderbook
+            .bids
+            .into_iter()
+            .map(|(price, quantity)| {
+                Ok(OrderbookLevel {
+                    price: Decimal::from_str(&price)?,
+                    quantity: Decimal::from_str(&quantity)?,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        let asks = orderbook
+            .asks
+            .into_iter()
+            .map(|(price, quantity)| {
+                Ok(OrderbookLevel {
+                    price: Decimal::from_str(&price)?,
+                    quantity: Decimal::from_str(&quantity)?,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        Ok((
+            Orderbook {
+                symbol: symbol.to_string(),
+                bids,
+                asks,
+                timestamp: Utc
+                    .timestamp_millis_opt(orderbook.transaction_time)
+                    .unwrap(),
+            },
+            last_update_id,
+        ))
+    }
+
+    /// Fetch orderbook directly from REST API (used as fallback when StreamManager is not available)
+    async fn fetch_orderbook_rest(&self, symbol: &str, depth: u32) -> Result<Orderbook> {
+        let limit = depth.min(1000); // Aster max depth is 1000
+        let orderbook: Depth = self
+            .get(&format!("/fapi/v1/depth?symbol={}&limit={}", symbol, limit))
+            .await?;
+
+        let bids = orderbook
+            .bids
+            .into_iter()
+            .map(|(price, quantity)| {
+                Ok(OrderbookLevel {
+                    price: Decimal::from_str(&price)?,
+                    quantity: Decimal::from_str(&quantity)?,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        let asks = orderbook
+            .asks
+            .into_iter()
+            .map(|(price, quantity)| {
+                Ok(OrderbookLevel {
+                    price: Decimal::from_str(&price)?,
+                    quantity: Decimal::from_str(&quantity)?,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        Ok(Orderbook {
+            symbol: symbol.to_string(),
+            bids,
+            asks,
+            timestamp: Utc
+                .timestamp_millis_opt(orderbook.transaction_time)
+                .unwrap(),
+        })
+    }
+
     /// Helper to parse ticker without mark price data
     fn try_parse_ticker(
         &self,
@@ -582,8 +740,7 @@ impl AsterClient {
             open_interest: Decimal::ZERO,
             open_interest_notional: Decimal::ZERO,
             price_change_24h,
-            price_change_pct: Decimal::from_str(&ticker.price_change_percent)?
-                / Decimal::from(100),
+            price_change_pct: Decimal::from_str(&ticker.price_change_percent)? / Decimal::from(100),
             high_price_24h: Decimal::from_str(&ticker.high_price)?,
             low_price_24h: Decimal::from_str(&ticker.low_price)?,
             timestamp: Utc.timestamp_millis_opt(ticker.close_time).unwrap(),
@@ -597,7 +754,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_parse_symbol() {
-        let client = AsterClient::default();
+        let client = AsterClient::new_rest_only();
         assert_eq!(client.parse_symbol("BTC"), "BTCUSDT");
         assert_eq!(client.parse_symbol("ETH"), "ETHUSDT");
         assert_eq!(client.parse_symbol("btc"), "BTCUSDT");
@@ -605,13 +762,13 @@ mod tests {
 
     #[test]
     fn test_client_creation() {
-        let client = AsterClient::new();
+        let client = AsterClient::new_rest_only();
         assert_eq!(client.get_name(), "aster");
     }
 
     #[test]
     fn test_try_parse_ticker_valid_data() {
-        let client = AsterClient::new();
+        let client = AsterClient::new_rest_only();
 
         let ticker = Ticker24hr {
             symbol: "BTCUSDT".to_string(),
@@ -642,10 +799,19 @@ mod tests {
         assert_eq!(parsed.symbol, "BTCUSDT");
         assert_eq!(parsed.last_price, Decimal::from_str("41000.50").unwrap());
         assert_eq!(parsed.volume_24h, Decimal::from_str("1000.5").unwrap());
-        assert_eq!(parsed.turnover_24h, Decimal::from_str("41000000.25").unwrap());
-        assert_eq!(parsed.price_change_24h, Decimal::from_str("1000.50").unwrap());
+        assert_eq!(
+            parsed.turnover_24h,
+            Decimal::from_str("41000000.25").unwrap()
+        );
+        assert_eq!(
+            parsed.price_change_24h,
+            Decimal::from_str("1000.50").unwrap()
+        );
         assert_eq!(parsed.price_change_pct, Decimal::from_str("0.025").unwrap()); // 2.5% / 100
-        assert_eq!(parsed.high_price_24h, Decimal::from_str("42000.00").unwrap());
+        assert_eq!(
+            parsed.high_price_24h,
+            Decimal::from_str("42000.00").unwrap()
+        );
         assert_eq!(parsed.low_price_24h, Decimal::from_str("39000.00").unwrap());
 
         // Best bid/ask should be zero in try_parse_ticker (filled later from book ticker)
@@ -655,7 +821,7 @@ mod tests {
 
     #[test]
     fn test_try_parse_ticker_invalid_number() {
-        let client = AsterClient::new();
+        let client = AsterClient::new_rest_only();
 
         let ticker = Ticker24hr {
             symbol: "BTCUSDT".to_string(),

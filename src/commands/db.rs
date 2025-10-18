@@ -108,8 +108,7 @@ async fn truncate_all_tables(pool: &PgPool) -> Result<()> {
         "liquidity_depth",
         "markets",
         "klines",
-        "slippage"
-        // Don't truncate exchanges as it's a reference table
+        "slippage", // Don't truncate exchanges as it's a reference table
     ];
 
     for table in tables {
@@ -124,15 +123,19 @@ async fn truncate_all_tables(pool: &PgPool) -> Result<()> {
 /// Delete data older than N days
 async fn delete_old_data(pool: &PgPool, days: i32) -> Result<()> {
     let cutoff_date = Utc::now() - chrono::Duration::days(days as i64);
-    let tables = vec!["tickers", "orderbooks", "trades", "funding_rates", "liquidity_depth", "klines"];
+    let tables = vec![
+        "tickers",
+        "orderbooks",
+        "trades",
+        "funding_rates",
+        "liquidity_depth",
+        "klines",
+    ];
 
     for table in tables {
         tracing::info!("Deleting old data from table: {}", table);
         let query = format!("DELETE FROM {} WHERE ts < $1", table);
-        let result = sqlx::query(&query)
-            .bind(cutoff_date)
-            .execute(pool)
-            .await?;
+        let result = sqlx::query(&query).bind(cutoff_date).execute(pool).await?;
 
         tracing::info!("✓ Deleted {} rows from {}", result.rows_affected(), table);
     }
@@ -174,8 +177,17 @@ async fn fetch_table_stats(pool: &PgPool) -> Result<serde_json::Value> {
         let mut max_ts: Option<DateTime<Utc>> = None;
         let mut data_age_minutes: Option<i64> = None;
 
-        if vec!["tickers", "orderbooks", "trades", "funding_rates", "liquidity_depth", "klines", "slippage", "open_interest"]
-            .contains(&table)
+        if vec![
+            "tickers",
+            "orderbooks",
+            "trades",
+            "funding_rates",
+            "liquidity_depth",
+            "klines",
+            "slippage",
+            "open_interest",
+        ]
+        .contains(&table)
         {
             let ts_query = format!("SELECT MIN(ts), MAX(ts) FROM {}", table);
             if let Ok(row) = sqlx::query(&ts_query).fetch_one(pool).await {
@@ -192,8 +204,17 @@ async fn fetch_table_stats(pool: &PgPool) -> Result<serde_json::Value> {
 
         // Get per-exchange breakdown for time-series tables
         let mut exchange_breakdown = json!({});
-        if vec!["tickers", "orderbooks", "trades", "funding_rates", "liquidity_depth", "klines", "slippage", "open_interest"]
-            .contains(&table)
+        if vec![
+            "tickers",
+            "orderbooks",
+            "trades",
+            "funding_rates",
+            "liquidity_depth",
+            "klines",
+            "slippage",
+            "open_interest",
+        ]
+        .contains(&table)
         {
             let breakdown_query = format!(
                 "SELECT e.name, COUNT(*) as count, MIN(t.ts) as min_ts, MAX(t.ts) as max_ts
@@ -247,8 +268,11 @@ async fn fetch_table_stats(pool: &PgPool) -> Result<serde_json::Value> {
          ) combined
          GROUP BY symbol
          ORDER BY total_count DESC
-         LIMIT 10"
-    ).fetch_all(pool).await {
+         LIMIT 10",
+    )
+    .fetch_all(pool)
+    .await
+    {
         for row in rows {
             let symbol: String = row.get("symbol");
             let total_count: i64 = row.get("total_count");
@@ -339,7 +363,13 @@ fn display_stats_table(stats: &serde_json::Value) -> Result<()> {
     println!();
 
     // Print per-exchange breakdown for key tables
-    let key_tables = vec!["tickers", "trades", "orderbooks", "liquidity_depth", "slippage"];
+    let key_tables = vec![
+        "tickers",
+        "trades",
+        "orderbooks",
+        "liquidity_depth",
+        "slippage",
+    ];
     for table_name in key_tables {
         if let Some(table_stats) = stats.get(table_name) {
             if let Some(breakdown) = table_stats.get("exchange_breakdown") {
@@ -359,7 +389,9 @@ fn display_stats_table(stats: &serde_json::Value) -> Result<()> {
 
                         for (exchange, exchange_stats) in breakdown_obj {
                             let count = exchange_stats["count"].as_i64().unwrap_or(0);
-                            let age = if let Some(age_minutes) = exchange_stats["data_age_minutes"].as_i64() {
+                            let age = if let Some(age_minutes) =
+                                exchange_stats["data_age_minutes"].as_i64()
+                            {
                                 if age_minutes < 60 {
                                     format!("{}m", age_minutes)
                                 } else if age_minutes < 1440 {

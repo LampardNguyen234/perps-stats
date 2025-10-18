@@ -72,8 +72,8 @@ pub struct PacificaTrade {
     pub event_type: String, // "fulfill_taker" or "fulfill_maker"
     pub price: String,
     pub amount: String,
-    pub side: String, // "open_long", "open_short", "close_long", "close_short"
-    pub cause: String, // "normal", "market_liquidation", etc.
+    pub side: String,    // "open_long", "open_short", "close_long", "close_short"
+    pub cause: String,   // "normal", "market_liquidation", etc.
     pub created_at: i64, // milliseconds
 }
 

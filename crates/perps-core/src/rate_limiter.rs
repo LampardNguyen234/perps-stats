@@ -130,9 +130,7 @@ impl RateLimiter {
     /// - 2400 requests per minute
     /// - 1200 requests per 5 minutes (safety margin)
     pub fn binance() -> Self {
-        Self::new(vec![
-            RateLimit::per_minute(2000),
-        ])
+        Self::new(vec![RateLimit::per_minute(2000)])
     }
 
     /// Create preset rate limiter for Bybit
@@ -149,20 +147,14 @@ impl RateLimiter {
     /// - 1200 requests per minute (20 per second)
     /// - 6000 requests per 5 minutes (safety margin)
     pub fn hyperliquid() -> Self {
-        Self::new(vec![
-            RateLimit::per_second(10),
-            RateLimit::per_minute(300),
-        ])
+        Self::new(vec![RateLimit::per_second(10), RateLimit::per_minute(300)])
     }
 
     /// Create preset rate limiter for KuCoin
     /// - 30 requests per second
     /// - 1800 requests per minute (safety margin)
     pub fn kucoin() -> Self {
-        Self::new(vec![
-            RateLimit::per_second(10),
-            RateLimit::per_minute(1000),
-        ])
+        Self::new(vec![RateLimit::per_second(10), RateLimit::per_minute(1000)])
     }
 
     /// Create preset rate limiter for Lighter
@@ -170,40 +162,28 @@ impl RateLimiter {
     /// - 10 requests per second
     /// - 600 requests per minute
     pub fn lighter() -> Self {
-        Self::new(vec![
-            RateLimit::per_second(10),
-            RateLimit::per_minute(50),
-        ])
+        Self::new(vec![RateLimit::per_second(10), RateLimit::per_minute(50)])
     }
 
     /// Create preset rate limiter for Paradex
     /// - 10 requests per second per IP
     /// - 600 requests per minute (safety margin)
     pub fn paradex() -> Self {
-        Self::new(vec![
-            RateLimit::per_second(10),
-            RateLimit::per_minute(1000),
-        ])
+        Self::new(vec![RateLimit::per_second(10), RateLimit::per_minute(1000)])
     }
 
     /// Create preset rate limiter for Aster DEX
     /// - 2400 request weight per minute (40 per second)
     /// - 1200 orders per minute (safety margin)
     pub fn aster() -> Self {
-        Self::new(vec![
-            RateLimit::per_second(40),
-            RateLimit::per_minute(2400),
-        ])
+        Self::new(vec![RateLimit::per_second(40), RateLimit::per_minute(2400)])
     }
 
     /// Create preset rate limiter for Extended Exchange
     /// - 1000 requests per minute per IP (~16.67 per second)
     /// - Using conservative 16 requests per second to stay under limit
     pub fn extended() -> Self {
-        Self::new(vec![
-            RateLimit::per_second(16),
-            RateLimit::per_minute(1000),
-        ])
+        Self::new(vec![RateLimit::per_second(16), RateLimit::per_minute(1000)])
     }
 
     /// Create preset rate limiter for Pacifica
@@ -211,10 +191,7 @@ impl RateLimiter {
     /// - 20 requests per second
     /// - 1200 requests per minute
     pub fn pacifica() -> Self {
-        Self::new(vec![
-            RateLimit::per_second(20),
-            RateLimit::per_minute(1200),
-        ])
+        Self::new(vec![RateLimit::per_second(20), RateLimit::per_minute(1200)])
     }
 
     /// Create a disabled rate limiter (no limits)

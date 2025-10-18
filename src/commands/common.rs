@@ -1,7 +1,7 @@
 use anyhow::Result;
 use perps_aggregator::IAggregator;
-use perps_core::IPerps;
 use perps_core::types::LiquidityDepthStats;
+use perps_core::IPerps;
 use perps_database::{PgPool, PostgresRepository};
 use std::collections::HashMap;
 use std::future::Future;
@@ -32,11 +32,19 @@ pub async fn validate_symbols(client: &dyn IPerps, symbols: &[String]) -> Result
                 valid_symbols.push(symbol.clone());
             }
             Ok(false) => {
-                tracing::warn!("✗ Symbol {} is not supported on {} - skipping", symbol, client.get_name());
+                tracing::warn!(
+                    "✗ Symbol {} is not supported on {} - skipping",
+                    symbol,
+                    client.get_name()
+                );
                 invalid_symbols.push(symbol.clone());
             }
             Err(e) => {
-                tracing::error!("Failed to check if symbol {} is supported: {} - skipping", symbol, e);
+                tracing::error!(
+                    "Failed to check if symbol {} is supported: {} - skipping",
+                    symbol,
+                    e
+                );
                 invalid_symbols.push(symbol.clone());
             }
         }
@@ -88,7 +96,11 @@ pub async fn determine_output_config(
             anyhow::bail!("Periodic fetching (--interval) without explicit format requires --database-url or DATABASE_URL environment variable");
         }
     } else if format_lower == "csv" || format_lower == "excel" {
-        let output_file = output.ok_or_else(|| anyhow::anyhow!("Periodic fetching (--interval) with --format csv/excel requires --output <file>"))?;
+        let output_file = output.ok_or_else(|| {
+            anyhow::anyhow!(
+                "Periodic fetching (--interval) with --format csv/excel requires --output <file>"
+            )
+        })?;
         if let Some(ref dir) = output_dir {
             std::fs::create_dir_all(dir)?;
         }
@@ -105,10 +117,18 @@ pub async fn determine_output_config(
 /// Format output description for logging
 pub fn format_output_description(config: &OutputConfig) -> String {
     match config {
-        OutputConfig::File { output_file, output_dir, format } => {
-            format!("format: {}, output: {}{}",
+        OutputConfig::File {
+            output_file,
+            output_dir,
+            format,
+        } => {
+            format!(
+                "format: {}, output: {}{}",
                 format,
-                output_dir.as_ref().map(|d| format!("{}/", d)).unwrap_or_default(),
+                output_dir
+                    .as_ref()
+                    .map(|d| format!("{}/", d))
+                    .unwrap_or_default(),
                 output_file
             )
         }

@@ -39,7 +39,7 @@ pub struct HyperliquidWsTrade {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct HyperliquidWsBook {
     pub coin: String,
-    pub time: i64, // Milliseconds timestamp
+    pub time: i64,                                // Milliseconds timestamp
     pub levels: Vec<Vec<HyperliquidWsBookLevel>>, // [bids, asks]
 }
 

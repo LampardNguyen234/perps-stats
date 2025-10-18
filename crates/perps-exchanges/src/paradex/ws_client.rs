@@ -29,7 +29,10 @@ impl ParadexWsClient {
     async fn connect(&self) -> Result<WebSocketStream<MaybeTlsStream<TcpStream>>> {
         tracing::info!("Connecting to Paradex WebSocket: {}", self.base_url);
         let (ws_stream, response) = connect_async(&self.base_url).await?;
-        tracing::info!("Connected to Paradex WebSocket (status: {:?})", response.status());
+        tracing::info!(
+            "Connected to Paradex WebSocket (status: {:?})",
+            response.status()
+        );
         Ok(ws_stream)
     }
 
@@ -173,8 +176,12 @@ impl IPerpsStream for ParadexWsClient {
 
         // Subscribe to market summary for each symbol
         for symbol in &symbols {
-            self.subscribe(&mut ws_stream, "markets_summary".to_string(), Some(symbol.clone()))
-                .await?;
+            self.subscribe(
+                &mut ws_stream,
+                "markets_summary".to_string(),
+                Some(symbol.clone()),
+            )
+            .await?;
         }
 
         let client = self.clone();
@@ -278,8 +285,12 @@ impl IPerpsStream for ParadexWsClient {
 
         // Subscribe to order book for each symbol
         for symbol in &symbols {
-            self.subscribe(&mut ws_stream, "order_book".to_string(), Some(symbol.clone()))
-                .await?;
+            self.subscribe(
+                &mut ws_stream,
+                "order_book".to_string(),
+                Some(symbol.clone()),
+            )
+            .await?;
         }
 
         let client = self.clone();

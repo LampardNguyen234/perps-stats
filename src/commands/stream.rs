@@ -41,12 +41,18 @@ pub struct StreamArgs {
 }
 
 pub async fn execute(args: StreamArgs) -> Result<()> {
-    tracing::info!("Starting real-time streaming for exchange: {}", args.exchange);
+    tracing::info!(
+        "Starting real-time streaming for exchange: {}",
+        args.exchange
+    );
     tracing::info!("Symbols: {:?}", args.symbols);
     tracing::info!("Data types: {:?}", args.data_types);
 
     // Validate exchange
-    if !matches!(args.exchange.as_str(), "aster" | "binance" | "hyperliquid" | "bybit" | "kucoin" | "lighter" | "paradex") {
+    if !matches!(
+        args.exchange.as_str(),
+        "aster" | "binance" | "hyperliquid" | "bybit" | "kucoin" | "lighter" | "paradex"
+    ) {
         anyhow::bail!("Only 'aster', 'binance', 'hyperliquid', 'bybit', 'kucoin', 'lighter', and 'paradex' exchanges are currently supported for streaming");
     }
 
@@ -71,11 +77,16 @@ pub async fn execute(args: StreamArgs) -> Result<()> {
 
     // Validate klines interval if klines are requested
     if data_types.contains(&StreamDataType::Kline) && args.klines_interval.is_none() {
-        anyhow::bail!("--klines-interval is required when streaming klines. Example: --klines-interval 1h");
+        anyhow::bail!(
+            "--klines-interval is required when streaming klines. Example: --klines-interval 1h"
+        );
     }
 
     // Validate data types for exchange
-    if args.exchange == "hyperliquid" && data_types.contains(&StreamDataType::FundingRate) && data_types.len() == 1 {
+    if args.exchange == "hyperliquid"
+        && data_types.contains(&StreamDataType::FundingRate)
+        && data_types.len() == 1
+    {
         anyhow::bail!("Hyperliquid does not support funding rate streaming via WebSocket. Please use other data types: ticker, trade, orderbook");
     }
 
@@ -83,8 +94,13 @@ pub async fn execute(args: StreamArgs) -> Result<()> {
         anyhow::bail!("KuCoin orderbook streaming is not yet implemented (requires incremental update handling). Please use ticker or trade data types");
     }
 
-    if (args.exchange == "kucoin" || args.exchange == "bybit" || args.exchange == "lighter") && data_types.contains(&StreamDataType::FundingRate) {
-        anyhow::bail!("{} does not support funding rate streaming via WebSocket. Please use other data types", args.exchange);
+    if (args.exchange == "kucoin" || args.exchange == "bybit" || args.exchange == "lighter")
+        && data_types.contains(&StreamDataType::FundingRate)
+    {
+        anyhow::bail!(
+            "{} does not support funding rate streaming via WebSocket. Please use other data types",
+            args.exchange
+        );
     }
 
     // Validate klines support per exchange
@@ -92,7 +108,10 @@ pub async fn execute(args: StreamArgs) -> Result<()> {
         match args.exchange.as_str() {
             "kucoin" => {
                 // KuCoin supports klines via WebSocket
-                tracing::info!("Streaming klines from KuCoin via WebSocket (interval: {})", args.klines_interval.as_ref().unwrap());
+                tracing::info!(
+                    "Streaming klines from KuCoin via WebSocket (interval: {})",
+                    args.klines_interval.as_ref().unwrap()
+                );
             }
             _ => {
                 anyhow::bail!("Klines streaming is currently only supported for KuCoin exchange. Other exchanges use REST API for klines. Use the 'start' command for REST API klines fetching.");
@@ -103,20 +122,21 @@ pub async fn execute(args: StreamArgs) -> Result<()> {
     // Note: Paradex supports funding rate streaming via WebSocket
 
     // Initialize database connection if URL provided
-    let repository: Option<Arc<Mutex<PostgresRepository>>> = if let Some(db_url) = &args.database_url {
-        tracing::info!("Connecting to database for storage");
-        let pool = PgPool::connect(db_url).await?;
-        Some(Arc::new(Mutex::new(PostgresRepository::new(pool))))
-    } else {
-        tracing::warn!("No database URL provided, data will not be persisted");
-        None
-    };
+    let repository: Option<Arc<Mutex<PostgresRepository>>> =
+        if let Some(db_url) = &args.database_url {
+            tracing::info!("Connecting to database for storage");
+            let pool = PgPool::connect(db_url).await?;
+            Some(Arc::new(Mutex::new(PostgresRepository::new(pool))))
+        } else {
+            tracing::warn!("No database URL provided, data will not be persisted");
+            None
+        };
 
     // Convert symbols to exchange format based on the exchange
     let parsed_symbols: Vec<String> = match args.exchange.as_str() {
         "aster" => {
             // For Aster WebSocket, uses Binance-compatible format (BTCUSDT, no hyphens)
-            let aster_client = perps_exchanges::aster::AsterClient::new();
+            let aster_client = perps_exchanges::aster::AsterClient::new_rest_only();
             args.symbols
                 .iter()
                 .map(|s| {
@@ -140,10 +160,7 @@ pub async fn execute(args: StreamArgs) -> Result<()> {
         }
         "hyperliquid" => {
             // For Hyperliquid, symbols are simple uppercase (BTC, ETH, etc.)
-            args.symbols
-                .iter()
-                .map(|s| s.to_uppercase())
-                .collect()
+            args.symbols.iter().map(|s| s.to_uppercase()).collect()
         }
         "bybit" => {
             // For Bybit, use BTCUSDT format
@@ -192,37 +209,38 @@ pub async fn execute(args: StreamArgs) -> Result<()> {
 
     // Start streaming based on exchange
     tracing::info!("Connecting to WebSocket stream...");
-    let mut stream: Box<dyn futures::Stream<Item = Result<StreamEvent>> + Unpin + Send> = match args.exchange.as_str() {
-        "aster" => {
-            let ws_client = perps_exchanges::aster::AsterWsClient::new();
-            Box::new(ws_client.stream_multi(config).await?)
-        }
-        "binance" => {
-            let ws_client = perps_exchanges::binance::BinanceWsClient::new();
-            Box::new(ws_client.stream_multi(config).await?)
-        }
-        "hyperliquid" => {
-            let ws_client = perps_exchanges::hyperliquid::HyperliquidWsClient::new();
-            Box::new(ws_client.stream_multi(config).await?)
-        }
-        "bybit" => {
-            let ws_client = perps_exchanges::bybit::BybitWsClient::new();
-            Box::new(ws_client.stream_multi(config).await?)
-        }
-        "kucoin" => {
-            let ws_client = perps_exchanges::kucoin::KuCoinWsClient::new();
-            Box::new(ws_client.stream_multi(config).await?)
-        }
-        "lighter" => {
-            let ws_client = perps_exchanges::lighter::LighterWsClient::new();
-            Box::new(ws_client.stream_multi(config).await?)
-        }
-        "paradex" => {
-            let ws_client = perps_exchanges::paradex::ParadexWsClient::new();
-            Box::new(ws_client.stream_multi(config).await?)
-        }
-        _ => anyhow::bail!("Unsupported exchange for streaming: {}", args.exchange),
-    };
+    let mut stream: Box<dyn futures::Stream<Item = Result<StreamEvent>> + Unpin + Send> =
+        match args.exchange.as_str() {
+            "aster" => {
+                let ws_client = perps_exchanges::aster::AsterWsClient::new();
+                Box::new(ws_client.stream_multi(config).await?)
+            }
+            "binance" => {
+                let ws_client = perps_exchanges::binance::BinanceWsClient::new();
+                Box::new(ws_client.stream_multi(config).await?)
+            }
+            "hyperliquid" => {
+                let ws_client = perps_exchanges::hyperliquid::HyperliquidWsClient::new();
+                Box::new(ws_client.stream_multi(config).await?)
+            }
+            "bybit" => {
+                let ws_client = perps_exchanges::bybit::BybitWsClient::new();
+                Box::new(ws_client.stream_multi(config).await?)
+            }
+            "kucoin" => {
+                let ws_client = perps_exchanges::kucoin::KuCoinWsClient::new();
+                Box::new(ws_client.stream_multi(config).await?)
+            }
+            "lighter" => {
+                let ws_client = perps_exchanges::lighter::LighterWsClient::new();
+                Box::new(ws_client.stream_multi(config).await?)
+            }
+            "paradex" => {
+                let ws_client = perps_exchanges::paradex::ParadexWsClient::new();
+                Box::new(ws_client.stream_multi(config).await?)
+            }
+            _ => anyhow::bail!("Unsupported exchange for streaming: {}", args.exchange),
+        };
 
     // Batch buffers
     let mut ticker_buffer = Vec::new();
@@ -374,36 +392,54 @@ pub async fn execute(args: StreamArgs) -> Result<()> {
         let repo = repo.lock().await;
 
         if !ticker_buffer.is_empty() {
-            if let Err(e) = repo.store_tickers_with_exchange(&args.exchange, &ticker_buffer).await {
+            if let Err(e) = repo
+                .store_tickers_with_exchange(&args.exchange, &ticker_buffer)
+                .await
+            {
                 tracing::error!("Failed to flush ticker buffer: {}", e);
             }
         }
 
         if !trade_buffer.is_empty() {
-            if let Err(e) = repo.store_trades_with_exchange(&args.exchange, &trade_buffer).await {
+            if let Err(e) = repo
+                .store_trades_with_exchange(&args.exchange, &trade_buffer)
+                .await
+            {
                 tracing::error!("Failed to flush trade buffer: {}", e);
             }
         }
 
         if !orderbook_buffer.is_empty() {
-            if let Err(e) = repo.store_orderbooks_with_exchange(&args.exchange, &orderbook_buffer).await {
+            if let Err(e) = repo
+                .store_orderbooks_with_exchange(&args.exchange, &orderbook_buffer)
+                .await
+            {
                 tracing::error!("Failed to flush orderbook buffer: {}", e);
             }
         }
 
         if !funding_rate_buffer.is_empty() {
-            if let Err(e) = repo.store_funding_rates_with_exchange(&args.exchange, &funding_rate_buffer).await {
+            if let Err(e) = repo
+                .store_funding_rates_with_exchange(&args.exchange, &funding_rate_buffer)
+                .await
+            {
                 tracing::error!("Failed to flush funding rate buffer: {}", e);
             }
         }
 
         if !kline_buffer.is_empty() {
-            if let Err(e) = repo.store_klines_with_exchange(&args.exchange, &kline_buffer).await {
+            if let Err(e) = repo
+                .store_klines_with_exchange(&args.exchange, &kline_buffer)
+                .await
+            {
                 tracing::error!("Failed to flush kline buffer: {}", e);
             }
         }
     }
 
-    tracing::info!("Streaming completed. Total events processed: {}", event_count);
+    tracing::info!(
+        "Streaming completed. Total events processed: {}",
+        event_count
+    );
     Ok(())
 }

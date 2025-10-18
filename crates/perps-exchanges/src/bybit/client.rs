@@ -4,7 +4,7 @@ use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use chrono::{TimeZone, Utc};
 use perps_core::types::*;
-use perps_core::{IPerps, RateLimiter, RetryConfig, execute_with_retry};
+use perps_core::{execute_with_retry, IPerps, RateLimiter, RetryConfig};
 use rust_decimal::Decimal;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -51,31 +51,34 @@ impl BybitClient {
             let http = http.clone();
             let rate_limiter = rate_limiter.clone();
             async move {
-                rate_limiter.execute(|| {
-                    let url = url.clone();
-                    let http = http.clone();
-                    async move {
-                        let response = http.get(&url).send().await?;
-                        if !response.status().is_success() {
-                            return Err(anyhow!(
-                                "GET request to {} failed with status: {}",
-                                url,
-                                response.status()
-                            ));
+                rate_limiter
+                    .execute(|| {
+                        let url = url.clone();
+                        let http = http.clone();
+                        async move {
+                            let response = http.get(&url).send().await?;
+                            if !response.status().is_success() {
+                                return Err(anyhow!(
+                                    "GET request to {} failed with status: {}",
+                                    url,
+                                    response.status()
+                                ));
+                            }
+                            let wrapper: BybitResponse<T> = response.json().await?;
+                            if wrapper.ret_code != 0 {
+                                return Err(anyhow!(
+                                    "Bybit API error: code {} - {}",
+                                    wrapper.ret_code,
+                                    wrapper.ret_msg
+                                ));
+                            }
+                            Ok(wrapper.result)
                         }
-                        let wrapper: BybitResponse<T> = response.json().await?;
-                        if wrapper.ret_code != 0 {
-                            return Err(anyhow!(
-                                "Bybit API error: code {} - {}",
-                                wrapper.ret_code,
-                                wrapper.ret_msg
-                            ));
-                        }
-                        Ok(wrapper.result)
-                    }
-                }).await
+                    })
+                    .await
             }
-        }).await
+        })
+        .await
     }
 }
 
@@ -106,8 +109,10 @@ impl IPerps for BybitClient {
             .into_iter()
             .filter(|i| i.status == "Trading")
             .map(|i| {
-                let tick_size = Decimal::from_str(&i.price_filter.tick_size).unwrap_or(Decimal::new(1, 2));
-                let qty_step = Decimal::from_str(&i.lot_size_filter.qty_step).unwrap_or(Decimal::new(1, 3));
+                let tick_size =
+                    Decimal::from_str(&i.price_filter.tick_size).unwrap_or(Decimal::new(1, 2));
+                let qty_step =
+                    Decimal::from_str(&i.lot_size_filter.qty_step).unwrap_or(Decimal::new(1, 3));
 
                 let price_scale = if tick_size > Decimal::ZERO {
                     tick_size.scale() as i32
@@ -125,11 +130,15 @@ impl IPerps for BybitClient {
                     contract: i.symbol,
                     price_scale,
                     quantity_scale,
-                    min_order_qty: Decimal::from_str(&i.lot_size_filter.min_order_qty).unwrap_or_default(),
+                    min_order_qty: Decimal::from_str(&i.lot_size_filter.min_order_qty)
+                        .unwrap_or_default(),
                     contract_size: Decimal::ONE,
-                    max_order_qty: Decimal::from_str(&i.lot_size_filter.max_order_qty).unwrap_or_default(),
-                    min_order_value: Decimal::from_str(&i.lot_size_filter.min_notional_value).unwrap_or_default(),
-                    max_leverage: Decimal::from_str(&i.leverage_filter.max_leverage).unwrap_or_default(),
+                    max_order_qty: Decimal::from_str(&i.lot_size_filter.max_order_qty)
+                        .unwrap_or_default(),
+                    min_order_value: Decimal::from_str(&i.lot_size_filter.min_notional_value)
+                        .unwrap_or_default(),
+                    max_leverage: Decimal::from_str(&i.leverage_filter.max_leverage)
+                        .unwrap_or_default(),
                 }
             })
             .collect();
@@ -138,7 +147,10 @@ impl IPerps for BybitClient {
 
     async fn get_market(&self, symbol: &str) -> Result<Market> {
         let result: InstrumentsResult = self
-            .get(&format!("/v5/market/instruments-info?category=linear&symbol={}", symbol))
+            .get(&format!(
+                "/v5/market/instruments-info?category=linear&symbol={}",
+                symbol
+            ))
             .await?;
 
         let instrument = result
@@ -147,8 +159,10 @@ impl IPerps for BybitClient {
             .find(|i| i.symbol == symbol)
             .ok_or_else(|| anyhow!("Market {} not found", symbol))?;
 
-        let tick_size = Decimal::from_str(&instrument.price_filter.tick_size).unwrap_or(Decimal::new(1, 2));
-        let qty_step = Decimal::from_str(&instrument.lot_size_filter.qty_step).unwrap_or(Decimal::new(1, 3));
+        let tick_size =
+            Decimal::from_str(&instrument.price_filter.tick_size).unwrap_or(Decimal::new(1, 2));
+        let qty_step =
+            Decimal::from_str(&instrument.lot_size_filter.qty_step).unwrap_or(Decimal::new(1, 3));
 
         let price_scale = if tick_size > Decimal::ZERO {
             tick_size.scale() as i32
@@ -166,11 +180,15 @@ impl IPerps for BybitClient {
             contract: instrument.symbol,
             price_scale,
             quantity_scale,
-            min_order_qty: Decimal::from_str(&instrument.lot_size_filter.min_order_qty).unwrap_or_default(),
+            min_order_qty: Decimal::from_str(&instrument.lot_size_filter.min_order_qty)
+                .unwrap_or_default(),
             contract_size: Decimal::ONE,
-            max_order_qty: Decimal::from_str(&instrument.lot_size_filter.max_order_qty).unwrap_or_default(),
-            min_order_value: Decimal::from_str(&instrument.lot_size_filter.min_notional_value).unwrap_or_default(),
-            max_leverage: Decimal::from_str(&instrument.leverage_filter.max_leverage).unwrap_or_default(),
+            max_order_qty: Decimal::from_str(&instrument.lot_size_filter.max_order_qty)
+                .unwrap_or_default(),
+            min_order_value: Decimal::from_str(&instrument.lot_size_filter.min_notional_value)
+                .unwrap_or_default(),
+            max_leverage: Decimal::from_str(&instrument.leverage_filter.max_leverage)
+                .unwrap_or_default(),
         })
     }
 
@@ -234,9 +252,7 @@ impl IPerps for BybitClient {
                     } else {
                         OrderSide::Sell
                     },
-                    timestamp: Utc
-                        .timestamp_millis_opt(t.time.parse::<i64>()?)
-                        .unwrap(),
+                    timestamp: Utc.timestamp_millis_opt(t.time.parse::<i64>()?).unwrap(),
                 })
             })
             .collect::<Result<Vec<_>>>()?;
@@ -246,7 +262,10 @@ impl IPerps for BybitClient {
     async fn get_funding_rate(&self, symbol: &str) -> Result<FundingRate> {
         // Get current funding rate from ticker
         let result: TickersResult = self
-            .get(&format!("/v5/market/tickers?category=linear&symbol={}", symbol))
+            .get(&format!(
+                "/v5/market/tickers?category=linear&symbol={}",
+                symbol
+            ))
             .await?;
 
         let ticker = result
@@ -260,7 +279,10 @@ impl IPerps for BybitClient {
 
         // Get instrument info for funding interval
         let instrument_result: InstrumentsResult = self
-            .get(&format!("/v5/market/instruments-info?category=linear&symbol={}", symbol))
+            .get(&format!(
+                "/v5/market/instruments-info?category=linear&symbol={}",
+                symbol
+            ))
             .await?;
         let instrument = instrument_result
             .list
@@ -322,7 +344,9 @@ impl IPerps for BybitClient {
                     symbol: symbol.to_string(),
                     interval: interval.to_string(),
                     open_time: Utc.timestamp_millis_opt(k[0].parse::<i64>()?).unwrap(),
-                    close_time: Utc.timestamp_millis_opt(k[0].parse::<i64>()? + 60000).unwrap(),
+                    close_time: Utc
+                        .timestamp_millis_opt(k[0].parse::<i64>()? + 60000)
+                        .unwrap(),
                     open: Decimal::from_str(&k[1])?,
                     high: Decimal::from_str(&k[2])?,
                     low: Decimal::from_str(&k[3])?,
@@ -342,7 +366,10 @@ impl IPerps for BybitClient {
 
     async fn get_ticker(&self, symbol: &str) -> Result<Ticker> {
         let result: TickersResult = self
-            .get(&format!("/v5/market/tickers?category=linear&symbol={}", symbol))
+            .get(&format!(
+                "/v5/market/tickers?category=linear&symbol={}",
+                symbol
+            ))
             .await?;
 
         let ticker = result
@@ -481,7 +508,10 @@ impl IPerps for BybitClient {
     async fn get_open_interest(&self, symbol: &str) -> Result<OpenInterest> {
         // Get from ticker which includes open interest
         let result: TickersResult = self
-            .get(&format!("/v5/market/tickers?category=linear&symbol={}", symbol))
+            .get(&format!(
+                "/v5/market/tickers?category=linear&symbol={}",
+                symbol
+            ))
             .await?;
 
         let ticker = result

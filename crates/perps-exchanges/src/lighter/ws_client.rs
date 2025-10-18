@@ -5,8 +5,8 @@ use chrono::{TimeZone, Utc};
 use futures::{SinkExt, StreamExt};
 use perps_core::streaming::*;
 use perps_core::types::*;
-use rust_decimal::Decimal;
 use rust_decimal::prelude::FromPrimitive;
+use rust_decimal::Decimal;
 use std::collections::HashMap;
 use std::str::FromStr;
 use tokio::net::TcpStream;
@@ -34,7 +34,10 @@ impl LighterWsClient {
     async fn connect(&self) -> Result<WebSocketStream<MaybeTlsStream<TcpStream>>> {
         tracing::info!("Connecting to Lighter WebSocket: {}", self.base_url);
         let (ws_stream, response) = connect_async(&self.base_url).await?;
-        tracing::info!("Connected to Lighter WebSocket (status: {:?})", response.status());
+        tracing::info!(
+            "Connected to Lighter WebSocket (status: {:?})",
+            response.status()
+        );
         Ok(ws_stream)
     }
 
@@ -86,14 +89,14 @@ impl LighterWsClient {
     fn convert_ticker(&self, stats: &LighterMarketStatsData) -> Result<Ticker> {
         let last_price = Decimal::from_f64(stats.last_trade_price)
             .ok_or_else(|| anyhow!("Invalid last_trade_price"))?;
-        let mark_price = Decimal::from_f64(stats.mark_price)
-            .ok_or_else(|| anyhow!("Invalid mark_price"))?;
-        let index_price = Decimal::from_f64(stats.index_price)
-            .ok_or_else(|| anyhow!("Invalid index_price"))?;
+        let mark_price =
+            Decimal::from_f64(stats.mark_price).ok_or_else(|| anyhow!("Invalid mark_price"))?;
+        let index_price =
+            Decimal::from_f64(stats.index_price).ok_or_else(|| anyhow!("Invalid index_price"))?;
 
         // Calculate price change from percentage
-        let price_change_pct = Decimal::from_f64(stats.daily_price_change)
-            .unwrap_or(Decimal::ZERO) / Decimal::from(100);
+        let price_change_pct = Decimal::from_f64(stats.daily_price_change).unwrap_or(Decimal::ZERO)
+            / Decimal::from(100);
         let price_change_24h = price_change_pct * last_price;
 
         Ok(Ticker {

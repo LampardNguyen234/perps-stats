@@ -2,7 +2,7 @@ use anyhow::Result;
 use chrono::Utc;
 use csv::Writer;
 use perps_aggregator::{Aggregator, IAggregator};
-use perps_core::{IPerps, LiquidityDepthStats, Slippage};
+use perps_core::{IPerps, LiquidityDepthStats, Orderbook, Slippage};
 use perps_database::Repository;
 use perps_exchanges::{all_exchanges, get_exchange};
 use prettytable::{format, Cell, Row, Table};
@@ -12,13 +12,17 @@ use std::collections::HashMap;
 use std::fs::File;
 use tokio::time::{sleep, Duration};
 
-use super::common::{determine_output_config, format_output_description, validate_symbols, OutputConfig};
+use super::common::{
+    determine_output_config, format_output_description, validate_symbols, OutputConfig,
+};
 
-/// Combined data structure for liquidity depth and slippage
+/// Combined data structure for liquidity depth, slippage, and orderbook
 #[derive(Clone, Debug, serde::Serialize)]
 struct LiquidityData {
     liquidity: LiquidityDepthStats,
     slippage: Vec<Slippage>,
+    #[serde(skip_serializing)]
+    orderbook: Orderbook,
 }
 
 /// Arguments for the liquidity command
@@ -47,19 +51,39 @@ pub async fn execute(args: LiquidityArgs) -> Result<()> {
     let aggregator = Aggregator::new();
     let requested_symbols: Vec<String> = symbols.split(',').map(|s| s.trim().to_string()).collect();
 
-    if let Some(exchange_name) = exchange {
-        execute_single_exchange(
-            &aggregator,
-            exchange_name,
-            requested_symbols,
-            format,
-            output,
-            output_dir,
-            interval,
-            max_snapshots,
-            database_url,
-        )
-        .await
+    if let Some(exchange_str) = exchange {
+        // Check if comma-separated exchanges
+        if exchange_str.contains(',') {
+            let exchange_names: Vec<String> = exchange_str
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .collect();
+            execute_selected_exchanges(
+                &aggregator,
+                exchange_names,
+                requested_symbols,
+                format,
+                output,
+                output_dir,
+                interval,
+                max_snapshots,
+                database_url,
+            )
+            .await
+        } else {
+            execute_single_exchange(
+                &aggregator,
+                exchange_str,
+                requested_symbols,
+                format,
+                output,
+                output_dir,
+                interval,
+                max_snapshots,
+                database_url,
+            )
+            .await
+        }
     } else {
         execute_all_exchanges(
             &aggregator,
@@ -86,26 +110,37 @@ async fn execute_all_exchanges(
     database_url: Option<String>,
 ) -> Result<()> {
     let exchanges = all_exchanges().await;
-    let exchange_clients: Vec<Box<dyn IPerps + Send + Sync>> = exchanges.into_iter().map(|(_, client)| client).collect();
+    let exchange_names: Vec<String> = exchanges.iter().map(|(name, _)| name.clone()).collect();
+    let exchange_clients: Vec<Box<dyn IPerps + Send + Sync>> =
+        exchanges.into_iter().map(|(_, client)| client).collect();
 
     if let Some(interval_secs) = interval {
-        let output_config = determine_output_config(&format, output, &output_dir, database_url).await?;
+        let output_config =
+            determine_output_config(&format, output, &output_dir, database_url).await?;
 
         run_periodic_fetcher_all(
             aggregator,
             &exchange_clients,
+            &exchange_names,
             &symbols,
             interval_secs,
             max_snapshots,
             output_config,
-        ).await
-
+        )
+        .await
     } else {
         let mut all_stats = Vec::new();
         for symbol in symbols {
-            match aggregator.calculate_liquidity_depth_all(&exchange_clients, &symbol).await {
+            match aggregator
+                .calculate_liquidity_depth_all(&exchange_clients, &symbol)
+                .await
+            {
                 Ok(stats) => all_stats.extend(stats),
-                Err(e) => tracing::error!("Failed to calculate aggregated liquidity for {}: {}", symbol, e),
+                Err(e) => tracing::error!(
+                    "Failed to calculate aggregated liquidity for {}: {}",
+                    symbol,
+                    e
+                ),
             }
         }
 
@@ -113,11 +148,13 @@ async fn execute_all_exchanges(
             "json" => println!("{}", serde_json::to_string_pretty(&all_stats)?),
             "table" => display_aggregated_table(&all_stats)?,
             "csv" => {
-                let output_file = output.ok_or_else(|| anyhow::anyhow!("CSV output requires --output <file>"))?;
+                let output_file =
+                    output.ok_or_else(|| anyhow::anyhow!("CSV output requires --output <file>"))?;
                 write_to_csv_all(&all_stats, &output_file, &output_dir)?;
             }
             "excel" => {
-                let output_file = output.ok_or_else(|| anyhow::anyhow!("Excel output requires --output <file>"))?;
+                let output_file = output
+                    .ok_or_else(|| anyhow::anyhow!("Excel output requires --output <file>"))?;
                 write_to_excel_all(&all_stats, &output_file, &output_dir)?;
             }
             _ => display_aggregated_table(&all_stats)?,
@@ -126,6 +163,81 @@ async fn execute_all_exchanges(
     }
 }
 
+async fn execute_selected_exchanges(
+    aggregator: &dyn IAggregator,
+    exchange_names: Vec<String>,
+    symbols: Vec<String>,
+    format: String,
+    output: Option<String>,
+    output_dir: Option<String>,
+    interval: Option<u64>,
+    max_snapshots: usize,
+    database_url: Option<String>,
+) -> Result<()> {
+    // Initialize clients for selected exchanges
+    let mut exchange_clients: Vec<Box<dyn IPerps + Send + Sync>> = Vec::new();
+    for exchange_name in &exchange_names {
+        match get_exchange(exchange_name).await {
+            Ok(client) => exchange_clients.push(client),
+            Err(e) => {
+                tracing::error!("Failed to initialize exchange {}: {}", exchange_name, e);
+                anyhow::bail!("Failed to initialize exchange {}: {}", exchange_name, e);
+            }
+        }
+    }
+
+    if exchange_clients.is_empty() {
+        anyhow::bail!("No valid exchanges found");
+    }
+
+    if let Some(interval_secs) = interval {
+        let output_config =
+            determine_output_config(&format, output, &output_dir, database_url).await?;
+
+        run_periodic_fetcher_selected(
+            aggregator,
+            &exchange_clients,
+            &exchange_names,
+            &symbols,
+            interval_secs,
+            max_snapshots,
+            output_config,
+        )
+        .await
+    } else {
+        let mut all_stats = Vec::new();
+        for symbol in symbols {
+            match aggregator
+                .calculate_liquidity_depth_all(&exchange_clients, &symbol)
+                .await
+            {
+                Ok(stats) => all_stats.extend(stats),
+                Err(e) => tracing::error!(
+                    "Failed to calculate aggregated liquidity for {}: {}",
+                    symbol,
+                    e
+                ),
+            }
+        }
+
+        match format.as_str() {
+            "json" => println!("{}", serde_json::to_string_pretty(&all_stats)?),
+            "table" => display_aggregated_table(&all_stats)?,
+            "csv" => {
+                let output_file =
+                    output.ok_or_else(|| anyhow::anyhow!("CSV output requires --output <file>"))?;
+                write_to_csv_all(&all_stats, &output_file, &output_dir)?;
+            }
+            "excel" => {
+                let output_file = output
+                    .ok_or_else(|| anyhow::anyhow!("Excel output requires --output <file>"))?;
+                write_to_excel_all(&all_stats, &output_file, &output_dir)?;
+            }
+            _ => display_aggregated_table(&all_stats)?,
+        }
+        Ok(())
+    }
+}
 
 async fn execute_single_exchange(
     aggregator: &dyn IAggregator,
@@ -146,10 +258,14 @@ async fn execute_single_exchange(
         anyhow::bail!("No valid symbols found for exchange {}", exchange);
     }
 
-    let symbol_map: HashMap<String, String> = parsed_symbols.into_iter().zip(symbols.into_iter()).collect();
+    let symbol_map: HashMap<String, String> = parsed_symbols
+        .into_iter()
+        .zip(symbols.into_iter())
+        .collect();
 
     if let Some(interval_secs) = interval {
-        let output_config = determine_output_config(&format, output, &output_dir, database_url).await?;
+        let output_config =
+            determine_output_config(&format, output, &output_dir, database_url).await?;
 
         run_periodic_fetcher(
             client.as_ref(),
@@ -160,11 +276,21 @@ async fn execute_single_exchange(
             interval_secs,
             max_snapshots,
             output_config,
-        ).await
+        )
+        .await
     } else {
         for symbol in &valid_symbols {
             let global_symbol = symbol_map.get(symbol).unwrap();
-            match fetch_and_display_liquidity_data(client.as_ref(), aggregator, symbol, global_symbol, &format, &exchange).await {
+            match fetch_and_display_liquidity_data(
+                client.as_ref(),
+                aggregator,
+                symbol,
+                global_symbol,
+                &format,
+                &exchange,
+            )
+            .await
+            {
                 Ok(_) => (),
                 Err(e) => tracing::error!("Failed to fetch liquidity for {}: {}", symbol, e),
             }
@@ -176,6 +302,7 @@ async fn execute_single_exchange(
 async fn run_periodic_fetcher_all(
     aggregator: &dyn IAggregator,
     clients: &[Box<dyn IPerps + Send + Sync>],
+    exchange_names: &[String],
     symbols: &[String],
     interval_secs: u64,
     max_snapshots: usize,
@@ -190,41 +317,129 @@ async fn run_periodic_fetcher_all(
         output_desc
     );
 
-    let mut all_snapshots: Vec<LiquidityDepthStats> = Vec::new();
     let mut snapshot_count = 0;
     let unlimited = max_snapshots == 0;
 
+    // For file output, we need to accumulate data by symbol
+    let mut data_by_symbol: HashMap<String, Vec<LiquidityData>> = HashMap::new();
+
     loop {
         let now = Utc::now();
-        tracing::info!("[Snapshot #{}] Fetching liquidity at {}", snapshot_count + 1, now.format("%Y-%m-%d %H:%M:%S UTC"));
+        tracing::info!(
+            "[Snapshot #{}] Fetching liquidity and slippage at {}",
+            snapshot_count + 1,
+            now.format("%Y-%m-%d %H:%M:%S UTC")
+        );
 
-        let mut current_snapshot = Vec::new();
-        for symbol in symbols {
-            match aggregator.calculate_liquidity_depth_all(clients, symbol).await {
-                Ok(stats) => current_snapshot.extend(stats),
-                Err(e) => tracing::error!("Failed to calculate aggregated liquidity for {}: {}", symbol, e),
+        let mut current_liquidity_snapshot = Vec::new();
+        let mut slippage_by_exchange: HashMap<String, Vec<Slippage>> = HashMap::new();
+        let mut orderbooks_by_exchange: HashMap<String, Vec<Orderbook>> = HashMap::new();
+
+        // Fetch data for each exchange-symbol combination
+        for (client, exchange_name) in clients.iter().zip(exchange_names.iter()) {
+            for symbol in symbols {
+                let parsed_symbol = client.parse_symbol(symbol);
+                match fetch_liquidity_data(
+                    client.as_ref(),
+                    aggregator,
+                    &parsed_symbol,
+                    symbol,
+                    exchange_name,
+                )
+                .await
+                {
+                    Ok(data) => {
+                        tracing::debug!("✓ {}/{} - Mid: ${:.2}, Bid(10bps): ${:.2}, Ask(10bps): ${:.2}, Slippage(10K): {:.2} bps / {:.2} bps",
+                            exchange_name,
+                            data.liquidity.symbol,
+                            data.liquidity.mid_price,
+                            data.liquidity.bid_10bps,
+                            data.liquidity.ask_10bps,
+                            data.slippage.get(1).and_then(|s| s.buy_slippage_bps).unwrap_or_default(),
+                            data.slippage.get(1).and_then(|s| s.sell_slippage_bps).unwrap_or_default()
+                        );
+
+                        // For file output
+                        data_by_symbol
+                            .entry(symbol.clone())
+                            .or_default()
+                            .push(data.clone());
+
+                        // For database output - group by exchange
+                        current_liquidity_snapshot.push(data.liquidity.clone());
+                        slippage_by_exchange
+                            .entry(exchange_name.clone())
+                            .or_default()
+                            .extend(data.slippage.clone());
+                        orderbooks_by_exchange
+                            .entry(exchange_name.clone())
+                            .or_default()
+                            .push(data.orderbook.clone());
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            "Failed to fetch liquidity for {}/{}: {}",
+                            exchange_name,
+                            symbol,
+                            e
+                        );
+                    }
+                }
             }
         }
 
         snapshot_count += 1;
 
         match &config {
-            OutputConfig::File { format, output_file, output_dir } => {
-                all_snapshots.extend(current_snapshot);
+            OutputConfig::File {
+                format,
+                output_file,
+                output_dir,
+            } => {
                 match format.as_str() {
-                    "csv" => write_to_csv_all(&all_snapshots, output_file, output_dir)?,
-                    "excel" => write_to_excel_all(&all_snapshots, output_file, output_dir)?,
+                    "csv" => write_to_csv(&data_by_symbol, output_file, output_dir)?,
+                    "excel" => write_to_excel(&data_by_symbol, output_file, output_dir)?,
                     _ => unreachable!("Format already validated"),
                 }
-                tracing::info!("✓ Written snapshot #{} to {}{}",
+                tracing::info!(
+                    "✓ Written snapshot #{} to {}{}",
                     snapshot_count,
-                    output_dir.as_ref().map(|d| format!("{}/", d)).unwrap_or_default(),
+                    output_dir
+                        .as_ref()
+                        .map(|d| format!("{}/", d))
+                        .unwrap_or_default(),
                     output_file
                 );
             }
             OutputConfig::Database { repository } => {
-                repository.store_liquidity_depth(&current_snapshot).await?;
-                tracing::info!("✓ Stored snapshot #{} to database ({} records)", snapshot_count, current_snapshot.len());
+                // Store liquidity depth
+                repository
+                    .store_liquidity_depth(&current_liquidity_snapshot)
+                    .await?;
+
+                // Store slippage for each exchange
+                for (exchange_name, slippages) in &slippage_by_exchange {
+                    if !slippages.is_empty() {
+                        repository
+                            .store_slippage_with_exchange(exchange_name, slippages)
+                            .await?;
+                    }
+                }
+
+                // Store orderbooks for each exchange
+                for (exchange_name, orderbooks) in &orderbooks_by_exchange {
+                    if !orderbooks.is_empty() {
+                        repository
+                            .store_orderbooks_with_exchange(exchange_name, orderbooks)
+                            .await?;
+                    }
+                }
+
+                let total_slippage: usize = slippage_by_exchange.values().map(|v| v.len()).sum();
+                let total_orderbooks: usize =
+                    orderbooks_by_exchange.values().map(|v| v.len()).sum();
+                tracing::info!("✓ Stored snapshot #{} to database ({} liquidity + {} slippage + {} orderbook records)",
+                    snapshot_count, current_liquidity_snapshot.len(), total_slippage, total_orderbooks);
             }
         }
 
@@ -237,10 +452,174 @@ async fn run_periodic_fetcher_all(
         sleep(Duration::from_secs(interval_secs)).await;
     }
 
-    tracing::info!("✓ Periodic fetcher completed. Total snapshots: {}", snapshot_count);
+    tracing::info!(
+        "✓ Periodic fetcher completed. Total snapshots: {}",
+        snapshot_count
+    );
     Ok(())
 }
 
+/// Run periodic liquidity fetcher for selected exchanges with full data storage
+async fn run_periodic_fetcher_selected(
+    aggregator: &dyn IAggregator,
+    clients: &[Box<dyn IPerps + Send + Sync>],
+    exchange_names: &[String],
+    symbols: &[String],
+    interval_secs: u64,
+    max_snapshots: usize,
+    config: OutputConfig,
+) -> Result<()> {
+    let output_desc = format_output_description(&config);
+
+    tracing::info!(
+        "Starting periodic liquidity fetcher for selected exchanges [{}] (interval: {}s, max_snapshots: {}, {})",
+        exchange_names.join(", "),
+        interval_secs,
+        if max_snapshots == 0 { "unlimited".to_string() } else { max_snapshots.to_string() },
+        output_desc
+    );
+
+    let mut snapshot_count = 0;
+    let unlimited = max_snapshots == 0;
+
+    // For file output, we need to accumulate data by symbol
+    let mut data_by_symbol: HashMap<String, Vec<LiquidityData>> = HashMap::new();
+
+    loop {
+        let now = Utc::now();
+        tracing::info!(
+            "[Snapshot #{}] Fetching liquidity and slippage at {}",
+            snapshot_count + 1,
+            now.format("%Y-%m-%d %H:%M:%S UTC")
+        );
+
+        let mut current_liquidity_snapshot = Vec::new();
+        let mut slippage_by_exchange: HashMap<String, Vec<Slippage>> = HashMap::new();
+        let mut orderbooks_by_exchange: HashMap<String, Vec<Orderbook>> = HashMap::new();
+
+        // Fetch data for each exchange-symbol combination
+        for (client, exchange_name) in clients.iter().zip(exchange_names.iter()) {
+            for symbol in symbols {
+                let parsed_symbol = client.parse_symbol(symbol);
+                match fetch_liquidity_data(
+                    client.as_ref(),
+                    aggregator,
+                    &parsed_symbol,
+                    symbol,
+                    exchange_name,
+                )
+                .await
+                {
+                    Ok(data) => {
+                        tracing::debug!("✓ {}/{} - Mid: ${:.2}, Bid(10bps): ${:.2}, Ask(10bps): ${:.2}, Slippage(10K): {:.2} bps / {:.2} bps",
+                            exchange_name,
+                            data.liquidity.symbol,
+                            data.liquidity.mid_price,
+                            data.liquidity.bid_10bps,
+                            data.liquidity.ask_10bps,
+                            data.slippage.get(1).and_then(|s| s.buy_slippage_bps).unwrap_or_default(),
+                            data.slippage.get(1).and_then(|s| s.sell_slippage_bps).unwrap_or_default()
+                        );
+
+                        // For file output
+                        data_by_symbol
+                            .entry(symbol.clone())
+                            .or_default()
+                            .push(data.clone());
+
+                        // For database output - group by exchange
+                        current_liquidity_snapshot.push(data.liquidity.clone());
+                        slippage_by_exchange
+                            .entry(exchange_name.clone())
+                            .or_default()
+                            .extend(data.slippage.clone());
+                        orderbooks_by_exchange
+                            .entry(exchange_name.clone())
+                            .or_default()
+                            .push(data.orderbook.clone());
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            "Failed to fetch liquidity for {}/{}: {}",
+                            exchange_name,
+                            symbol,
+                            e
+                        );
+                    }
+                }
+            }
+        }
+
+        snapshot_count += 1;
+
+        match &config {
+            OutputConfig::File {
+                format,
+                output_file,
+                output_dir,
+            } => {
+                match format.as_str() {
+                    "csv" => write_to_csv(&data_by_symbol, output_file, output_dir)?,
+                    "excel" => write_to_excel(&data_by_symbol, output_file, output_dir)?,
+                    _ => unreachable!("Format already validated"),
+                }
+                tracing::info!(
+                    "✓ Written snapshot #{} to {}{}",
+                    snapshot_count,
+                    output_dir
+                        .as_ref()
+                        .map(|d| format!("{}/", d))
+                        .unwrap_or_default(),
+                    output_file
+                );
+            }
+            OutputConfig::Database { repository } => {
+                // Store liquidity depth
+                repository
+                    .store_liquidity_depth(&current_liquidity_snapshot)
+                    .await?;
+
+                // Store slippage for each exchange
+                for (exchange_name, slippages) in &slippage_by_exchange {
+                    if !slippages.is_empty() {
+                        repository
+                            .store_slippage_with_exchange(exchange_name, slippages)
+                            .await?;
+                    }
+                }
+
+                // Store orderbooks for each exchange
+                for (exchange_name, orderbooks) in &orderbooks_by_exchange {
+                    if !orderbooks.is_empty() {
+                        repository
+                            .store_orderbooks_with_exchange(exchange_name, orderbooks)
+                            .await?;
+                    }
+                }
+
+                let total_slippage: usize = slippage_by_exchange.values().map(|v| v.len()).sum();
+                let total_orderbooks: usize =
+                    orderbooks_by_exchange.values().map(|v| v.len()).sum();
+                tracing::info!("✓ Stored snapshot #{} to database ({} liquidity + {} slippage + {} orderbook records)",
+                    snapshot_count, current_liquidity_snapshot.len(), total_slippage, total_orderbooks);
+            }
+        }
+
+        if !unlimited && snapshot_count >= max_snapshots {
+            tracing::info!("Reached maximum snapshots ({}). Stopping.", max_snapshots);
+            break;
+        }
+
+        tracing::debug!("Waiting {} seconds until next snapshot...", interval_secs);
+        sleep(Duration::from_secs(interval_secs)).await;
+    }
+
+    tracing::info!(
+        "✓ Periodic fetcher completed. Total snapshots: {}",
+        snapshot_count
+    );
+    Ok(())
+}
 
 /// Run periodic liquidity fetcher and write to file or database
 async fn run_periodic_fetcher(
@@ -258,7 +637,11 @@ async fn run_periodic_fetcher(
     tracing::info!(
         "Starting periodic liquidity fetcher (interval: {}s, max_snapshots: {}, {})",
         interval_secs,
-        if max_snapshots == 0 { "unlimited".to_string() } else { max_snapshots.to_string() },
+        if max_snapshots == 0 {
+            "unlimited".to_string()
+        } else {
+            max_snapshots.to_string()
+        },
         output_desc
     );
 
@@ -272,10 +655,15 @@ async fn run_periodic_fetcher(
 
     loop {
         let now = Utc::now();
-        tracing::info!("[Snapshot #{}] Fetching liquidity and slippage at {}", snapshot_count + 1, now.format("%Y-%m-%d %H:%M:%S UTC"));
+        tracing::info!(
+            "[Snapshot #{}] Fetching liquidity and slippage at {}",
+            snapshot_count + 1,
+            now.format("%Y-%m-%d %H:%M:%S UTC")
+        );
 
         let mut current_liquidity_snapshot = Vec::new();
         let mut current_slippage_snapshot = Vec::new();
+        let mut current_orderbook_snapshot = Vec::new();
         for symbol in symbols {
             let global_symbol = symbol_map.get(symbol).unwrap();
             match fetch_liquidity_data(client, aggregator, symbol, global_symbol, exchange).await {
@@ -288,9 +676,13 @@ async fn run_periodic_fetcher(
                         data.slippage.get(1).and_then(|s| s.buy_slippage_bps).unwrap_or_default(),
                         data.slippage.get(1).and_then(|s| s.sell_slippage_bps).unwrap_or_default()
                     );
-                    data_by_symbol.get_mut(global_symbol).unwrap().push(data.clone());
+                    data_by_symbol
+                        .get_mut(global_symbol)
+                        .unwrap()
+                        .push(data.clone());
                     current_liquidity_snapshot.push(data.liquidity.clone());
                     current_slippage_snapshot.extend(data.slippage.clone());
+                    current_orderbook_snapshot.push(data.orderbook.clone());
                 }
                 Err(e) => {
                     tracing::error!("Failed to fetch liquidity for {}: {}", symbol, e);
@@ -301,23 +693,38 @@ async fn run_periodic_fetcher(
         snapshot_count += 1;
 
         match &config {
-            OutputConfig::File { format, output_file, output_dir } => {
+            OutputConfig::File {
+                format,
+                output_file,
+                output_dir,
+            } => {
                 match format.as_str() {
                     "csv" => write_to_csv(&data_by_symbol, output_file, output_dir)?,
                     "excel" => write_to_excel(&data_by_symbol, output_file, output_dir)?,
                     _ => unreachable!("Format already validated"),
                 }
-                tracing::info!("✓ Written snapshot #{} to {}{}",
+                tracing::info!(
+                    "✓ Written snapshot #{} to {}{}",
                     snapshot_count,
-                    output_dir.as_ref().map(|d| format!("{}/", d)).unwrap_or_default(),
+                    output_dir
+                        .as_ref()
+                        .map(|d| format!("{}/", d))
+                        .unwrap_or_default(),
                     output_file
                 );
             }
             OutputConfig::Database { repository } => {
-                repository.store_liquidity_depth(&current_liquidity_snapshot).await?;
-                repository.store_slippage_with_exchange(exchange, &current_slippage_snapshot).await?;
-                tracing::info!("✓ Stored snapshot #{} to database ({} liquidity + {} slippage records)",
-                    snapshot_count, current_liquidity_snapshot.len(), current_slippage_snapshot.len());
+                repository
+                    .store_liquidity_depth(&current_liquidity_snapshot)
+                    .await?;
+                repository
+                    .store_slippage_with_exchange(exchange, &current_slippage_snapshot)
+                    .await?;
+                repository
+                    .store_orderbooks_with_exchange(exchange, &current_orderbook_snapshot)
+                    .await?;
+                tracing::info!("✓ Stored snapshot #{} to database ({} liquidity + {} slippage + {} orderbook records)",
+                    snapshot_count, current_liquidity_snapshot.len(), current_slippage_snapshot.len(), current_orderbook_snapshot.len());
             }
         }
 
@@ -330,7 +737,10 @@ async fn run_periodic_fetcher(
         sleep(Duration::from_secs(interval_secs)).await;
     }
 
-    tracing::info!("✓ Periodic fetcher completed. Total snapshots: {}", snapshot_count);
+    tracing::info!(
+        "✓ Periodic fetcher completed. Total snapshots: {}",
+        snapshot_count
+    );
     Ok(())
 }
 
@@ -344,12 +754,15 @@ async fn fetch_liquidity_data(
 ) -> Result<LiquidityData> {
     // Fetch orderbook once and calculate both liquidity depth and slippage
     let orderbook = client.get_orderbook(symbol, 1000).await?;
-    let liquidity = aggregator.calculate_liquidity_depth(&orderbook, exchange, global_symbol).await?;
+    let liquidity = aggregator
+        .calculate_liquidity_depth(&orderbook, exchange, global_symbol)
+        .await?;
     let slippage = aggregator.calculate_all_slippages(&orderbook);
 
     Ok(LiquidityData {
         liquidity,
         slippage,
+        orderbook,
     })
 }
 
@@ -360,7 +773,10 @@ fn write_to_csv_all(
 ) -> Result<()> {
     let mut data_by_symbol: HashMap<String, Vec<LiquidityDepthStats>> = HashMap::new();
     for stat in data {
-        data_by_symbol.entry(stat.symbol.clone()).or_default().push(stat.clone());
+        data_by_symbol
+            .entry(stat.symbol.clone())
+            .or_default()
+            .push(stat.clone());
     }
     write_to_csv_liquidity_only(&data_by_symbol, base_filename, output_dir)
 }
@@ -372,7 +788,10 @@ fn write_to_excel_all(
 ) -> Result<()> {
     let mut data_by_symbol: HashMap<String, Vec<LiquidityDepthStats>> = HashMap::new();
     for stat in data {
-        data_by_symbol.entry(stat.symbol.clone()).or_default().push(stat.clone());
+        data_by_symbol
+            .entry(stat.symbol.clone())
+            .or_default()
+            .push(stat.clone());
     }
     write_to_excel_liquidity_only(&data_by_symbol, base_filename, output_dir)
 }
@@ -490,20 +909,69 @@ fn write_to_excel_liquidity_only(
 
         for (row_idx, stats) in snapshots.iter().rev().enumerate() {
             let row = (row_idx + 1) as u32;
-            worksheet.write_string_with_format(row, 0, stats.timestamp.format("%Y-%m-%d %H:%M:%S UTC").to_string(), &timestamp_format)?;
+            worksheet.write_string_with_format(
+                row,
+                0,
+                stats.timestamp.format("%Y-%m-%d %H:%M:%S UTC").to_string(),
+                &timestamp_format,
+            )?;
             worksheet.write_string(row, 1, &stats.exchange)?;
             worksheet.write_string(row, 2, &stats.symbol)?;
-            worksheet.write_number(row, 3, stats.mid_price.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 4, stats.bid_1bps.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 5, stats.bid_2_5bps.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 6, stats.bid_5bps.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 7, stats.bid_10bps.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 8, stats.bid_20bps.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 9, stats.ask_1bps.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 10, stats.ask_2_5bps.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 11, stats.ask_5bps.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 12, stats.ask_10bps.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 13, stats.ask_20bps.to_string().parse::<f64>().unwrap_or(0.0))?;
+            worksheet.write_number(
+                row,
+                3,
+                stats.mid_price.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                4,
+                stats.bid_1bps.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                5,
+                stats.bid_2_5bps.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                6,
+                stats.bid_5bps.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                7,
+                stats.bid_10bps.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                8,
+                stats.bid_20bps.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                9,
+                stats.ask_1bps.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                10,
+                stats.ask_2_5bps.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                11,
+                stats.ask_5bps.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                12,
+                stats.ask_10bps.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                13,
+                stats.ask_20bps.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
         }
 
         worksheet.set_column_width(0, 25)?;
@@ -518,7 +986,6 @@ fn write_to_excel_liquidity_only(
 
     Ok(())
 }
-
 
 /// Write liquidity data and slippage to CSV file with separate files per symbol
 fn write_to_csv(
@@ -592,20 +1059,76 @@ fn write_to_csv(
                 stats.ask_5bps.to_string(),
                 stats.ask_10bps.to_string(),
                 stats.ask_20bps.to_string(),
-                slippages.get(0).and_then(|s| s.buy_slippage_bps).map(|v| v.to_string()).unwrap_or_default(),
-                slippages.get(0).and_then(|s| s.sell_slippage_bps).map(|v| v.to_string()).unwrap_or_default(),
-                slippages.get(1).and_then(|s| s.buy_slippage_bps).map(|v| v.to_string()).unwrap_or_default(),
-                slippages.get(1).and_then(|s| s.sell_slippage_bps).map(|v| v.to_string()).unwrap_or_default(),
-                slippages.get(2).and_then(|s| s.buy_slippage_bps).map(|v| v.to_string()).unwrap_or_default(),
-                slippages.get(2).and_then(|s| s.sell_slippage_bps).map(|v| v.to_string()).unwrap_or_default(),
-                slippages.get(3).and_then(|s| s.buy_slippage_bps).map(|v| v.to_string()).unwrap_or_default(),
-                slippages.get(3).and_then(|s| s.sell_slippage_bps).map(|v| v.to_string()).unwrap_or_default(),
-                slippages.get(4).and_then(|s| s.buy_slippage_bps).map(|v| v.to_string()).unwrap_or_default(),
-                slippages.get(4).and_then(|s| s.sell_slippage_bps).map(|v| v.to_string()).unwrap_or_default(),
-                slippages.get(5).and_then(|s| s.buy_slippage_bps).map(|v| v.to_string()).unwrap_or_default(),
-                slippages.get(5).and_then(|s| s.sell_slippage_bps).map(|v| v.to_string()).unwrap_or_default(),
-                slippages.get(6).and_then(|s| s.buy_slippage_bps).map(|v| v.to_string()).unwrap_or_default(),
-                slippages.get(6).and_then(|s| s.sell_slippage_bps).map(|v| v.to_string()).unwrap_or_default(),
+                slippages
+                    .get(0)
+                    .and_then(|s| s.buy_slippage_bps)
+                    .map(|v| v.to_string())
+                    .unwrap_or_default(),
+                slippages
+                    .get(0)
+                    .and_then(|s| s.sell_slippage_bps)
+                    .map(|v| v.to_string())
+                    .unwrap_or_default(),
+                slippages
+                    .get(1)
+                    .and_then(|s| s.buy_slippage_bps)
+                    .map(|v| v.to_string())
+                    .unwrap_or_default(),
+                slippages
+                    .get(1)
+                    .and_then(|s| s.sell_slippage_bps)
+                    .map(|v| v.to_string())
+                    .unwrap_or_default(),
+                slippages
+                    .get(2)
+                    .and_then(|s| s.buy_slippage_bps)
+                    .map(|v| v.to_string())
+                    .unwrap_or_default(),
+                slippages
+                    .get(2)
+                    .and_then(|s| s.sell_slippage_bps)
+                    .map(|v| v.to_string())
+                    .unwrap_or_default(),
+                slippages
+                    .get(3)
+                    .and_then(|s| s.buy_slippage_bps)
+                    .map(|v| v.to_string())
+                    .unwrap_or_default(),
+                slippages
+                    .get(3)
+                    .and_then(|s| s.sell_slippage_bps)
+                    .map(|v| v.to_string())
+                    .unwrap_or_default(),
+                slippages
+                    .get(4)
+                    .and_then(|s| s.buy_slippage_bps)
+                    .map(|v| v.to_string())
+                    .unwrap_or_default(),
+                slippages
+                    .get(4)
+                    .and_then(|s| s.sell_slippage_bps)
+                    .map(|v| v.to_string())
+                    .unwrap_or_default(),
+                slippages
+                    .get(5)
+                    .and_then(|s| s.buy_slippage_bps)
+                    .map(|v| v.to_string())
+                    .unwrap_or_default(),
+                slippages
+                    .get(5)
+                    .and_then(|s| s.sell_slippage_bps)
+                    .map(|v| v.to_string())
+                    .unwrap_or_default(),
+                slippages
+                    .get(6)
+                    .and_then(|s| s.buy_slippage_bps)
+                    .map(|v| v.to_string())
+                    .unwrap_or_default(),
+                slippages
+                    .get(6)
+                    .and_then(|s| s.sell_slippage_bps)
+                    .map(|v| v.to_string())
+                    .unwrap_or_default(),
             ])?;
         }
 
@@ -642,13 +1165,34 @@ fn write_to_excel(
         worksheet.set_name(&sheet_name)?;
 
         let headers = [
-            "Timestamp", "Exchange", "Symbol", "Mid Price",
-            "Bid 1bps", "Bid 2.5bps", "Bid 5bps", "Bid 10bps", "Bid 20bps",
-            "Ask 1bps", "Ask 2.5bps", "Ask 5bps", "Ask 10bps", "Ask 20bps",
-            "Slip $1K Buy", "Slip $1K Sell", "Slip $10K Buy", "Slip $10K Sell",
-            "Slip $50K Buy", "Slip $50K Sell", "Slip $100K Buy", "Slip $100K Sell",
-            "Slip $500K Buy", "Slip $500K Sell", "Slip $5M Buy", "Slip $5M Sell",
-            "Slip $10M Buy", "Slip $10M Sell",
+            "Timestamp",
+            "Exchange",
+            "Symbol",
+            "Mid Price",
+            "Bid 1bps",
+            "Bid 2.5bps",
+            "Bid 5bps",
+            "Bid 10bps",
+            "Bid 20bps",
+            "Ask 1bps",
+            "Ask 2.5bps",
+            "Ask 5bps",
+            "Ask 10bps",
+            "Ask 20bps",
+            "Slip $1K Buy",
+            "Slip $1K Sell",
+            "Slip $10K Buy",
+            "Slip $10K Sell",
+            "Slip $50K Buy",
+            "Slip $50K Sell",
+            "Slip $100K Buy",
+            "Slip $100K Sell",
+            "Slip $500K Buy",
+            "Slip $500K Sell",
+            "Slip $5M Buy",
+            "Slip $5M Sell",
+            "Slip $10M Buy",
+            "Slip $10M Sell",
         ];
 
         for (col, header) in headers.iter().enumerate() {
@@ -660,26 +1204,81 @@ fn write_to_excel(
             let stats = &data.liquidity;
             let slippages = &data.slippage;
 
-            worksheet.write_string_with_format(row, 0, stats.timestamp.format("%Y-%m-%d %H:%M:%S UTC").to_string(), &timestamp_format)?;
+            worksheet.write_string_with_format(
+                row,
+                0,
+                stats.timestamp.format("%Y-%m-%d %H:%M:%S UTC").to_string(),
+                &timestamp_format,
+            )?;
             worksheet.write_string(row, 1, &stats.exchange)?;
             worksheet.write_string(row, 2, &stats.symbol)?;
-            worksheet.write_number(row, 3, stats.mid_price.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 4, stats.bid_1bps.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 5, stats.bid_2_5bps.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 6, stats.bid_5bps.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 7, stats.bid_10bps.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 8, stats.bid_20bps.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 9, stats.ask_1bps.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 10, stats.ask_2_5bps.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 11, stats.ask_5bps.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 12, stats.ask_10bps.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 13, stats.ask_20bps.to_string().parse::<f64>().unwrap_or(0.0))?;
+            worksheet.write_number(
+                row,
+                3,
+                stats.mid_price.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                4,
+                stats.bid_1bps.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                5,
+                stats.bid_2_5bps.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                6,
+                stats.bid_5bps.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                7,
+                stats.bid_10bps.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                8,
+                stats.bid_20bps.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                9,
+                stats.ask_1bps.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                10,
+                stats.ask_2_5bps.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                11,
+                stats.ask_5bps.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                12,
+                stats.ask_10bps.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                13,
+                stats.ask_20bps.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
 
             // Write slippage columns
             for (i, slippage) in slippages.iter().take(7).enumerate() {
                 let base_col = 14 + i * 2;
-                let buy_val = slippage.buy_slippage_bps.map(|v| v.to_string().parse::<f64>().unwrap_or(0.0)).unwrap_or(0.0);
-                let sell_val = slippage.sell_slippage_bps.map(|v| v.to_string().parse::<f64>().unwrap_or(0.0)).unwrap_or(0.0);
+                let buy_val = slippage
+                    .buy_slippage_bps
+                    .map(|v| v.to_string().parse::<f64>().unwrap_or(0.0))
+                    .unwrap_or(0.0);
+                let sell_val = slippage
+                    .sell_slippage_bps
+                    .map(|v| v.to_string().parse::<f64>().unwrap_or(0.0))
+                    .unwrap_or(0.0);
                 worksheet.write_number(row, base_col as u16, buy_val)?;
                 worksheet.write_number(row, (base_col + 1) as u16, sell_val)?;
             }
@@ -708,12 +1307,15 @@ async fn fetch_and_display_liquidity_data(
 ) -> Result<()> {
     // Fetch orderbook once and calculate both liquidity depth and slippage
     let orderbook = client.get_orderbook(symbol, 1000).await?;
-    let liquidity = aggregator.calculate_liquidity_depth(&orderbook, exchange, global_symbol).await?;
+    let liquidity = aggregator
+        .calculate_liquidity_depth(&orderbook, exchange, global_symbol)
+        .await?;
     let slippage = aggregator.calculate_all_slippages(&orderbook);
 
     let data = LiquidityData {
         liquidity,
         slippage,
+        orderbook,
     };
 
     match format.to_lowercase().as_str() {
@@ -767,7 +1369,14 @@ fn display_table(stats: &LiquidityDepthStats) -> Result<()> {
         ]));
     }
 
-    table.add_row(Row::new(vec![Cell::new("Timestamp").with_style(prettytable::Attr::Bold), Cell::new_align(&stats.timestamp.format("%Y-%m-%d %H:%M:%S UTC").to_string(), format::Alignment::RIGHT).with_hspan(2)]));
+    table.add_row(Row::new(vec![
+        Cell::new("Timestamp").with_style(prettytable::Attr::Bold),
+        Cell::new_align(
+            &stats.timestamp.format("%Y-%m-%d %H:%M:%S UTC").to_string(),
+            format::Alignment::RIGHT,
+        )
+        .with_hspan(2),
+    ]));
 
     println!();
     table.printstd();
@@ -929,7 +1538,14 @@ fn display_table_combined(data: &LiquidityData) -> Result<()> {
         }
     }
 
-    slip_table.add_row(Row::new(vec![Cell::new("Timestamp").with_style(prettytable::Attr::Bold), Cell::new_align(&stats.timestamp.format("%Y-%m-%d %H:%M:%S UTC").to_string(), format::Alignment::RIGHT).with_hspan(2)]));
+    slip_table.add_row(Row::new(vec![
+        Cell::new("Timestamp").with_style(prettytable::Attr::Bold),
+        Cell::new_align(
+            &stats.timestamp.format("%Y-%m-%d %H:%M:%S UTC").to_string(),
+            format::Alignment::RIGHT,
+        )
+        .with_hspan(2),
+    ]));
 
     println!();
     slip_table.printstd();

@@ -3,7 +3,10 @@ use async_trait::async_trait;
 use chrono::Utc;
 use perps_aggregator::aggregator::Aggregator;
 use perps_aggregator::IAggregator;
-use perps_core::types::{FundingRate, Kline, Market, MarketStats, OpenInterest, Orderbook, Ticker, Trade, LiquidityDepthStats};
+use perps_core::types::{
+    FundingRate, Kline, LiquidityDepthStats, Market, MarketStats, OpenInterest, Orderbook, Ticker,
+    Trade,
+};
 use perps_core::IPerps;
 use rust_decimal::Decimal;
 use serde_json::json;
@@ -84,12 +87,24 @@ fn create_mock_orderbook() -> Orderbook {
     Orderbook {
         symbol: "BTC-USDT".to_string(),
         bids: vec![
-            (Decimal::from_str("10000").unwrap(), Decimal::from_str("1").unwrap()),
-            (Decimal::from_str("9999").unwrap(), Decimal::from_str("2").unwrap()),
+            (
+                Decimal::from_str("10000").unwrap(),
+                Decimal::from_str("1").unwrap(),
+            ),
+            (
+                Decimal::from_str("9999").unwrap(),
+                Decimal::from_str("2").unwrap(),
+            ),
         ],
         asks: vec![
-            (Decimal::from_str("10001").unwrap(), Decimal::from_str("1.5").unwrap()),
-            (Decimal::from_str("10002").unwrap(), Decimal::from_str("2.5").unwrap()),
+            (
+                Decimal::from_str("10001").unwrap(),
+                Decimal::from_str("1.5").unwrap(),
+            ),
+            (
+                Decimal::from_str("10002").unwrap(),
+                Decimal::from_str("2.5").unwrap(),
+            ),
         ],
         timestamp: Utc::now(),
         latency: None,
@@ -113,7 +128,9 @@ async fn test_compute_liquidity_all() -> Result<()> {
     let exchanges: Vec<Box<dyn IPerps>> = vec![Box::new(mock_binance), Box::new(mock_lighter)];
 
     let symbol = "BTC-USDT";
-    let results = aggregator.calculate_liquidity_depth_all(&exchanges, symbol).await?;
+    let results = aggregator
+        .calculate_liquidity_depth_all(&exchanges, symbol)
+        .await?;
 
     assert_eq!(results.len(), 2);
 
@@ -122,7 +139,7 @@ async fn test_compute_liquidity_all() -> Result<()> {
 
     assert_eq!(binance_stats.symbol, symbol);
     assert_eq!(lighter_stats.symbol, symbol);
-    
+
     // A simple check to ensure some values were calculated.
     // The core calculation logic is tested in `aggregator.rs` tests.
     assert!(binance_stats.mid_price > Decimal::ZERO);

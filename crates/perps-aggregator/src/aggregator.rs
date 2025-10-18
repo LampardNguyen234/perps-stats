@@ -141,8 +141,9 @@ impl IAggregator for Aggregator {
         let start = Instant::now();
 
         // Use the new mid_price() method
-        let mid_price = book.mid_price()
-            .ok_or_else(|| anyhow::anyhow!("Orderbook is empty or one-sided, cannot calculate liquidity depth."))?;
+        let mid_price = book.mid_price().ok_or_else(|| {
+            anyhow::anyhow!("Orderbook is empty or one-sided, cannot calculate liquidity depth.")
+        })?;
 
         if mid_price.is_zero() {
             anyhow::bail!("Mid price is zero, cannot calculate percentage-based depth.");
@@ -150,11 +151,11 @@ impl IAggregator for Aggregator {
 
         // Define bps levels in basis points (will be converted in bid_notional/ask_notional)
         let bps_levels = [
-            dec!(1),    // 1 bps
-            dec!(2.5),  // 2.5 bps
-            dec!(5),    // 5 bps
-            dec!(10),   // 10 bps
-            dec!(20),   // 20 bps
+            dec!(1),   // 1 bps
+            dec!(2.5), // 2.5 bps
+            dec!(5),   // 5 bps
+            dec!(10),  // 10 bps
+            dec!(20),  // 20 bps
         ];
 
         // Use the new bid_notional() and ask_notional() methods
@@ -208,7 +209,10 @@ impl IAggregator for Aggregator {
                     let exchange_name = client.get_name();
                     let parsed_symbol = client.parse_symbol(&symbol);
                     let result = match client.get_orderbook(&parsed_symbol, 1000).await {
-                        Ok(orderbook) => self.calculate_liquidity_depth(&orderbook, exchange_name, &symbol).await,
+                        Ok(orderbook) => {
+                            self.calculate_liquidity_depth(&orderbook, exchange_name, &symbol)
+                                .await
+                        }
                         Err(e) => {
                             tracing::warn!(
                                 "Failed to fetch orderbook for {} on {}: {}",
@@ -349,7 +353,8 @@ impl IAggregator for Aggregator {
         let (buy_slippage_bps, buy_avg_price, buy_total_cost, buy_feasible) =
             if let Some(slippage_bps) = orderbook.get_slippage(trade_amount, OrderSide::Buy) {
                 // Calculate avg price and total cost for additional metrics
-                let (avg_price, total_cost, _) = calculate_execution_price(&orderbook.asks, trade_amount);
+                let (avg_price, total_cost, _) =
+                    calculate_execution_price(&orderbook.asks, trade_amount);
                 (Some(slippage_bps), avg_price, total_cost, true)
             } else {
                 (None, None, None, false)
@@ -361,7 +366,8 @@ impl IAggregator for Aggregator {
         let (sell_slippage_bps, sell_avg_price, sell_total_cost, sell_feasible) =
             if let Some(slippage_bps) = orderbook.get_slippage(trade_amount, OrderSide::Sell) {
                 // Calculate avg price and total cost for additional metrics
-                let (avg_price, total_cost, _) = calculate_execution_price(&orderbook.bids, trade_amount);
+                let (avg_price, total_cost, _) =
+                    calculate_execution_price(&orderbook.bids, trade_amount);
                 (Some(slippage_bps), avg_price, total_cost, true)
             } else {
                 (None, None, None, false)
@@ -499,18 +505,39 @@ mod tests {
             symbol: "BTC-USDT-PERP".to_string(),
             timestamp: Utc::now(),
             bids: vec![
-                OrderbookLevel { price: dec!(99.99), quantity: dec!(10) }, // 1 bps
-                OrderbookLevel { price: dec!(99.95), quantity: dec!(10) }, // 5 bps
-                OrderbookLevel { price: dec!(99.80), quantity: dec!(10) }, // 20 bps
+                OrderbookLevel {
+                    price: dec!(99.99),
+                    quantity: dec!(10),
+                }, // 1 bps
+                OrderbookLevel {
+                    price: dec!(99.95),
+                    quantity: dec!(10),
+                }, // 5 bps
+                OrderbookLevel {
+                    price: dec!(99.80),
+                    quantity: dec!(10),
+                }, // 20 bps
             ],
             asks: vec![
-                OrderbookLevel { price: dec!(100.01), quantity: dec!(10) }, // 1 bps
-                OrderbookLevel { price: dec!(100.05), quantity: dec!(10) }, // 5 bps
-                OrderbookLevel { price: dec!(100.20), quantity: dec!(10) }, // 20 bps
+                OrderbookLevel {
+                    price: dec!(100.01),
+                    quantity: dec!(10),
+                }, // 1 bps
+                OrderbookLevel {
+                    price: dec!(100.05),
+                    quantity: dec!(10),
+                }, // 5 bps
+                OrderbookLevel {
+                    price: dec!(100.20),
+                    quantity: dec!(10),
+                }, // 20 bps
             ],
         };
 
-        let stats = aggregator.calculate_liquidity_depth(&book, "binance", "BTC").await.unwrap();
+        let stats = aggregator
+            .calculate_liquidity_depth(&book, "binance", "BTC")
+            .await
+            .unwrap();
 
         assert_eq!(stats.symbol, "BTC");
         assert_eq!(stats.mid_price, dec!(100));
@@ -570,7 +597,10 @@ mod tests {
             },
         ];
 
-        let stats = aggregator.calculate_funding_rate_stats(&rates, "binance").await.unwrap();
+        let stats = aggregator
+            .calculate_funding_rate_stats(&rates, "binance")
+            .await
+            .unwrap();
 
         assert_eq!(stats.symbol, "BTC");
         assert_eq!(stats.exchange, "binance");
@@ -586,7 +616,9 @@ mod tests {
         let aggregator = Aggregator::new();
         let rates: Vec<FundingRate> = vec![];
 
-        let result = aggregator.calculate_funding_rate_stats(&rates, "binance").await;
+        let result = aggregator
+            .calculate_funding_rate_stats(&rates, "binance")
+            .await;
         assert!(result.is_err());
     }
 
@@ -605,7 +637,10 @@ mod tests {
             funding_rate_cap_floor: dec!(0.005),
         }];
 
-        let stats = aggregator.calculate_funding_rate_stats(&rates, "binance").await.unwrap();
+        let stats = aggregator
+            .calculate_funding_rate_stats(&rates, "binance")
+            .await
+            .unwrap();
 
         assert_eq!(stats.count, 1);
         assert_eq!(stats.average_rate, dec!(0.0001));
@@ -626,14 +661,32 @@ mod tests {
             symbol: "BTC".to_string(),
             timestamp: now,
             bids: vec![
-                OrderbookLevel { price: dec!(100000), quantity: dec!(0.1) }, // $10,000
-                OrderbookLevel { price: dec!(99900), quantity: dec!(0.1) },  // $9,990
-                OrderbookLevel { price: dec!(99800), quantity: dec!(0.1) },  // $9,980
+                OrderbookLevel {
+                    price: dec!(100000),
+                    quantity: dec!(0.1),
+                }, // $10,000
+                OrderbookLevel {
+                    price: dec!(99900),
+                    quantity: dec!(0.1),
+                }, // $9,990
+                OrderbookLevel {
+                    price: dec!(99800),
+                    quantity: dec!(0.1),
+                }, // $9,980
             ],
             asks: vec![
-                OrderbookLevel { price: dec!(100100), quantity: dec!(0.1) }, // $10,010
-                OrderbookLevel { price: dec!(100200), quantity: dec!(0.1) }, // $10,020
-                OrderbookLevel { price: dec!(100300), quantity: dec!(0.1) }, // $10,030
+                OrderbookLevel {
+                    price: dec!(100100),
+                    quantity: dec!(0.1),
+                }, // $10,010
+                OrderbookLevel {
+                    price: dec!(100200),
+                    quantity: dec!(0.1),
+                }, // $10,020
+                OrderbookLevel {
+                    price: dec!(100300),
+                    quantity: dec!(0.1),
+                }, // $10,030
             ],
         };
 
@@ -679,10 +732,16 @@ mod tests {
             symbol: "BTC".to_string(),
             timestamp: now,
             bids: vec![
-                OrderbookLevel { price: dec!(100000), quantity: dec!(0.1) }, // $10,000
+                OrderbookLevel {
+                    price: dec!(100000),
+                    quantity: dec!(0.1),
+                }, // $10,000
             ],
             asks: vec![
-                OrderbookLevel { price: dec!(100100), quantity: dec!(0.1) }, // $10,010
+                OrderbookLevel {
+                    price: dec!(100100),
+                    quantity: dec!(0.1),
+                }, // $10,010
             ],
         };
 
@@ -716,14 +775,32 @@ mod tests {
             symbol: "BTC".to_string(),
             timestamp: now,
             bids: vec![
-                OrderbookLevel { price: dec!(100000), quantity: dec!(0.05) }, // $5,000
-                OrderbookLevel { price: dec!(99900), quantity: dec!(0.05) },  // $4,995
-                OrderbookLevel { price: dec!(99800), quantity: dec!(0.05) },  // $4,990
+                OrderbookLevel {
+                    price: dec!(100000),
+                    quantity: dec!(0.05),
+                }, // $5,000
+                OrderbookLevel {
+                    price: dec!(99900),
+                    quantity: dec!(0.05),
+                }, // $4,995
+                OrderbookLevel {
+                    price: dec!(99800),
+                    quantity: dec!(0.05),
+                }, // $4,990
             ],
             asks: vec![
-                OrderbookLevel { price: dec!(100100), quantity: dec!(0.05) }, // $5,005
-                OrderbookLevel { price: dec!(100200), quantity: dec!(0.05) }, // $5,010
-                OrderbookLevel { price: dec!(100300), quantity: dec!(0.05) }, // $5,015
+                OrderbookLevel {
+                    price: dec!(100100),
+                    quantity: dec!(0.05),
+                }, // $5,005
+                OrderbookLevel {
+                    price: dec!(100200),
+                    quantity: dec!(0.05),
+                }, // $5,010
+                OrderbookLevel {
+                    price: dec!(100300),
+                    quantity: dec!(0.05),
+                }, // $5,015
             ],
         };
 
@@ -788,10 +865,16 @@ mod tests {
             symbol: "BTC".to_string(),
             timestamp: now,
             bids: vec![
-                OrderbookLevel { price: dec!(100000), quantity: dec!(150) }, // $15,000,000
+                OrderbookLevel {
+                    price: dec!(100000),
+                    quantity: dec!(150),
+                }, // $15,000,000
             ],
             asks: vec![
-                OrderbookLevel { price: dec!(100100), quantity: dec!(150) }, // $15,015,000
+                OrderbookLevel {
+                    price: dec!(100100),
+                    quantity: dec!(150),
+                }, // $15,015,000
             ],
         };
 
@@ -828,10 +911,16 @@ mod tests {
             symbol: "BTC".to_string(),
             timestamp: now,
             bids: vec![
-                OrderbookLevel { price: dec!(100000), quantity: dec!(0.6) }, // $60,000
+                OrderbookLevel {
+                    price: dec!(100000),
+                    quantity: dec!(0.6),
+                }, // $60,000
             ],
             asks: vec![
-                OrderbookLevel { price: dec!(100100), quantity: dec!(0.6) }, // $60,060
+                OrderbookLevel {
+                    price: dec!(100100),
+                    quantity: dec!(0.6),
+                }, // $60,060
             ],
         };
 
@@ -854,9 +943,10 @@ mod tests {
     #[test]
     fn test_calculate_execution_price_single_level() {
         // Test helper function directly with single level
-        let levels = vec![
-            OrderbookLevel { price: dec!(100), quantity: dec!(10) },
-        ];
+        let levels = vec![OrderbookLevel {
+            price: dec!(100),
+            quantity: dec!(10),
+        }];
 
         let (avg_price, total_cost, feasible) = calculate_execution_price(&levels, dec!(500));
 
@@ -869,9 +959,18 @@ mod tests {
     fn test_calculate_execution_price_multiple_levels() {
         // Test helper function with multiple levels
         let levels = vec![
-            OrderbookLevel { price: dec!(100), quantity: dec!(5) },  // $500
-            OrderbookLevel { price: dec!(101), quantity: dec!(5) },  // $505
-            OrderbookLevel { price: dec!(102), quantity: dec!(5) },  // $510
+            OrderbookLevel {
+                price: dec!(100),
+                quantity: dec!(5),
+            }, // $500
+            OrderbookLevel {
+                price: dec!(101),
+                quantity: dec!(5),
+            }, // $505
+            OrderbookLevel {
+                price: dec!(102),
+                quantity: dec!(5),
+            }, // $510
         ];
 
         // Need $1000, will use first two levels fully ($500 + $505 = $1005)
@@ -896,7 +995,10 @@ mod tests {
     fn test_calculate_execution_price_insufficient_liquidity() {
         // Test helper function with insufficient liquidity
         let levels = vec![
-            OrderbookLevel { price: dec!(100), quantity: dec!(5) }, // $500
+            OrderbookLevel {
+                price: dec!(100),
+                quantity: dec!(5),
+            }, // $500
         ];
 
         let (avg_price, total_cost, feasible) = calculate_execution_price(&levels, dec!(1000));

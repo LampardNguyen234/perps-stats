@@ -49,7 +49,10 @@ impl BinanceWsClient {
     async fn connect(&self, url: Url) -> Result<WebSocketStream<MaybeTlsStream<TcpStream>>> {
         tracing::info!("Connecting to Binance WebSocket: {}", url);
         let (ws_stream, response) = connect_async(url.as_str()).await?;
-        tracing::info!("Connected to Binance WebSocket (status: {:?})", response.status());
+        tracing::info!(
+            "Connected to Binance WebSocket (status: {:?})",
+            response.status()
+        );
         Ok(ws_stream)
     }
 
@@ -76,7 +79,8 @@ impl BinanceWsClient {
             open_interest: Decimal::ZERO,
             open_interest_notional: Decimal::ZERO,
             price_change_24h: Decimal::from_str(&ws_ticker.price_change)?,
-            price_change_pct: Decimal::from_str(&ws_ticker.price_change_percent)? / Decimal::from(100),
+            price_change_pct: Decimal::from_str(&ws_ticker.price_change_percent)?
+                / Decimal::from(100),
             high_price_24h: Decimal::from_str(&ws_ticker.high_price)?,
             low_price_24h: Decimal::from_str(&ws_ticker.low_price)?,
             timestamp: Utc.timestamp_millis_opt(ws_ticker.event_time).unwrap(),
@@ -134,11 +138,8 @@ impl BinanceWsClient {
         })
     }
 
-    /// Convert Binance depth update to orderbook with update IDs
-    /// Returns (symbol, first_update_id, final_update_id, bids, asks)
-    pub fn convert_depth_update(&self, ws_depth: &BinanceWsDepthUpdate) -> Result<(String, u64, u64, Vec<OrderbookLevel>, Vec<OrderbookLevel>)> {
-        use super::conversions::normalize_symbol;
-
+    /// Convert Binance depth update to DepthUpdate for OrderbookStreamer trait
+    fn convert_to_depth_update(&self, ws_depth: &BinanceWsDepthUpdate) -> Result<DepthUpdate> {
         let bids: Vec<OrderbookLevel> = ws_depth
             .bids
             .iter()
@@ -161,18 +162,46 @@ impl BinanceWsClient {
             })
             .collect::<Result<Vec<_>>>()?;
 
-        Ok((
-            normalize_symbol(&ws_depth.symbol),
-            ws_depth.first_update_id as u64,
-            ws_depth.final_update_id as u64,
+        Ok(DepthUpdate {
+            symbol: ws_depth.symbol.clone(), // Keep symbol as-is (BTCUSDT format) to match subscription
+            first_update_id: ws_depth.first_update_id as u64,
+            final_update_id: ws_depth.final_update_id as u64,
+            previous_id: ws_depth.previous_update_id as u64,
             bids,
             asks,
+        })
+    }
+
+    /// Convert Binance depth update to orderbook with update IDs
+    /// Returns (symbol, first_update_id, final_update_id, previous_id, bids, asks)
+    /// DEPRECATED: Use convert_to_depth_update instead
+    pub fn convert_depth_update(
+        &self,
+        ws_depth: &BinanceWsDepthUpdate,
+    ) -> Result<(
+        String,
+        u64,
+        u64,
+        u64,
+        Vec<OrderbookLevel>,
+        Vec<OrderbookLevel>,
+    )> {
+        let depth_update = self.convert_to_depth_update(ws_depth)?;
+        Ok((
+            depth_update.symbol,
+            depth_update.first_update_id,
+            depth_update.final_update_id,
+            depth_update.previous_id,
+            depth_update.bids,
+            depth_update.asks,
         ))
     }
 
     /// Convert Binance mark price update to our FundingRate type
     fn convert_funding_rate(&self, ws_mark_price: &BinanceWsMarkPrice) -> Result<FundingRate> {
-        let next_funding = Utc.timestamp_millis_opt(ws_mark_price.next_funding_time).unwrap();
+        let next_funding = Utc
+            .timestamp_millis_opt(ws_mark_price.next_funding_time)
+            .unwrap();
         Ok(FundingRate {
             symbol: ws_mark_price.symbol.clone(),
             funding_rate: Decimal::from_str(&ws_mark_price.funding_rate)?,
@@ -540,5 +569,87 @@ impl IPerpsStream for BinanceWsClient {
         };
 
         Ok(Box::pin(stream))
+    }
+}
+
+/// Implementation of OrderbookStreamer trait for optimized orderbook streaming
+#[async_trait]
+impl OrderbookStreamer for BinanceWsClient {
+    async fn stream_depth_updates(&self, symbols: Vec<String>) -> Result<DepthUpdateStream> {
+        let url = self.build_stream_url(&symbols, "depth@500ms")?;
+        let is_combined = self.is_combined_stream(&url);
+        let mut ws_stream = self.connect(url).await?;
+        let client = self.clone();
+
+        let stream = async_stream::stream! {
+            while let Some(msg) = ws_stream.next().await {
+                match msg {
+                    Ok(Message::Text(text)) => {
+                        let depth_result = if is_combined {
+                            match serde_json::from_str::<BinanceWsCombinedStream>(&text) {
+                                Ok(combined) => {
+                                    serde_json::from_value::<BinanceWsDepthUpdate>(combined.data)
+                                        .map_err(|e| anyhow!("Failed to parse depth data: {}", e))
+                                }
+                                Err(e) => {
+                                    tracing::debug!("Failed to parse combined stream: {}", e);
+                                    continue;
+                                }
+                            }
+                        } else {
+                            serde_json::from_str::<BinanceWsDepthUpdate>(&text)
+                                .map_err(|e| anyhow!("Failed to parse depth: {}", e))
+                        };
+
+                        match depth_result {
+                            Ok(ws_depth) => {
+                                match client.convert_to_depth_update(&ws_depth) {
+                                    Ok(depth_update) => yield Ok(depth_update),
+                                    Err(e) => yield Err(anyhow!("Failed to convert depth update: {}", e)),
+                                }
+                            }
+                            Err(e) => {
+                                tracing::debug!("Skipping message: {}", e);
+                            }
+                        }
+                    }
+                    Ok(Message::Ping(payload)) => {
+                        if let Err(e) = ws_stream.send(Message::Pong(payload)).await {
+                            tracing::error!("Failed to send pong: {}", e);
+                            yield Err(anyhow!("Failed to send pong: {}", e));
+                            break;
+                        }
+                    }
+                    Ok(Message::Pong(_)) => {
+                        tracing::debug!("Received pong");
+                    }
+                    Ok(Message::Close(frame)) => {
+                        tracing::info!("WebSocket connection closed: {:?}", frame);
+                        break;
+                    }
+                    Err(e) => {
+                        yield Err(anyhow!("WebSocket error: {}", e));
+                        break;
+                    }
+                    _ => {
+                        tracing::debug!("Received other message type");
+                    }
+                }
+            }
+        };
+
+        Ok(Box::pin(stream))
+    }
+
+    fn is_incremental_delta(&self) -> bool {
+        false // Binance uses full price updates
+    }
+
+    fn exchange_name(&self) -> &str {
+        "binance"
+    }
+
+    fn ws_base_url(&self) -> &str {
+        WS_BASE_URL
     }
 }

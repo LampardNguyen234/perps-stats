@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 pub struct LighterWsSubscribeRequest {
     #[serde(rename = "type")]
     pub msg_type: String, // "subscribe"
-    pub channel: String,  // e.g., "order_book/0", "market_stats/0", "trade/0"
+    pub channel: String, // e.g., "order_book/0", "market_stats/0", "trade/0"
 }
 
 /// Lighter WebSocket orderbook message
