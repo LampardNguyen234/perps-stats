@@ -1,11 +1,9 @@
-use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
-use tokio::time;
 use crate::types::{Orderbook, OrderbookLevel};
 
 /// Buffered update event for replay after snapshot
@@ -13,10 +11,13 @@ use crate::types::{Orderbook, OrderbookLevel};
 struct BufferedUpdate {
     first_update_id: u64,
     final_update_id: u64,
+    #[allow(dead_code)]
     previous_id: u64,
     bid_updates: Vec<OrderbookLevel>,
     ask_updates: Vec<OrderbookLevel>,
     is_incremental_delta: bool,
+    #[allow(dead_code)]
+    is_snapshot: bool,
 }
 
 /// Represents a local orderbook that maintains state and applies delta updates
@@ -177,7 +178,7 @@ impl LocalOrderbook {
                 event.first_update_id <= last_update_id && event.final_update_id >= last_update_id;
 
             if is_straddling {
-                tracing::debug!(
+                tracing::trace!(
                     "[Snapshot] {}/{} replaying STRADDLING event: U={}, u={}, lastUpdateId={}",
                     self.exchange,
                     self.symbol,
@@ -273,6 +274,7 @@ impl LocalOrderbook {
             bid_updates: bid_updates.clone(),
             ask_updates: ask_updates.clone(),
             is_incremental_delta,
+            is_snapshot: false,
         };
 
         // Maintain circular buffer (drop oldest if full)
@@ -403,7 +405,8 @@ impl LocalOrderbook {
             if should_remove {
                 self.bids.remove(&level.price);
                 bid_removes += 1;
-                tracing::trace!(
+                if final_quantity < Decimal::ZERO {
+                    tracing::warn!(
                     "[WS Update] {}/{} BID REMOVED: price={}, final_qty={}, mode={}",
                     self.exchange,
                     self.symbol,
@@ -415,6 +418,7 @@ impl LocalOrderbook {
                         "full_price"
                     }
                 );
+                }
             } else {
                 let is_new = !self.bids.contains_key(&level.price);
                 self.bids.insert(level.price, final_quantity);
@@ -531,6 +535,34 @@ impl LocalOrderbook {
             );
         }
 
+        if new_best_ask < new_best_bid {
+            // Log top 5 bids and asks to understand what happened
+            let top_bids: Vec<String> = self.bids
+                .iter()
+                .rev()
+                .take(5)
+                .map(|(p, q)| format!("{}@{}", p, q))
+                .collect();
+            let top_asks: Vec<String> = self.asks
+                .iter()
+                .take(5)
+                .map(|(p, q)| format!("{}@{}", p, q))
+                .collect();
+
+            tracing::warn!(
+                "[WS Update] {}/{} Bid-Ask invariant VIOLATED: Best Bid {}@{} >= Best Ask {}@{} | Top 5 Bids: {:?} | Top 5 Asks: {:?}",
+                self.exchange,
+                self.symbol,
+                new_best_bid.map(|(p, _)| p.to_string()).unwrap_or_else(|| "N/A".to_string()),
+                new_best_bid.map(|(_, q)| q.to_string()).unwrap_or_else(|| "N/A".to_string()),
+                new_best_ask.map(|(p, _)| p.to_string()).unwrap_or_else(|| "N/A".to_string()),
+                new_best_ask.map(|(_, q)| q.to_string()).unwrap_or_else(|| "N/A".to_string()),
+                top_bids,
+                top_asks
+            );
+        }
+
+
         tracing::debug!(
             "[WS Update] {}/{} APPLIED: U={}, u={} | Bids: {} levels (+{} -{}) | Asks: {} levels (+{} -{}) | Best: {}@{} / {}@{}",
             self.exchange,
@@ -553,13 +585,12 @@ impl LocalOrderbook {
     }
 
     /// Convert to Orderbook type with specified depth
-    pub fn to_orderbook(&self, depth: usize) -> Orderbook {
+    pub fn to_orderbook(&self, _depth: usize) -> Orderbook {
         // Get top N bids (sorted descending by price)
         let bids: Vec<OrderbookLevel> = self
             .bids
             .iter()
             .rev() // Reverse to get highest prices first
-            .take(depth)
             .map(|(price, quantity)| OrderbookLevel {
                 price: *price,
                 quantity: *quantity,
@@ -570,7 +601,6 @@ impl LocalOrderbook {
         let asks: Vec<OrderbookLevel> = self
             .asks
             .iter()
-            .take(depth)
             .map(|(price, quantity)| OrderbookLevel {
                 price: *price,
                 quantity: *quantity,

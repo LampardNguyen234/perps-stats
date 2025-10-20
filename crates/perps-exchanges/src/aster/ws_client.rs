@@ -180,6 +180,7 @@ impl AsterWsClient {
             previous_id: ws_depth.previous_update_id as u64,
             bids,
             asks,
+            is_snapshot: false, // Aster WebSocket only sends delta updates, snapshots come from REST API
         })
     }
 

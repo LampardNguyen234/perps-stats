@@ -74,6 +74,8 @@ pub struct DepthUpdate {
     pub previous_id: u64,
     pub bids: Vec<OrderbookLevel>,
     pub asks: Vec<OrderbookLevel>,
+    /// Whether this is a snapshot (true) or delta update (false)
+    pub is_snapshot: bool,
 }
 
 /// Type alias for depth update stream

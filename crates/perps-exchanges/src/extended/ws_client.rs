@@ -33,6 +33,7 @@ impl ExtendedWsClient {
         ws_orderbook: &ExtendedWsOrderbook,
     ) -> Result<(String, bool, Vec<OrderbookLevel>, Vec<OrderbookLevel>, u64)> {
         let is_snapshot = ws_orderbook.data.update_type == "SNAPSHOT";
+        tracing::info!("convert_orderbook: {:?}", ws_orderbook);
 
         let bids: Vec<OrderbookLevel> = ws_orderbook
             .data
@@ -89,6 +90,8 @@ impl ExtendedWsClient {
     /// Extended uses sequence numbers for ordering, not first/final update IDs.
     /// We use sequence as both first and final update ID, with previous_id=0 (gap detection mode).
     fn convert_to_depth_update(&self, ws_orderbook: &ExtendedWsOrderbook) -> Result<DepthUpdate> {
+        let is_snapshot = ws_orderbook.data.update_type == "SNAPSHOT";
+
         let bids: Vec<OrderbookLevel> = ws_orderbook
             .data
             .bids
@@ -128,6 +131,23 @@ impl ExtendedWsClient {
             timestamp
         }) as u64;
 
+        // Log delta updates (not snapshots) for debugging bid-ask invariant violations
+        if !is_snapshot && (!bids.is_empty() || !asks.is_empty()) {
+            let bid_summary: Vec<String> = bids.iter().take(3).map(|l| format!("{}@{}", l.price, l.quantity)).collect();
+            let ask_summary: Vec<String> = asks.iter().take(3).map(|l| format!("{}@{}", l.price, l.quantity)).collect();
+
+            tracing::trace!(
+                "[Extended Delta] {} seq={} type={}: {} bids {:?}, {} asks {:?}",
+                symbol,
+                sequence,
+                ws_orderbook.data.update_type,
+                bids.len(),
+                bid_summary,
+                asks.len(),
+                ask_summary
+            );
+        }
+
         Ok(DepthUpdate {
             symbol,
             first_update_id: sequence,
@@ -135,6 +155,7 @@ impl ExtendedWsClient {
             previous_id: 0, // Extended uses gap detection mode (previous_id not provided)
             bids,
             asks,
+            is_snapshot,
         })
     }
 

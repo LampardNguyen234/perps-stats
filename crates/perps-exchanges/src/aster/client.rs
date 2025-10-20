@@ -15,7 +15,6 @@ use std::sync::{Arc, RwLock};
 
 const BASE_URL: &str = "https://fapi.asterdex.com";
 const BOOK_TICKER_CACHE_TTL_SECS: i64 = 5; // Cache book tickers for 5 seconds
-const DEFAULT_STALENESS: u64 = 2; // 2 seconds staleness threshold for orderbook cache
 
 /// Cached book ticker data with expiration
 #[derive(Clone, Debug)]

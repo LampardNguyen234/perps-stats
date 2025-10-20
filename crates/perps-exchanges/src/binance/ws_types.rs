@@ -88,15 +88,6 @@ pub struct BinanceWsDepthUpdate {
     pub asks: Vec<(String, String)>,
 }
 
-/// Binance WebSocket orderbook snapshot message
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct BinanceWsDepthSnapshot {
-    #[serde(rename = "lastUpdateId")]
-    pub last_update_id: i64,
-    pub bids: Vec<(String, String)>,
-    pub asks: Vec<(String, String)>,
-}
-
 /// Binance WebSocket mark price stream message (includes funding rate)
 /// Official format from: https://developers.binance.com/docs/derivatives/usds-margined-futures/websocket-market-streams/Mark-Price-Stream
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -122,6 +113,7 @@ pub struct BinanceWsMarkPrice {
 /// Combined stream wrapper (for multi-stream endpoint)
 #[derive(Debug, Clone, Deserialize)]
 pub struct BinanceWsCombinedStream {
+    #[allow(dead_code)]
     pub stream: String,
     pub data: serde_json::Value,
 }

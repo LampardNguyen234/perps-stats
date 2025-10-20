@@ -12,7 +12,6 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 const BASE_URL: &str = "https://api.starknet.extended.exchange/api/v1";
-const DEFAULT_STALENESS: u64 = 2; // 2 seconds staleness threshold
 
 /// A client for the Extended Exchange (Starknet L2 DEX).
 #[derive(Clone)]
@@ -27,6 +26,7 @@ pub struct ExtendedClient {
     stream_manager: Option<Arc<perps_core::StreamManager>>,
     /// Track active WebSocket streams (for backward compatibility with old code)
     #[cfg(feature = "streaming")]
+    #[allow(dead_code)]
     active_streams: Arc<RwLock<HashSet<String>>>,
 }
 
@@ -192,284 +192,6 @@ impl ExtendedClient {
             .next()
             .unwrap_or(exchange_symbol)
             .to_string()
-    }
-
-    /// Start WebSocket streaming for orderbook updates with automatic buffering
-    ///
-    /// Extended WebSocket specification:
-    /// - **Orderbook updates**:
-    ///   - Initial response: Full snapshot
-    ///   - Periodic snapshots: ~8-13 seconds (more frequent than documented 60s)
-    ///   - Between snapshots: Delta updates (only changes)
-    /// - **Sequence tracking**:
-    ///   - Extended uses millisecond timestamps as sequence numbers
-    ///   - Monotonically increasing (each update increments by ~1-10ms)
-    ///   - OrderbookManager automatically detects gaps (Gap detection mode with previous_id=0)
-    /// - **Validation Mode**:
-    ///   - Uses gap detection validation (previous_id=0)
-    ///   - Requires strict sequential ordering (sequence gaps trigger errors)
-    ///   - Uses incremental delta mode (quantities are changes to apply)
-    /// - **Connection management**:
-    ///   - Server sends ping every 15 seconds
-    ///   - Client must respond with pong within 10 seconds
-    ///   - Connection terminates if pong not received within timeout
-    #[cfg(feature = "streaming")]
-    async fn start_orderbook_stream(
-        &self,
-        extended_symbol: String,
-        manager: Arc<perps_core::OrderbookManager>,
-    ) -> Result<()> {
-        use crate::extended::ws_client::ExtendedWsClient;
-        use crate::extended::ws_types::ExtendedWsOrderbook;
-        use futures::{SinkExt, StreamExt};
-        use tokio_tungstenite::tungstenite::Message;
-
-        let ws_client = ExtendedWsClient::new();
-        let normalized_symbol = Self::normalize_symbol(&extended_symbol);
-        let active_streams = self.active_streams.clone();
-
-        tracing::info!(
-            "[Extended] Starting WebSocket orderbook stream for {} ({}) with automatic buffering",
-            extended_symbol,
-            normalized_symbol
-        );
-
-        tokio::spawn(async move {
-            let mut retry_count = 0;
-            let max_retries = 10;
-            let mut backoff_seconds = 1;
-
-            loop {
-                match ws_client.subscribe_orderbook(&extended_symbol).await {
-                    Ok(mut ws_stream) => {
-                        tracing::info!("[Extended] Connected to WebSocket for {}", extended_symbol);
-                        retry_count = 0;
-                        backoff_seconds = 1;
-
-                        // Process messages - all events are automatically buffered by OrderbookManager
-                        while let Some(msg_result) = ws_stream.next().await {
-                            match msg_result {
-                                Ok(Message::Text(text)) => {
-                                    // Try to parse as orderbook update
-                                    match serde_json::from_str::<ExtendedWsOrderbook>(&text) {
-                                        Ok(orderbook_msg) => {
-                                            // Convert to structured data
-                                            match ws_client.convert_orderbook_update(&orderbook_msg)
-                                            {
-                                                Ok((symbol, is_snapshot, bids, asks, sequence)) => {
-                                                    if is_snapshot {
-                                                        // Handle snapshot via apply_snapshot (replays buffered events)
-                                                        tracing::debug!(
-                                                            "[Extended] Received orderbook snapshot for {} (seq={}, bids={}, asks={})",
-                                                            symbol, sequence, bids.len(), asks.len()
-                                                        );
-
-                                                        // Apply snapshot + replay buffered events
-                                                        match manager
-                                                            .apply_snapshot(
-                                                                &extended_symbol,
-                                                                bids,
-                                                                asks,
-                                                                sequence,
-                                                            )
-                                                            .await
-                                                        {
-                                                            Ok(replayed_count) => {
-                                                                tracing::info!(
-                                                                    "[Extended] Snapshot applied for {} (seq={}, replayed {} events)",
-                                                                    symbol,
-                                                                    sequence,
-                                                                    replayed_count
-                                                                );
-                                                            }
-                                                            Err(e) => {
-                                                                tracing::error!(
-                                                                    "[Extended] Failed to apply snapshot for {} (seq={}): {}",
-                                                                    symbol,
-                                                                    sequence,
-                                                                    e
-                                                                );
-                                                            }
-                                                        }
-                                                    } else {
-                                                        // Handle delta: apply changes with automatic buffering
-                                                        tracing::trace!(
-                                                            "[Extended] Received orderbook delta for {} (seq={}, bids={}, asks={})",
-                                                            symbol, sequence, bids.len(), asks.len()
-                                                        );
-
-                                                        // Apply delta update with gap detection
-                                                        // - Extended uses incremental delta mode (quantities are deltas)
-                                                        // - Uses previous_id=0 (gap detection validation)
-                                                        // - Sequence gaps trigger errors requiring reconnection
-                                                        if let Err(e) = manager
-                                                            .apply_update(
-                                                                &extended_symbol,
-                                                                sequence, // first_update_id
-                                                                sequence, // final_update_id (same as first for Extended)
-                                                                0, // previous_id=0: gap detection mode
-                                                                bids,
-                                                                asks,
-                                                                true, // is_incremental_delta=true for Extended
-                                                            )
-                                                            .await
-                                                        {
-                                                            tracing::error!(
-                                                                "[Extended] CRITICAL - Failed to apply delta for {} (seq={}): {}. Reconnection required!",
-                                                                symbol,
-                                                                sequence,
-                                                                e
-                                                            );
-                                                            // Break to trigger reconnection
-                                                            break;
-                                                        }
-                                                    }
-                                                }
-                                                Err(e) => {
-                                                    tracing::warn!(
-                                                        "[Extended] Failed to convert orderbook update: {}",
-                                                        e
-                                                    );
-                                                }
-                                            }
-                                        }
-                                        Err(_) => {
-                                            // Might be subscription confirmation or other message type
-                                            tracing::trace!(
-                                                "[Extended] WebSocket message: {}",
-                                                text
-                                            );
-                                        }
-                                    }
-                                }
-                                Ok(Message::Ping(payload)) => {
-                                    // Extended server sends ping every 15s, expects pong within 10s
-                                    tracing::trace!(
-                                        "[Extended] Received ping for {}, sending pong",
-                                        extended_symbol
-                                    );
-                                    if let Err(e) = ws_stream.send(Message::Pong(payload)).await {
-                                        tracing::error!(
-                                            "[Extended] Failed to send pong for {}: {}. Connection will be terminated.",
-                                            extended_symbol,
-                                            e
-                                        );
-                                        break;
-                                    }
-                                }
-                                Ok(Message::Pong(_)) => {
-                                    tracing::trace!(
-                                        "[Extended] Received pong for {}",
-                                        extended_symbol
-                                    );
-                                }
-                                Ok(Message::Close(_)) => {
-                                    tracing::info!(
-                                        "[Extended] WebSocket closed for {}",
-                                        extended_symbol
-                                    );
-                                    break;
-                                }
-                                Err(e) => {
-                                    tracing::error!(
-                                        "[Extended] WebSocket error for {}: {}",
-                                        extended_symbol,
-                                        e
-                                    );
-                                    break;
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        tracing::error!(
-                            "[Extended] Failed to connect to WebSocket for {}: {}",
-                            extended_symbol,
-                            e
-                        );
-                    }
-                }
-
-                // Reconnection logic
-                retry_count += 1;
-                if retry_count >= max_retries {
-                    tracing::error!(
-                        "[Extended] Max retries reached for WebSocket stream: {}",
-                        extended_symbol
-                    );
-                    break;
-                }
-
-                tracing::info!(
-                    "[Extended] Reconnecting WebSocket in {} seconds... (attempt {}/{})",
-                    backoff_seconds,
-                    retry_count,
-                    max_retries
-                );
-                tokio::time::sleep(tokio::time::Duration::from_secs(backoff_seconds)).await;
-                backoff_seconds = (backoff_seconds * 2).min(60);
-            }
-
-            tracing::info!("[Extended] WebSocket stream ended for {}", extended_symbol);
-
-            // Remove symbol from active streams set
-            let mut streams = active_streams.write().await;
-            streams.remove(&normalized_symbol);
-            tracing::debug!(
-                "[Extended] Removed {} from active streams (stream ended)",
-                normalized_symbol
-            );
-        });
-
-        Ok(())
-    }
-
-    /// Fetch orderbook snapshot with update ID from REST API
-    /// Returns (Orderbook, lastUpdateId) for StreamManager initialization
-    /// Note: Extended uses timestamp as sequence number
-    async fn fetch_orderbook_snapshot_with_update_id(&self, symbol: &str, depth: u32) -> Result<(Orderbook, u64)> {
-        let exchange_symbol = self.parse_symbol(symbol);
-        let orderbook: ExtendedOrderbook = self
-            .get(&format!("/info/markets/{}/orderbook", exchange_symbol))
-            .await?;
-
-        let bids = orderbook
-            .bid
-            .into_iter()
-            .take(depth as usize)
-            .map(|level| {
-                Ok(OrderbookLevel {
-                    price: Decimal::from_str(&level.price)?,
-                    quantity: Decimal::from_str(&level.qty)?,
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
-
-        let asks = orderbook
-            .ask
-            .into_iter()
-            .take(depth as usize)
-            .map(|level| {
-                Ok(OrderbookLevel {
-                    price: Decimal::from_str(&level.price)?,
-                    quantity: Decimal::from_str(&level.qty)?,
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
-
-        let timestamp = Utc::now();
-        let last_update_id = timestamp.timestamp_millis() as u64;
-
-        Ok((
-            Orderbook {
-                symbol: symbol.to_string(),
-                bids,
-                asks,
-                timestamp,
-            },
-            last_update_id,
-        ))
     }
 }
 
@@ -659,14 +381,10 @@ impl IPerps for ExtendedClient {
             manager.subscribe(exchange_symbol.clone()).await?;
 
             // Get orderbook (auto cache + fallback)
-            let client_clone = self.clone();
-            let symbol_clone = symbol.to_string();
             let orderbook = manager
                 .get_orderbook(&exchange_symbol, depth, || async move {
                     // REST fallback returns (Orderbook, lastUpdateId) for snapshot initialization
-                    client_clone
-                        .fetch_orderbook_snapshot_with_update_id(&symbol_clone, depth)
-                        .await
+                    Err(anyhow!("REST fallback not set"))
                 })
                 .await?;
 
@@ -796,7 +514,7 @@ impl IPerps for ExtendedClient {
         &self,
         symbol: &str,
         interval: &str,
-        start_time: Option<DateTime<Utc>>,
+        _start_time: Option<DateTime<Utc>>,
         end_time: Option<DateTime<Utc>>,
         limit: Option<u32>,
     ) -> Result<Vec<Kline>> {

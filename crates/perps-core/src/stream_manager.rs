@@ -1,10 +1,9 @@
 use crate::orderbook_manager::{OrderbookManager, OrderbookManagerConfig};
 use crate::streaming::{DepthUpdate, OrderbookStreamer};
 use crate::types::Orderbook;
-use anyhow::Result;
+use anyhow::{Result};
 use std::collections::HashSet;
 use std::sync::Arc;
-use std::time;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
@@ -444,26 +443,55 @@ impl StreamManager {
         is_incremental: bool,
         exchange: &str,
     ) -> Result<()> {
-        // Apply delta update to OrderbookManager
-        // OrderbookManager handles:
-        // - Buffering events before snapshot
-        // - Applying deltas after snapshot with continuity checking
-        // - Maintaining local orderbook state
-        match orderbook_manager
-            .apply_update(
+        if depth_update.is_snapshot {
+            match orderbook_manager.apply_snapshot(
                 &depth_update.symbol,
-                depth_update.first_update_id,
-                depth_update.final_update_id,
-                depth_update.previous_id,
                 depth_update.bids.clone(),
                 depth_update.asks.clone(),
-                is_incremental,
-            )
-            .await
-        {
-            Ok(()) => {
-                // Update processed successfully (buffered or applied)
-                debug!(
+                depth_update.final_update_id,
+            ).await {
+                Ok(replayed_count) => {
+                        info!(
+                        "[{}] Snapshot applied for {} (lastUpdateId={}, replayed {} buffered events)",
+                        exchange,
+                        depth_update.symbol,
+                        depth_update.final_update_id,
+                        replayed_count
+                    );
+                }
+                Err(e) => {
+                    return Err(e);
+                }
+            }
+
+            // Update stats
+            let mut stats_write = stats.write().await;
+            stats_write.total_updates += 1;
+            stats_write.last_update = Some(Instant::now());
+            stats_write.is_connected = true;
+
+            Ok(())
+        } else {
+            // Apply delta update to OrderbookManager
+            // OrderbookManager handles:
+            // - Buffering events before snapshot
+            // - Applying deltas after snapshot with continuity checking
+            // - Maintaining local orderbook state
+            match orderbook_manager
+                .apply_update(
+                    &depth_update.symbol,
+                    depth_update.first_update_id,
+                    depth_update.final_update_id,
+                    depth_update.previous_id,
+                    depth_update.bids.clone(),
+                    depth_update.asks.clone(),
+                    is_incremental,
+                )
+                .await
+            {
+                Ok(()) => {
+                    // Update processed successfully (buffered or applied)
+                    debug!(
                     "{}: Processed update for {} (seq: {}-{}, pu: {})",
                     exchange,
                     depth_update.symbol,
@@ -471,10 +499,10 @@ impl StreamManager {
                     depth_update.final_update_id,
                     depth_update.previous_id
                 );
-            }
-            Err(e) => {
-                // Gap detected or other error - OrderbookManager will handle reconnection
-                warn!(
+                }
+                Err(e) => {
+                    // Gap detected or other error - OrderbookManager will handle reconnection
+                    warn!(
                     "{}: Failed to apply update for {} (seq: {}-{}): {}",
                     exchange,
                     depth_update.symbol,
@@ -483,19 +511,20 @@ impl StreamManager {
                     e
                 );
 
-                let mut stats_write = stats.write().await;
-                stats_write.errors += 1;
-                return Err(e);
+                    let mut stats_write = stats.write().await;
+                    stats_write.errors += 1;
+                    return Err(e);
+                }
             }
+
+            // Update stats
+            let mut stats_write = stats.write().await;
+            stats_write.total_updates += 1;
+            stats_write.last_update = Some(Instant::now());
+            stats_write.is_connected = true;
+
+            Ok(())
         }
-
-        // Update stats
-        let mut stats_write = stats.write().await;
-        stats_write.total_updates += 1;
-        stats_write.last_update = Some(Instant::now());
-        stats_write.is_connected = true;
-
-        Ok(())
     }
 }
 
