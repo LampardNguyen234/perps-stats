@@ -700,7 +700,7 @@ impl OrderbookManagerConfig {
 
     pub fn for_kucoin() -> Self {
         Self {
-            update_buffer_size: 5000,
+            update_buffer_size: 100000,
             ..Default::default()
         }
     }

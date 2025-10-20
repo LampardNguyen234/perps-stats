@@ -36,6 +36,16 @@ pub struct KuCoinWsSubscribeRequest {
     pub response: bool,
 }
 
+/// KuCoin WebSocket ping request
+/// According to KuCoin docs, clients must send ping messages every pingInterval
+/// to keep the WebSocket connection alive
+#[derive(Debug, Clone, Serialize)]
+pub struct KuCoinWsPingRequest {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub msg_type: String, // "ping"
+}
+
 /// KuCoin WebSocket ticker message
 /// Topic: /contractMarket/ticker:{symbol}
 #[derive(Debug, Clone, Deserialize, Serialize)]
