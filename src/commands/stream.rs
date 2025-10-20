@@ -172,7 +172,7 @@ pub async fn execute(args: StreamArgs) -> Result<()> {
         }
         "kucoin" => {
             // For KuCoin, use XBTUSDTM format
-            let kucoin_client = perps_exchanges::kucoin::KucoinClient::new();
+            let kucoin_client = perps_exchanges::kucoin::KucoinClient::new_rest_only();
             args.symbols
                 .iter()
                 .map(|s| kucoin_client.parse_symbol(s))

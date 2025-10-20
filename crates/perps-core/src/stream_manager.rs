@@ -108,6 +108,8 @@ impl StreamManager {
         // Create OrderbookManager with appropriate config based on exchange
         let orderbook_config = match exchange_name.as_str() {
             "binance" | "aster" => OrderbookManagerConfig::for_binance_aster(),
+            "extended" => OrderbookManagerConfig::for_extended(),
+            "kucoin" => OrderbookManagerConfig::for_kucoin(),
             _ => OrderbookManagerConfig::default(),
         };
 
@@ -206,6 +208,15 @@ impl StreamManager {
                 stats.cache_hits += 1;
 
                 return Ok(cached_orderbook);
+            } else {
+                // OrderbookManager not initialized or stale - fetch REST snapshot
+                debug!(
+                    "OrderbookManager cache miss for {}, bid_size {}, ask_size {}, age {:?}",
+                    symbol,
+                    bid_size,
+                    ask_size,
+                    chrono::Utc::now().signed_duration_since(cached_orderbook.timestamp).to_string()
+                );
             }
         }
 

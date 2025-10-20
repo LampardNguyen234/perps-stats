@@ -631,7 +631,7 @@ pub struct OrderbookManagerConfig {
 impl Default for OrderbookManagerConfig {
     fn default() -> Self {
         Self {
-            staleness_threshold: std::time::Duration::from_secs(2),
+            staleness_threshold: std::time::Duration::from_secs(5),
             update_buffer_size: 100, // Default for Binance/Aster
         }
     }
@@ -647,11 +647,16 @@ impl OrderbookManagerConfig {
         }
     }
 
-    /// Create config optimized for Extended (1000 buffer, SNAPSHOT via WebSocket)
-    /// Lower throttle (50) due to less frequent updates
     pub fn for_extended() -> Self {
         Self {
             update_buffer_size: 1000,
+            ..Default::default()
+        }
+    }
+
+    pub fn for_kucoin() -> Self {
+        Self {
+            update_buffer_size: 5000,
             ..Default::default()
         }
     }

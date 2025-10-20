@@ -9,26 +9,21 @@ pub struct KucoinResponse<T> {
 
 // For /api/v1/contracts/active
 #[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct KucoinContract {
     pub symbol: String,
-    #[serde(rename = "baseCurrency")]
     pub base_currency: String,
-    #[serde(rename = "quoteCurrency")]
     pub quote_currency: String,
-    #[serde(rename = "settleCurrency")]
     pub settle_currency: String,
-    #[serde(rename = "tickSize")]
     pub tick_size: f64,
-    #[serde(rename = "lotSize")]
     pub lot_size: i64,
-    #[serde(rename = "maxOrderQty")]
     pub max_order_qty: i64,
-    #[serde(rename = "maxLeverage")]
     pub max_leverage: u32,
-    #[serde(rename = "initialMargin")]
     pub initial_margin: f64,
-    #[serde(rename = "multiplier")]
     pub multiplier: f64,
+    pub maintain_margin: f64,
+    pub maker_fee_rate: f64,
+    pub taker_fee_rate: f64,
     pub status: String,
 }
 

@@ -1,4 +1,6 @@
 use super::ws_types::*;
+use super::types::KucoinContract;
+use crate::cache::ContractCache;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use chrono::{TimeZone, Utc};
@@ -6,6 +8,7 @@ use futures::{SinkExt, StreamExt};
 use perps_core::streaming::*;
 use perps_core::types::*;
 use rust_decimal::Decimal;
+use rust_decimal::prelude::FromPrimitive;
 use std::str::FromStr;
 use tokio::net::TcpStream;
 use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
@@ -17,13 +20,33 @@ const API_BASE_URL: &str = "https://api-futures.kucoin.com";
 #[derive(Clone)]
 pub struct KuCoinWsClient {
     api_base_url: String,
+    /// Shared contract cache for quantity conversion
+    contract_cache: ContractCache<KucoinContract>,
 }
 
 impl KuCoinWsClient {
     pub fn new() -> Self {
         Self {
             api_base_url: API_BASE_URL.to_string(),
+            contract_cache: ContractCache::new(),
         }
+    }
+
+    pub fn new_with_cache(contract_cache: ContractCache<KucoinContract>) -> Self {
+        Self {
+            api_base_url: API_BASE_URL.to_string(),
+            contract_cache,
+        }
+    }
+
+    /// Convert lot-based quantity to real quantity
+    /// Formula: real_quantity = lot_quantity × lot_size × multiplier
+    fn convert_lot_to_real_quantity(&self, lot_qty: i64, contract: &KucoinContract) -> Decimal {
+        let lot_qty_decimal = Decimal::from(lot_qty);
+        let lot_size_decimal = Decimal::from(contract.lot_size);
+        let multiplier_decimal = Decimal::from_f64(contract.multiplier).unwrap_or(Decimal::ONE);
+
+        lot_qty_decimal * lot_size_decimal * multiplier_decimal
     }
 
     /// Get WebSocket token and endpoint
@@ -563,5 +586,193 @@ impl IPerpsStream for KuCoinWsClient {
         };
 
         Ok(Box::pin(stream))
+    }
+}
+
+// ============================================================================
+// OrderbookStreamer - Optimized streaming interface for orderbook management
+// ============================================================================
+
+/// Implementation of OrderbookStreamer trait for KuCoin
+///
+/// KuCoin Level 2 Depth Streaming:
+/// - Uses `/contractMarket/level2Depth50:{symbol}` topic
+/// - Provides 50-level orderbook snapshots with sequence numbers
+/// - Updates are full snapshots (not incremental deltas)
+/// - Sequence numbers increment monotonically
+/// - Uses full price update mode (is_incremental_delta = false)
+#[async_trait]
+impl OrderbookStreamer for KuCoinWsClient {
+    async fn stream_depth_updates(&self, symbols: Vec<String>) -> Result<DepthUpdateStream> {
+        if symbols.len() != 1 {
+            return Err(anyhow!(
+                "KuCoin only supports streaming one symbol at a time (got {} symbols). Each symbol requires a separate WebSocket connection.",
+                symbols.len()
+            ));
+        }
+
+        let symbol = &symbols[0];
+        let mut ws_stream = self.connect().await?;
+
+        // Subscribe to level2Depth50 topic
+        let topic = format!("/contractMarket/level2:{}", symbol);
+        self.subscribe(&mut ws_stream, topic.clone(), format!("depth-{}", symbol))
+            .await?;
+
+        tracing::info!("[KuCoin] Subscribed to {} for {}", topic, symbol);
+
+        // Get contract info for quantity conversion
+        let contract = match self.contract_cache.get(symbol).await {
+            Some(c) => c,
+            None => {
+                tracing::warn!("[KuCoin] Contract info not found for {}, quantities will not be converted", symbol);
+                // Return error - we need contract info for proper conversion
+                return Err(anyhow!("Contract info required for symbol: {}", symbol));
+            }
+        };
+
+        let symbol_clone = symbol.clone();
+        let client_clone = self.clone();
+        let stream = async_stream::stream! {
+            while let Some(msg) = ws_stream.next().await {
+                match msg {
+                    Ok(Message::Text(text)) => {
+                        if let Ok(response) = serde_json::from_str::<KuCoinWsResponse>(&text) {
+                            match response.msg_type.as_str() {
+                                "message" => {
+                                    // Check if this is level2 data (incremental updates)
+                                    if let Some(topic_str) = &response.topic {
+                                        if topic_str.starts_with("/contractMarket/level2") {
+                                            if let Some(data) = response.data {
+                                                match serde_json::from_value::<KuCoinWsLevel2>(data.clone()) {
+                                                    Ok(level2) => {
+                                                        // Parse change: "price,side,size"
+                                                        let parts: Vec<&str> = level2.change.split(',').collect();
+                                                        if parts.len() != 3 {
+                                                            tracing::warn!("[KuCoin] Invalid change format: {}", level2.change);
+                                                            continue;
+                                                        }
+
+                                                        let price = parts[0];
+                                                        let side = parts[1]; // "buy" or "sell"
+                                                        let lot_size_str = parts[2];
+
+                                                        // Parse lot size
+                                                        let lot_size = match lot_size_str.parse::<i64>() {
+                                                            Ok(s) => s,
+                                                            Err(e) => {
+                                                                tracing::warn!("[KuCoin] Failed to parse size '{}': {}", lot_size_str, e);
+                                                                continue;
+                                                            }
+                                                        };
+
+                                                        // Convert lot to real quantity
+                                                        let real_qty = client_clone.convert_lot_to_real_quantity(lot_size, &contract);
+
+                                                        // Create orderbook level
+                                                        let level = OrderbookLevel {
+                                                            price: Decimal::from_str(price).unwrap_or(Decimal::ZERO),
+                                                            quantity: real_qty,
+                                                        };
+
+                                                        // Put in appropriate side (bids for buy, asks for sell)
+                                                        let (bids, asks) = if side == "buy" {
+                                                            (vec![level], vec![])
+                                                        } else {
+                                                            (vec![], vec![level])
+                                                        };
+
+                                                        let sequence = level2.sequence as u64;
+
+                                                        tracing::trace!(
+                                                            "[KuCoin] Level2 update for {} (seq={}, side={}, price={}, qty={})",
+                                                            symbol_clone,
+                                                            sequence,
+                                                            side,
+                                                            price,
+                                                            real_qty
+                                                        );
+
+                                                        yield Ok(DepthUpdate {
+                                                            symbol: symbol_clone.clone(),
+                                                            first_update_id: sequence,
+                                                            final_update_id: sequence,
+                                                            previous_id: 0, // KuCoin uses gap detection mode
+                                                            bids,
+                                                            asks,
+                                                            is_snapshot: false, // KuCoin sends incremental updates
+                                                        });
+                                                    }
+                                                    Err(e) => {
+                                                        tracing::warn!(
+                                                            "[KuCoin] Failed to parse level2 data: {}. Raw data: {}",
+                                                            e,
+                                                            serde_json::to_string(&data).unwrap_or_else(|_| "failed to serialize".to_string())
+                                                        );
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                "welcome" => {
+                                    tracing::debug!("[KuCoin] WebSocket connection established");
+                                }
+                                "ack" => {
+                                    tracing::debug!("[KuCoin] Subscription acknowledged");
+                                }
+                                "pong" => {
+                                    tracing::trace!("[KuCoin] Pong received");
+                                }
+                                _ => {
+                                    tracing::trace!("[KuCoin] Unknown message type: {}", response.msg_type);
+                                }
+                            }
+                        }
+                    }
+                    Ok(Message::Ping(payload)) => {
+                        if let Err(e) = ws_stream.send(Message::Pong(payload)).await {
+                            tracing::error!("[KuCoin] Failed to send pong: {}", e);
+                            yield Err(anyhow!("Failed to send pong: {}", e));
+                            break;
+                        }
+                    }
+                    Ok(Message::Close(frame)) => {
+                        tracing::info!("[KuCoin] WebSocket closed: {:?}", frame);
+                        break;
+                    }
+                    Err(e) => {
+                        tracing::error!("[KuCoin] WebSocket error: {}", e);
+                        yield Err(anyhow!("WebSocket error: {}", e));
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        };
+
+        Ok(Box::pin(stream))
+    }
+
+    fn is_incremental_delta(&self) -> bool {
+        false // KuCoin sends full snapshots, not incremental deltas
+    }
+
+    fn exchange_name(&self) -> &str {
+        "kucoin"
+    }
+
+    fn ws_base_url(&self) -> &str {
+        // KuCoin uses dynamic WebSocket URLs from token endpoint
+        "https://api-futures.kucoin.com"
+    }
+
+    fn connection_config(&self) -> ConnectionConfig {
+        ConnectionConfig {
+            ping_interval: std::time::Duration::from_secs(20),
+            pong_timeout: std::time::Duration::from_secs(10),
+            reconnect_delay: std::time::Duration::from_secs(5),
+            max_reconnect_attempts: 10,
+        }
     }
 }

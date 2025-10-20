@@ -10,8 +10,8 @@ use crate::paradex::ParadexClient;
 use perps_core::traits::IPerps;
 
 /// Returns a vector of all available exchange clients.
-/// For Aster, Binance, and Extended, automatically enables WebSocket streaming if DATABASE_URL is set.
-/// This function is async because Aster, Binance, and Extended client initialization requires async operations.
+/// For Aster, Binance, Extended, and KuCoin, automatically enables WebSocket streaming if DATABASE_URL is set.
+/// This function is async because Aster, Binance, Extended, and KuCoin client initialization requires async operations.
 pub async fn all_exchanges() -> Vec<(String, Box<dyn IPerps + Send + Sync>)> {
     let mut exchanges = vec![
         (
@@ -21,10 +21,6 @@ pub async fn all_exchanges() -> Vec<(String, Box<dyn IPerps + Send + Sync>)> {
         (
             "hyperliquid".to_string(),
             Box::new(HyperliquidClient::new()) as Box<dyn IPerps + Send + Sync>,
-        ),
-        (
-            "kucoin".to_string(),
-            Box::new(KucoinClient::new()) as Box<dyn IPerps + Send + Sync>,
         ),
         (
             "lighter".to_string(),
@@ -64,13 +60,21 @@ pub async fn all_exchanges() -> Vec<(String, Box<dyn IPerps + Send + Sync>)> {
         ));
     }
 
+    // KuCoin requires async initialization
+    if let Ok(kucoin_client) = KucoinClient::new().await {
+        exchanges.push((
+            "kucoin".to_string(),
+            Box::new(kucoin_client) as Box<dyn IPerps + Send + Sync>,
+        ));
+    }
+
     exchanges
 }
 
 /// Returns a single exchange client by name.
-/// For Aster, Binance, and Extended, automatically enables WebSocket streaming if DATABASE_URL is set.
+/// For Aster, Binance, Extended, and KuCoin, automatically enables WebSocket streaming if DATABASE_URL is set.
 ///
-/// Environment variables (Aster, Binance, Extended):
+/// Environment variables (Aster, Binance, Extended, KuCoin):
 /// - `DATABASE_URL`: PostgreSQL connection string (required for streaming)
 /// - `ENABLE_ORDERBOOK_STREAMING`: Enable/disable streaming (default: true if DATABASE_URL is set)
 pub async fn get_exchange(name: &str) -> anyhow::Result<Box<dyn IPerps + Send + Sync>> {
@@ -89,7 +93,10 @@ pub async fn get_exchange(name: &str) -> anyhow::Result<Box<dyn IPerps + Send + 
             Ok(Box::new(client))
         }
         "hyperliquid" => Ok(Box::new(HyperliquidClient::new())),
-        "kucoin" => Ok(Box::new(KucoinClient::new())),
+        "kucoin" => {
+            let client = KucoinClient::new().await?;
+            Ok(Box::new(client))
+        }
         "lighter" => Ok(Box::new(LighterClient::new())),
         "pacifica" => Ok(Box::new(PacificaClient::new())),
         "paradex" => Ok(Box::new(ParadexClient::new())),

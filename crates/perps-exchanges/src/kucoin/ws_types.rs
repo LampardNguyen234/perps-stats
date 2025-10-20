@@ -72,12 +72,12 @@ pub struct KuCoinWsExecution {
 
 /// KuCoin WebSocket level 2 orderbook message
 /// Topic: /contractMarket/level2:{symbol}
+/// This provides incremental updates with individual price level changes
+/// Note: The symbol field is NOT in the data payload - it must be extracted from the topic
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct KuCoinWsLevel2 {
-    pub symbol: String,
     pub sequence: i64,
     pub change: String, // Format: "price,side,size"
-    #[serde(rename = "ts")]
     pub timestamp: i64, // Nanoseconds
 }
 
@@ -88,6 +88,20 @@ pub struct KuCoinWsKline {
     pub symbol: String,
     pub candles: Vec<String>, // [start_time, open, close, high, low, volume, amount]
     pub time: i64,            // Milliseconds
+}
+
+/// KuCoin WebSocket Level 2 Depth (50 levels) message
+/// Topic: /contractMarket/level2Depth50:{symbol}
+/// This provides incremental updates with sequence numbers
+/// Note: The symbol field is NOT in the data payload - it must be extracted from the topic
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KuCoinWsLevel2Depth {
+    pub sequence: i64,
+    pub asks: Vec<(String, i64)>, // (price, size in lots)
+    pub bids: Vec<(String, i64)>, // (price, size in lots)
+    #[serde(rename = "ts")]
+    pub timestamp: i64, // Nanoseconds
 }
 
 /// KuCoin WebSocket response wrapper

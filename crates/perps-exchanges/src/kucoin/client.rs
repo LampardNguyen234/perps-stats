@@ -1,4 +1,4 @@
-use crate::cache::SymbolsCache;
+use crate::cache::ContractCache;
 use crate::kucoin::types::*;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
@@ -7,7 +7,7 @@ use perps_core::types::*;
 use perps_core::{execute_with_retry, IPerps, RateLimiter, RetryConfig};
 use rust_decimal::prelude::FromPrimitive;
 use rust_decimal::Decimal;
-use std::ops::Mul;
+use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -17,29 +17,147 @@ const BASE_URL: &str = "https://api-futures.kucoin.com";
 #[derive(Clone)]
 pub struct KucoinClient {
     http: reqwest::Client,
-    /// Cached set of supported symbols
-    symbols_cache: SymbolsCache,
+    /// Cached contract information (includes lotSize, tickSize, multiplier, fees, margins)
+    contract_cache: ContractCache<KucoinContract>,
     /// Rate limiter for API calls
     rate_limiter: Arc<RateLimiter>,
+    /// Optional stream manager for WebSocket-based orderbook streaming
+    #[cfg(feature = "streaming")]
+    stream_manager: Option<Arc<perps_core::StreamManager>>,
 }
 
 impl KucoinClient {
-    pub fn new() -> Self {
-        Self {
-            http: reqwest::Client::new(),
-            symbols_cache: SymbolsCache::new(),
-            rate_limiter: Arc::new(RateLimiter::kucoin()),
+    /// Create a new KuCoin client
+    ///
+    /// Automatically enables WebSocket streaming if:
+    /// - DATABASE_URL environment variable is set
+    /// - `streaming` feature is enabled
+    ///
+    /// Falls back to REST-only mode if streaming initialization fails.
+    pub async fn new() -> anyhow::Result<Self> {
+        match Self::try_init_streaming().await {
+            Ok(client) => {
+                tracing::info!("✓ KucoinClient initialized with WebSocket streaming");
+                Ok(client)
+            }
+            Err(e) => {
+                tracing::warn!("Failed to initialize streaming for KucoinClient: {}", e);
+                tracing::warn!("Falling back to REST-only mode");
+                Ok(Self::new_rest_only())
+            }
         }
     }
 
-    /// Ensure the symbols cache is initialized
+    /// Create a REST-only client (no streaming)
+    pub fn new_rest_only() -> Self {
+        Self {
+            http: reqwest::Client::new(),
+            contract_cache: ContractCache::new(),
+            rate_limiter: Arc::new(RateLimiter::kucoin()),
+            #[cfg(feature = "streaming")]
+            stream_manager: None,
+        }
+    }
+
+    /// Try to initialize with streaming support using StreamManager
+    #[cfg(feature = "streaming")]
+    async fn try_init_streaming() -> anyhow::Result<Self> {
+        use super::ws_client::KuCoinWsClient;
+        use perps_core::{StreamConfig, StreamManager};
+
+        tracing::info!("Initializing KucoinClient with StreamManager");
+
+        // Create contract cache and initialize it immediately
+        let contract_cache = ContractCache::new();
+
+        // Pre-fetch contracts to populate cache before WebSocket starts
+        let http = reqwest::Client::new();
+        let rate_limiter = Arc::new(RateLimiter::kucoin());
+
+        // Fetch contracts using a temporary client-like structure
+        let url = format!("{}/api/v1/contracts/active", BASE_URL);
+        let response = rate_limiter.execute(|| {
+            let url = url.clone();
+            let http = http.clone();
+            async move {
+                let response = http.get(&url).send().await?;
+                let wrapper: KucoinResponse<Vec<KucoinContract>> = response.json().await?;
+                if wrapper.code != "200000" {
+                    return Err(anyhow!("KuCoin API error: code {}", wrapper.code));
+                }
+                Ok(wrapper.data)
+            }
+        }).await?;
+
+        // Build contract map
+        let contract_map: HashMap<String, KucoinContract> = response
+            .into_iter()
+            .map(|contract| (contract.symbol.clone(), contract))
+            .collect();
+
+        tracing::info!("[KuCoin] Pre-initialized contract cache with {} contracts", contract_map.len());
+        contract_cache.initialize(contract_map);
+
+        // Create WebSocket client with shared and initialized contract cache
+        let ws_client = Arc::new(KuCoinWsClient::new_with_cache(contract_cache.clone()));
+
+        // Create StreamManager with default config
+        let stream_manager = Arc::new(StreamManager::new(
+            ws_client as Arc<dyn perps_core::OrderbookStreamer>,
+            StreamConfig::default(),
+        ));
+
+        Ok(Self {
+            http,
+            contract_cache,
+            rate_limiter,
+            stream_manager: Some(stream_manager),
+        })
+    }
+
+    /// Fallback when streaming feature is disabled
+    #[cfg(not(feature = "streaming"))]
+    async fn try_init_streaming() -> anyhow::Result<Self> {
+        Err(anyhow::anyhow!("Streaming feature not enabled"))
+    }
+
+    /// Ensure the contract cache is initialized by fetching all contracts from /api/v1/contracts/active
     async fn ensure_cache_initialized(&self) -> Result<()> {
-        self.symbols_cache
+        self.contract_cache
             .get_or_init(|| async {
-                let markets = self.get_markets().await?;
-                Ok(markets.into_iter().map(|m| m.symbol).collect())
+                tracing::debug!("[KuCoin] Fetching all contracts for cache initialization");
+                let contracts: Vec<KucoinContract> = self.get("/api/v1/contracts/active").await?;
+
+                // Build HashMap: symbol -> contract
+                let contract_map: HashMap<String, KucoinContract> = contracts
+                    .into_iter()
+                    .map(|contract| (contract.symbol.clone(), contract))
+                    .collect();
+
+                tracing::info!("[KuCoin] Initialized contract cache with {} contracts", contract_map.len());
+                Ok(contract_map)
             })
             .await
+    }
+
+    /// Get contract info for a symbol (initializes cache if needed)
+    async fn get_contract_info(&self, symbol: &str) -> Result<KucoinContract> {
+        self.ensure_cache_initialized().await?;
+
+        self.contract_cache
+            .get(symbol)
+            .await
+            .ok_or_else(|| anyhow!("Contract info not found for symbol: {}", symbol))
+    }
+
+    /// Convert lot-based quantity to real quantity
+    /// Formula: real_quantity = lot_quantity × lot_size × multiplier
+    fn convert_lot_to_real_quantity(&self, lot_qty: i64, contract: &KucoinContract) -> Decimal {
+        let lot_qty_decimal = Decimal::from(lot_qty);
+        let lot_size_decimal = Decimal::from(contract.lot_size);
+        let multiplier_decimal = Decimal::from_f64(contract.multiplier).unwrap_or(Decimal::ONE);
+
+        lot_qty_decimal * lot_size_decimal * multiplier_decimal
     }
 
     async fn get<T: serde::de::DeserializeOwned>(&self, endpoint: &str) -> Result<T> {
@@ -78,11 +196,59 @@ impl KucoinClient {
         })
         .await
     }
+
+    /// Fetch orderbook snapshot with update ID (sequence number) for StreamManager
+    #[cfg(feature = "streaming")]
+    async fn get_orderbook_snapshot_with_update_id(
+        &self,
+        symbol: &str,
+        _depth: u32,
+    ) -> anyhow::Result<(Orderbook, u64)> {
+        let response: KucoinOrderbook = self
+            .get(&format!("/api/v1/level2/snapshot?symbol={}", symbol))
+            .await?;
+
+        // Get contract info for quantity conversion
+        let contract = self.get_contract_info(&response.symbol).await?;
+
+        let bids = response
+            .bids
+            .iter()
+            .map(|(price, lot_qty)| {
+                let real_qty = self.convert_lot_to_real_quantity(*lot_qty, &contract);
+                Ok(OrderbookLevel {
+                    price: Decimal::from_f64(*price).unwrap_or(Decimal::ZERO),
+                    quantity: real_qty,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        let asks = response
+            .asks
+            .iter()
+            .map(|(price, lot_qty)| {
+                let real_qty = self.convert_lot_to_real_quantity(*lot_qty, &contract);
+                Ok(OrderbookLevel {
+                    price: Decimal::from_f64(*price).unwrap_or(Decimal::ZERO),
+                    quantity: real_qty,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        let orderbook = Orderbook {
+            symbol: response.symbol.clone(),
+            bids,
+            asks,
+            timestamp: Utc.timestamp_nanos(response.timestamp),
+        };
+
+        Ok((orderbook, response.sequence))
+    }
 }
 
 impl Default for KucoinClient {
     fn default() -> Self {
-        Self::new()
+        Self::new_rest_only()
     }
 }
 
@@ -95,6 +261,10 @@ impl IPerps for KucoinClient {
     fn parse_symbol(&self, symbol: &str) -> String {
         // Convert BTC -> XBTUSDTM, ETH -> ETHUSDTM
         let upper = symbol.to_uppercase();
+        if upper.contains("USDTM") {
+            return upper;
+        }
+
         if upper == "BTC" {
             "XBTUSDTM".to_string()
         } else {
@@ -158,18 +328,45 @@ impl IPerps for KucoinClient {
         })
     }
 
-    async fn get_orderbook(&self, symbol: &str, _depth: u32) -> Result<Orderbook> {
+    async fn get_orderbook(&self, symbol: &str, depth: u32) -> Result<Orderbook> {
+        // Check if StreamManager is available
+        #[cfg(feature = "streaming")]
+        if let Some(ref manager) = self.stream_manager {
+            let kucoin_symbol = self.parse_symbol(symbol);
+
+            // Subscribe (idempotent, auto-starts streaming)
+            manager.subscribe(kucoin_symbol.clone()).await?;
+
+            // Get orderbook (auto cache + fallback)
+            let client_clone = self.clone();
+            let kucoin_symbol_clone = kucoin_symbol.clone();
+            let orderbook = manager
+                .get_orderbook(&kucoin_symbol, depth, || async move {
+                    client_clone
+                        .get_orderbook_snapshot_with_update_id(&kucoin_symbol_clone, depth)
+                        .await
+                })
+                .await?;
+
+            return Ok(orderbook);
+        }
+
+        // Fallback: direct REST API call with quantity conversion
         let response: KucoinOrderbook = self
             .get(&format!("/api/v1/level2/snapshot?symbol={}", symbol))
             .await?;
 
+        // Get contract info for quantity conversion
+        let contract = self.get_contract_info(&response.symbol).await?;
+
         let bids = response
             .bids
             .into_iter()
-            .map(|(price, quantity)| {
+            .map(|(price, lot_qty)| {
+                let real_qty = self.convert_lot_to_real_quantity(lot_qty, &contract);
                 Ok(OrderbookLevel {
                     price: Decimal::from_f64(price).unwrap_or(Decimal::ZERO),
-                    quantity: Decimal::from(quantity),
+                    quantity: real_qty,
                 })
             })
             .collect::<Result<Vec<_>>>()?;
@@ -177,10 +374,11 @@ impl IPerps for KucoinClient {
         let asks = response
             .asks
             .into_iter()
-            .map(|(price, quantity)| {
+            .map(|(price, lot_qty)| {
+                let real_qty = self.convert_lot_to_real_quantity(lot_qty, &contract);
                 Ok(OrderbookLevel {
                     price: Decimal::from_f64(price).unwrap_or(Decimal::ZERO),
-                    quantity: Decimal::from(quantity),
+                    quantity: real_qty,
                 })
             })
             .collect::<Result<Vec<_>>>()?;
@@ -333,7 +531,7 @@ impl IPerps for KucoinClient {
 
     async fn is_supported(&self, symbol: &str) -> Result<bool> {
         self.ensure_cache_initialized().await?;
-        Ok(self.symbols_cache.contains(symbol).await)
+        Ok(self.contract_cache.contains(symbol).await)
     }
 
     async fn get_ticker(&self, symbol: &str) -> Result<Ticker> {
