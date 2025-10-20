@@ -2,7 +2,7 @@ use crate::orderbook_manager::{OrderbookManager, OrderbookManagerConfig};
 use crate::streaming::{DepthUpdate, OrderbookStreamer};
 use crate::types::Orderbook;
 use anyhow::{Result};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
@@ -96,8 +96,9 @@ pub struct StreamManager {
     /// Statistics for monitoring
     stats: Arc<RwLock<StreamStats>>,
 
-    /// Shutdown signal
-    shutdown_tx: Arc<RwLock<Option<tokio::sync::broadcast::Sender<()>>>>,
+    /// Per-symbol shutdown signals
+    /// Each symbol has its own shutdown channel to allow independent stream control
+    shutdown_txs: Arc<RwLock<HashMap<String, tokio::sync::broadcast::Sender<()>>>>,
 }
 
 impl StreamManager {
@@ -121,7 +122,7 @@ impl StreamManager {
             orderbook_manager,
             subscribed_symbols: Arc::new(RwLock::new(HashSet::new())),
             stats: Arc::new(RwLock::new(StreamStats::default())),
-            shutdown_tx: Arc::new(RwLock::new(None)),
+            shutdown_txs: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -331,8 +332,13 @@ impl StreamManager {
             self.streamer.exchange_name()
         );
 
-        if let Some(tx) = self.shutdown_tx.write().await.take() {
-            let _ = tx.send(());
+        // Send shutdown signal to all streaming tasks
+        {
+            let mut shutdown_txs = self.shutdown_txs.write().await;
+            for (symbol, tx) in shutdown_txs.drain() {
+                info!("Sending shutdown signal to {}", symbol);
+                let _ = tx.send(());
+            }
         }
 
         // Clear subscriptions
@@ -362,10 +368,16 @@ impl StreamManager {
         let config = self.config.clone();
         let exchange = self.streamer.exchange_name().to_string();
         let is_incremental = self.streamer.is_incremental_delta();
+        let shutdown_txs = self.shutdown_txs.clone(); // Clone for cleanup
 
-        // Create shutdown receiver
+        // Create per-symbol shutdown channel
         let (shutdown_tx, mut shutdown_rx) = tokio::sync::broadcast::channel(1);
-        *self.shutdown_tx.write().await = Some(shutdown_tx);
+
+        // Store shutdown sender in the per-symbol HashMap
+        {
+            let mut txs = shutdown_txs.write().await;
+            txs.insert(symbol.clone(), shutdown_tx);
+        }
 
         Ok(async move {
             info!("{}: Started streaming task for {}", exchange, symbol);
@@ -438,6 +450,12 @@ impl StreamManager {
             }
 
             info!("{}: Streaming task ended for {}", exchange, symbol);
+
+            // Cleanup: Remove shutdown sender from HashMap
+            {
+                let mut txs = shutdown_txs.write().await;
+                txs.remove(&symbol);
+            }
         })
     }
 

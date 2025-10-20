@@ -3,8 +3,13 @@ use rust_decimal::Decimal;
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use tokio::sync::{Mutex, RwLock};
 use crate::types::{Orderbook, OrderbookLevel};
+
+// LocalOrderbook uses parking_lot (sync, fast, CPU-bound operations)
+use parking_lot::{Mutex as ParkingMutex, RwLock as ParkingRwLock};
+
+// OrderbookManager uses tokio (async, for async context integration)
+use tokio::sync::RwLock as TokioRwLock;
 
 /// Buffered update event for replay after snapshot
 #[derive(Debug, Clone)]
@@ -20,26 +25,26 @@ struct BufferedUpdate {
     is_snapshot: bool,
 }
 
-/// Represents a local orderbook that maintains state and applies delta updates
-#[derive(Debug, Clone)]
-pub struct LocalOrderbook {
+/// Internal orderbook data (protected by RwLock)
+#[derive(Debug)]
+struct OrderbookData {
     /// Exchange name (for logging context)
-    pub exchange: String,
+    exchange: String,
 
     /// Symbol (normalized format, e.g., "BTC")
-    pub symbol: String,
+    symbol: String,
 
     /// Bid price levels (price -> quantity), sorted descending
-    pub bids: BTreeMap<Decimal, Decimal>,
+    bids: BTreeMap<Decimal, Decimal>,
 
     /// Ask price levels (price -> quantity), sorted ascending
-    pub asks: BTreeMap<Decimal, Decimal>,
+    asks: BTreeMap<Decimal, Decimal>,
 
     /// Last update ID from the exchange (for delta validation)
-    pub last_update_id: u64,
+    last_update_id: u64,
 
     /// Timestamp of last update
-    pub timestamp: DateTime<Utc>,
+    timestamp: DateTime<Utc>,
 
     /// Circular buffer of recent updates for snapshot replay
     /// Following Binance spec: buffer events before snapshot, replay after
@@ -47,17 +52,25 @@ pub struct LocalOrderbook {
 
     /// Maximum buffer size (configured per exchange)
     buffer_size: usize,
+}
 
-    /// Counter for database write throttling
-    /// Incremented on each update, reset when database write occurs
-    updates_since_db_write: u64,
+/// Represents a local orderbook that maintains state and applies delta updates
+/// Thread-safe with internal locking for concurrent operations
+pub struct LocalOrderbook {
+    /// Serializes snapshot vs update operations
+    /// Ensures apply_snapshot() blocks apply_delta() and vice versa
+    snapshot_lock: ParkingMutex<()>,
+
+    /// Protects the actual orderbook data
+    /// Allows concurrent reads, exclusive writes
+    data: ParkingRwLock<OrderbookData>,
 }
 
 impl LocalOrderbook {
     /// Create a new empty LocalOrderbook for buffering before snapshot
     /// This is used when starting WebSocket stream before fetching snapshot
     pub fn new_empty(exchange: String, symbol: String, buffer_size: usize) -> Self {
-        Self {
+        let data = OrderbookData {
             exchange,
             symbol,
             bids: BTreeMap::new(),
@@ -66,7 +79,11 @@ impl LocalOrderbook {
             timestamp: Utc::now(),
             update_buffer: VecDeque::with_capacity(buffer_size),
             buffer_size,
-            updates_since_db_write: 0,
+        };
+
+        Self {
+            snapshot_lock: ParkingMutex::new(()),
+            data: ParkingRwLock::new(data),
         }
     }
 
@@ -93,7 +110,7 @@ impl LocalOrderbook {
             }
         }
 
-        Self {
+        let data = OrderbookData {
             exchange,
             symbol,
             bids: bid_map,
@@ -102,7 +119,11 @@ impl LocalOrderbook {
             timestamp: Utc::now(),
             update_buffer: VecDeque::with_capacity(buffer_size),
             buffer_size,
-            updates_since_db_write: 0,
+        };
+
+        Self {
+            snapshot_lock: ParkingMutex::new(()),
+            data: ParkingRwLock::new(data),
         }
     }
 
@@ -117,55 +138,61 @@ impl LocalOrderbook {
     ///
     /// For Extended: This is called when SNAPSHOT event is received from WebSocket
     pub fn apply_snapshot(
-        &mut self,
+        &self,
         bids: Vec<OrderbookLevel>,
         asks: Vec<OrderbookLevel>,
         last_update_id: u64,
     ) -> anyhow::Result<usize> {
+        // Acquire snapshot lock to serialize with apply_delta
+        let _snapshot_guard = self.snapshot_lock.lock();
+
+        // Acquire write lock on data
+        let mut data = self.data.write();
+
         tracing::info!(
             "[Snapshot] {}/{} applying snapshot: lastUpdateId={}, bids={} levels, asks={} levels, buffered_events={}",
-            self.exchange,
-            self.symbol,
+            data.exchange,
+            data.symbol,
             last_update_id,
             bids.len(),
             asks.len(),
-            self.update_buffer.len()
+            data.update_buffer.len()
         );
 
         // Clear current state
-        self.bids.clear();
-        self.asks.clear();
+        data.bids.clear();
+        data.asks.clear();
 
         // Apply snapshot
         for level in bids {
             if level.quantity > Decimal::ZERO {
-                self.bids.insert(level.price, level.quantity);
+                data.bids.insert(level.price, level.quantity);
             }
         }
 
         for level in asks {
             if level.quantity > Decimal::ZERO {
-                self.asks.insert(level.price, level.quantity);
+                data.asks.insert(level.price, level.quantity);
             }
         }
 
-        self.last_update_id = last_update_id;
-        self.timestamp = Utc::now();
+        data.last_update_id = last_update_id;
+        data.timestamp = Utc::now();
 
         // Replay buffered events following Binance Step 5:
         // "The first processed event should have U <= lastUpdateId AND u >= lastUpdateId"
         // This means we process straddling events and events after the snapshot
         let mut replayed = 0;
         let mut skipped = 0;
-        let buffered_events: Vec<_> = self.update_buffer.drain(..).collect();
+        let buffered_events: Vec<_> = data.update_buffer.drain(..).collect();
 
         for event in buffered_events {
             // Skip events entirely before the snapshot (final_update_id < lastUpdateId)
             if event.final_update_id < last_update_id {
                 tracing::trace!(
                     "[Snapshot] {}/{} skipping old event: U={}, u={} < lastUpdateId={}",
-                    self.exchange,
-                    self.symbol,
+                    data.exchange,
+                    data.symbol,
                     event.first_update_id,
                     event.final_update_id,
                     last_update_id
@@ -180,8 +207,8 @@ impl LocalOrderbook {
             if is_straddling {
                 tracing::trace!(
                     "[Snapshot] {}/{} replaying STRADDLING event: U={}, u={}, lastUpdateId={}",
-                    self.exchange,
-                    self.symbol,
+                    data.exchange,
+                    data.symbol,
                     event.first_update_id,
                     event.final_update_id,
                     last_update_id
@@ -189,15 +216,16 @@ impl LocalOrderbook {
             } else {
                 tracing::debug!(
                     "[Snapshot] {}/{} replaying buffered event: U={}, u={}",
-                    self.exchange,
-                    self.symbol,
+                    data.exchange,
+                    data.symbol,
                     event.first_update_id,
                     event.final_update_id
                 );
             }
 
             // Replay the event (no buffering, no validation - just apply)
-            match self.apply_delta_internal(
+            match Self::apply_delta_internal(
+                &mut data,
                 event.first_update_id,
                 event.final_update_id,
                 event.bid_updates,
@@ -208,16 +236,16 @@ impl LocalOrderbook {
                 Ok(false) => {
                     tracing::debug!(
                         "[Snapshot] {}/{} replayed event was stale: u={}",
-                        self.exchange,
-                        self.symbol,
+                        data.exchange,
+                        data.symbol,
                         event.final_update_id
                     );
                 }
                 Err(e) => {
                     tracing::warn!(
                         "[Snapshot] {}/{} failed to replay event U={}, u={}: {}",
-                        self.exchange,
-                        self.symbol,
+                        data.exchange,
+                        data.symbol,
                         event.first_update_id,
                         event.final_update_id,
                         e
@@ -228,11 +256,11 @@ impl LocalOrderbook {
 
         tracing::info!(
             "[Snapshot] {}/{} replay complete: replayed={}, skipped={}, final_lastUpdateId={}",
-            self.exchange,
-            self.symbol,
+            data.exchange,
+            data.symbol,
             replayed,
             skipped,
-            self.last_update_id
+            data.last_update_id
         );
 
         Ok(replayed)
@@ -257,7 +285,7 @@ impl LocalOrderbook {
     /// WebSocket messages can contain batched updates where first_update_id != final_update_id.
     /// The message represents all updates from U to u (inclusive).
     pub fn apply_delta(
-        &mut self,
+        &self,
         first_update_id: u64,
         final_update_id: u64,
         previous_id: u64,
@@ -265,6 +293,12 @@ impl LocalOrderbook {
         ask_updates: Vec<OrderbookLevel>,
         is_incremental_delta: bool,
     ) -> anyhow::Result<bool> {
+        // Acquire snapshot lock to serialize with apply_snapshot
+        let _snapshot_guard = self.snapshot_lock.lock();
+
+        // Acquire write lock on data
+        let mut data = self.data.write();
+
         // Rule 1: ALWAYS buffer first (even if validation fails)
         // This ensures we can replay events after snapshot
         let buffered = BufferedUpdate {
@@ -278,69 +312,70 @@ impl LocalOrderbook {
         };
 
         // Maintain circular buffer (drop oldest if full)
-        if self.update_buffer.len() >= self.buffer_size {
-            self.update_buffer.pop_front();
+        if data.update_buffer.len() >= data.buffer_size {
+            data.update_buffer.pop_front();
         }
-        self.update_buffer.push_back(buffered);
+        data.update_buffer.push_back(buffered);
 
         // Rule 2: If no snapshot yet (lastUpdateId=0), only buffer
-        if self.last_update_id == 0 {
+        if data.last_update_id == 0 {
             tracing::debug!(
                 "[WS Update] {}/{} BUFFERED (no snapshot yet): U={}, u={}, buffered_count={}",
-                self.exchange,
-                self.symbol,
+                data.exchange,
+                data.symbol,
                 first_update_id,
                 final_update_id,
-                self.update_buffer.len()
+                data.update_buffer.len()
             );
             return Ok(false);
         }
 
         // Rule 3: Staleness check - both first_update_id and final_update_id must be > lastUpdateId
-        if final_update_id < self.last_update_id {
+        if final_update_id < data.last_update_id {
             tracing::debug!(
                 "[WS Update] {}/{} DROPPED (stale final_update_id): u={} <= lastUpdateId={}",
-                self.exchange,
-                self.symbol,
+                data.exchange,
+                data.symbol,
                 final_update_id,
-                self.last_update_id
+                data.last_update_id
             );
             return Ok(false);
         }
 
-        if first_update_id < self.last_update_id {
+        if first_update_id < data.last_update_id {
             tracing::debug!(
                 "[WS Update] {}/{} DROPPED (stale first_update_id): U={} <= lastUpdateId={}",
-                self.exchange,
-                self.symbol,
+                data.exchange,
+                data.symbol,
                 first_update_id,
-                self.last_update_id
+                data.last_update_id
             );
             return Ok(false);
         }
 
         // Rule 4: Continuity validation
         if previous_id != 0 {
-            if previous_id != self.last_update_id {
+            if previous_id != data.last_update_id {
                 tracing::error!(
                     "[WS Update] {}/{} CRITICAL: previous_id mismatch (Rule 4)! pu={}, lastUpdateId={}. Reconnection required!",
-                    self.exchange,
-                    self.symbol,
+                    data.exchange,
+                    data.symbol,
                     previous_id,
-                    self.last_update_id
+                    data.last_update_id
                 );
                 return Err(anyhow::anyhow!(
                     "Previous ID mismatch for {}/{} (Rule 4): pu={}, expected={}. Sequence integrity violated.",
-                    self.exchange,
-                    self.symbol,
+                    data.exchange,
+                    data.symbol,
                     previous_id,
-                    self.last_update_id
+                    data.last_update_id
                 ));
             }
         }
 
         // All validation passed, apply the update
-        self.apply_delta_internal(
+        Self::apply_delta_internal(
+            &mut data,
             first_update_id,
             final_update_id,
             bid_updates,
@@ -358,7 +393,7 @@ impl LocalOrderbook {
     /// - `apply_delta()` - after full validation
     /// - `apply_snapshot()` - when replaying buffered events
     fn apply_delta_internal(
-        &mut self,
+        data: &mut OrderbookData,
         first_update_id: u64,
         final_update_id: u64,
         bid_updates: Vec<OrderbookLevel>,
@@ -366,8 +401,8 @@ impl LocalOrderbook {
         is_incremental_delta: bool,
     ) -> anyhow::Result<bool> {
         // Track best bid/ask before updates for change detection
-        let old_best_bid = self.bids.iter().next_back().map(|(p, q)| (*p, *q));
-        let old_best_ask = self.asks.iter().next().map(|(p, q)| (*p, *q));
+        let old_best_bid = data.bids.iter().next_back().map(|(p, q)| (*p, *q));
+        let old_best_ask = data.asks.iter().next().map(|(p, q)| (*p, *q));
 
         // Apply bid updates
         let mut bid_removes = 0;
@@ -376,7 +411,7 @@ impl LocalOrderbook {
             // Calculate final quantity based on update mode
             let final_quantity = if is_incremental_delta {
                 // Incremental delta: add the delta to existing quantity
-                let existing_quantity = self
+                let existing_quantity = data
                     .bids
                     .get(&level.price)
                     .copied()
@@ -385,8 +420,8 @@ impl LocalOrderbook {
 
                 tracing::trace!(
                     "[WS Update] {}/{} BID DELTA: price={}, existing={}, delta={}, new={}",
-                    self.exchange,
-                    self.symbol,
+                    data.exchange,
+                    data.symbol,
                     level.price,
                     existing_quantity,
                     level.quantity,
@@ -403,13 +438,13 @@ impl LocalOrderbook {
             let should_remove = final_quantity <= Decimal::ZERO;
 
             if should_remove {
-                self.bids.remove(&level.price);
+                data.bids.remove(&level.price);
                 bid_removes += 1;
                 if final_quantity < Decimal::ZERO {
                     tracing::warn!(
                     "[WS Update] {}/{} BID REMOVED: price={}, final_qty={}, mode={}",
-                    self.exchange,
-                    self.symbol,
+                    data.exchange,
+                    data.symbol,
                     level.price,
                     final_quantity,
                     if is_incremental_delta {
@@ -420,13 +455,13 @@ impl LocalOrderbook {
                 );
                 }
             } else {
-                let is_new = !self.bids.contains_key(&level.price);
-                self.bids.insert(level.price, final_quantity);
+                let is_new = !data.bids.contains_key(&level.price);
+                data.bids.insert(level.price, final_quantity);
                 bid_adds_or_updates += 1;
                 tracing::trace!(
                     "[WS Update] {}/{} BID {}: price={}, qty={}, mode={}",
-                    self.exchange,
-                    self.symbol,
+                    data.exchange,
+                    data.symbol,
                     if is_new { "ADDED" } else { "UPDATED" },
                     level.price,
                     final_quantity,
@@ -446,7 +481,7 @@ impl LocalOrderbook {
             // Calculate final quantity based on update mode
             let final_quantity = if is_incremental_delta {
                 // Incremental delta: add the delta to existing quantity
-                let existing_quantity = self
+                let existing_quantity = data
                     .asks
                     .get(&level.price)
                     .copied()
@@ -455,8 +490,8 @@ impl LocalOrderbook {
 
                 tracing::trace!(
                     "[WS Update] {}/{} ASK DELTA: price={}, existing={}, delta={}, new={}",
-                    self.exchange,
-                    self.symbol,
+                    data.exchange,
+                    data.symbol,
                     level.price,
                     existing_quantity,
                     level.quantity,
@@ -473,12 +508,12 @@ impl LocalOrderbook {
             let should_remove = final_quantity <= Decimal::ZERO;
 
             if should_remove {
-                self.asks.remove(&level.price);
+                data.asks.remove(&level.price);
                 ask_removes += 1;
                 tracing::trace!(
                     "[WS Update] {}/{} ASK REMOVED: price={}, final_qty={}, mode={}",
-                    self.exchange,
-                    self.symbol,
+                    data.exchange,
+                    data.symbol,
                     level.price,
                     final_quantity,
                     if is_incremental_delta {
@@ -488,13 +523,13 @@ impl LocalOrderbook {
                     }
                 );
             } else {
-                let is_new = !self.asks.contains_key(&level.price);
-                self.asks.insert(level.price, final_quantity);
+                let is_new = !data.asks.contains_key(&level.price);
+                data.asks.insert(level.price, final_quantity);
                 ask_adds_or_updates += 1;
                 tracing::trace!(
                     "[WS Update] {}/{} ASK {}: price={}, qty={}, mode={}",
-                    self.exchange,
-                    self.symbol,
+                    data.exchange,
+                    data.symbol,
                     if is_new { "ADDED" } else { "UPDATED" },
                     level.price,
                     final_quantity,
@@ -508,19 +543,19 @@ impl LocalOrderbook {
         }
 
         // Update metadata (use final_update_id as the new last_update_id)
-        self.last_update_id = final_update_id;
-        self.timestamp = Utc::now();
+        data.last_update_id = final_update_id;
+        data.timestamp = Utc::now();
 
         // Get new best bid/ask
-        let new_best_bid = self.bids.iter().next_back().map(|(p, q)| (*p, *q));
-        let new_best_ask = self.asks.iter().next().map(|(p, q)| (*p, *q));
+        let new_best_bid = data.bids.iter().next_back().map(|(p, q)| (*p, *q));
+        let new_best_ask = data.asks.iter().next().map(|(p, q)| (*p, *q));
 
         // Log best bid/ask changes
         if old_best_bid != new_best_bid {
             tracing::debug!(
                 "[WS Update] {}/{} BEST BID CHANGED: {:?} -> {:?}",
-                self.exchange,
-                self.symbol,
+                data.exchange,
+                data.symbol,
                 old_best_bid.map(|(p, q)| format!("{}@{}", p, q)),
                 new_best_bid.map(|(p, q)| format!("{}@{}", p, q))
             );
@@ -528,8 +563,8 @@ impl LocalOrderbook {
         if old_best_ask != new_best_ask {
             tracing::debug!(
                 "[WS Update] {}/{} BEST ASK CHANGED: {:?} -> {:?}",
-                self.exchange,
-                self.symbol,
+                data.exchange,
+                data.symbol,
                 old_best_ask.map(|(p, q)| format!("{}@{}", p, q)),
                 new_best_ask.map(|(p, q)| format!("{}@{}", p, q))
             );
@@ -537,13 +572,13 @@ impl LocalOrderbook {
 
         if new_best_ask < new_best_bid {
             // Log top 5 bids and asks to understand what happened
-            let top_bids: Vec<String> = self.bids
+            let top_bids: Vec<String> = data.bids
                 .iter()
                 .rev()
                 .take(5)
                 .map(|(p, q)| format!("{}@{}", p, q))
                 .collect();
-            let top_asks: Vec<String> = self.asks
+            let top_asks: Vec<String> = data.asks
                 .iter()
                 .take(5)
                 .map(|(p, q)| format!("{}@{}", p, q))
@@ -551,8 +586,8 @@ impl LocalOrderbook {
 
             tracing::warn!(
                 "[WS Update] {}/{} Bid-Ask invariant VIOLATED: Best Bid {}@{} >= Best Ask {}@{} | Top 5 Bids: {:?} | Top 5 Asks: {:?}",
-                self.exchange,
-                self.symbol,
+                data.exchange,
+                data.symbol,
                 new_best_bid.map(|(p, _)| p.to_string()).unwrap_or_else(|| "N/A".to_string()),
                 new_best_bid.map(|(_, q)| q.to_string()).unwrap_or_else(|| "N/A".to_string()),
                 new_best_ask.map(|(p, _)| p.to_string()).unwrap_or_else(|| "N/A".to_string()),
@@ -565,14 +600,14 @@ impl LocalOrderbook {
 
         tracing::debug!(
             "[WS Update] {}/{} APPLIED: U={}, u={} | Bids: {} levels (+{} -{}) | Asks: {} levels (+{} -{}) | Best: {}@{} / {}@{}",
-            self.exchange,
-            self.symbol,
+            data.exchange,
+            data.symbol,
             first_update_id,
             final_update_id,
-            self.bids.len(),
+            data.bids.len(),
             bid_adds_or_updates,
             bid_removes,
-            self.asks.len(),
+            data.asks.len(),
             ask_adds_or_updates,
             ask_removes,
             new_best_bid.map(|(p, _)| p.to_string()).unwrap_or_else(|| "N/A".to_string()),
@@ -586,8 +621,11 @@ impl LocalOrderbook {
 
     /// Convert to Orderbook type with specified depth
     pub fn to_orderbook(&self, _depth: usize) -> Orderbook {
+        // Acquire read lock on data (allows concurrent reads)
+        let data = self.data.read();
+
         // Get top N bids (sorted descending by price)
-        let bids: Vec<OrderbookLevel> = self
+        let bids: Vec<OrderbookLevel> = data
             .bids
             .iter()
             .rev() // Reverse to get highest prices first
@@ -598,7 +636,7 @@ impl LocalOrderbook {
             .collect();
 
         // Get top N asks (sorted ascending by price)
-        let asks: Vec<OrderbookLevel> = self
+        let asks: Vec<OrderbookLevel> = data
             .asks
             .iter()
             .map(|(price, quantity)| OrderbookLevel {
@@ -608,11 +646,17 @@ impl LocalOrderbook {
             .collect();
 
         Orderbook {
-            symbol: self.symbol.clone(),
+            symbol: data.symbol.clone(),
             bids,
             asks,
-            timestamp: self.timestamp,
+            timestamp: data.timestamp,
         }
+    }
+
+    /// Get timestamp of last update
+    pub fn get_timestamp(&self) -> DateTime<Utc> {
+        let data = self.data.read();
+        data.timestamp
     }
 }
 
@@ -631,8 +675,8 @@ pub struct OrderbookManagerConfig {
 impl Default for OrderbookManagerConfig {
     fn default() -> Self {
         Self {
-            staleness_threshold: std::time::Duration::from_secs(5),
-            update_buffer_size: 100, // Default for Binance/Aster
+            staleness_threshold: std::time::Duration::from_secs(2),
+            update_buffer_size: 100,
         }
     }
 }
@@ -677,12 +721,9 @@ pub struct OrderbookManager {
     /// Name of the exchange
     exchange: String,
 
-    /// Local orderbooks (symbol -> LocalOrderbook)
-    orderbooks: Arc<RwLock<std::collections::HashMap<String, LocalOrderbook>>>,
-
-    /// Snapshot operation lock - ensures apply_snapshot blocks apply_update
-    /// When a snapshot is in progress, updates must wait until it completes
-    snapshot_lock: Arc<Mutex<()>>,
+    /// Local orderbooks (symbol -> Arc<LocalOrderbook>)
+    /// LocalOrderbook is thread-safe with internal locking
+    orderbooks: Arc<TokioRwLock<std::collections::HashMap<String, Arc<LocalOrderbook>>>>,
 
     /// Configuration
     config: OrderbookManagerConfig,
@@ -693,7 +734,7 @@ pub struct OrderbookManager {
     /// Metrics
     updates_received: Arc<AtomicU64>,
     errors: Arc<AtomicU64>,
-    last_update_at: Arc<RwLock<Option<DateTime<Utc>>>>,
+    last_update_at: Arc<TokioRwLock<Option<DateTime<Utc>>>>,
 }
 
 impl OrderbookManager {
@@ -701,13 +742,12 @@ impl OrderbookManager {
     pub fn new(exchange: String, config: OrderbookManagerConfig) -> Self {
         Self {
             exchange,
-            orderbooks: Arc::new(RwLock::new(std::collections::HashMap::new())),
-            snapshot_lock: Arc::new(Mutex::new(())),
+            orderbooks: Arc::new(TokioRwLock::new(std::collections::HashMap::new())),
             config,
             active: Arc::new(AtomicBool::new(true)),
             updates_received: Arc::new(AtomicU64::new(0)),
             errors: Arc::new(AtomicU64::new(0)),
-            last_update_at: Arc::new(RwLock::new(None)),
+            last_update_at: Arc::new(TokioRwLock::new(None)),
         }
     }
 
@@ -723,7 +763,7 @@ impl OrderbookManager {
         );
 
         let mut orderbooks = self.orderbooks.write().await;
-        orderbooks.insert(symbol.clone(), local_orderbook);
+        orderbooks.insert(symbol.clone(), Arc::new(local_orderbook));
 
         tracing::info!(
             "[WS Init] {}/{} empty orderbook created (buffering mode, buffer_size={})",
@@ -743,6 +783,8 @@ impl OrderbookManager {
     ///    - Subsequent events have U > lastUpdateId
     ///
     /// For Extended: This is called when SNAPSHOT event is received from WebSocket
+    ///
+    /// Note: Uses per-symbol locking - concurrent snapshots for different symbols are allowed
     pub async fn apply_snapshot(
         &self,
         symbol: &str,
@@ -750,13 +792,15 @@ impl OrderbookManager {
         asks: Vec<OrderbookLevel>,
         last_update_id: u64,
     ) -> anyhow::Result<usize> {
-        // Acquire snapshot lock - blocks any concurrent updates
-        let _lock = self.snapshot_lock.lock().await;
+        // Get orderbook reference with READ lock (allows concurrent lookups for different symbols)
+        let orderbook_arc = {
+            let orderbooks = self.orderbooks.read().await;
+            orderbooks.get(symbol).cloned()
+        }; // READ lock released immediately
 
-        let mut orderbooks = self.orderbooks.write().await;
-
-        if let Some(local_orderbook) = orderbooks.get_mut(symbol) {
-            local_orderbook.apply_snapshot(bids, asks, last_update_id)
+        if let Some(orderbook) = orderbook_arc {
+            // LocalOrderbook handles its own locking internally
+            orderbook.apply_snapshot(bids, asks, last_update_id)
         } else {
             Err(anyhow::anyhow!(
                 "Local orderbook not initialized for symbol: {}. Call initialize_empty_orderbook first.",
@@ -781,6 +825,16 @@ impl OrderbookManager {
         asks: Vec<OrderbookLevel>,
         last_update_id: u64,
     ) {
+        // Extract best bid/ask info from the provided vectors
+        let best_bid_str = bids
+            .last()
+            .map(|level| format!("{}@{}", level.price, level.quantity))
+            .unwrap_or_else(|| "N/A".to_string());
+        let best_ask_str = asks
+            .first()
+            .map(|level| format!("{}@{}", level.price, level.quantity))
+            .unwrap_or_else(|| "N/A".to_string());
+
         let local_orderbook = LocalOrderbook::from_snapshot(
             self.exchange.clone(),
             symbol.clone(),
@@ -790,22 +844,8 @@ impl OrderbookManager {
             self.config.update_buffer_size,
         );
 
-        // Extract best bid/ask info before moving the orderbook
-        let best_bid_str = local_orderbook
-            .bids
-            .iter()
-            .next_back()
-            .map(|(p, q)| format!("{}@{}", p, q))
-            .unwrap_or_else(|| "N/A".to_string());
-        let best_ask_str = local_orderbook
-            .asks
-            .iter()
-            .next()
-            .map(|(p, q)| format!("{}@{}", p, q))
-            .unwrap_or_else(|| "N/A".to_string());
-
         let mut orderbooks = self.orderbooks.write().await;
-        orderbooks.insert(symbol.clone(), local_orderbook);
+        orderbooks.insert(symbol.clone(), Arc::new(local_orderbook));
 
         tracing::info!(
             "[WS Snapshot] {}/{} initialized (legacy): lastUpdateId={}, bids={} levels, asks={} levels, best_bid={}, best_ask={}",
@@ -820,6 +860,8 @@ impl OrderbookManager {
     }
 
     /// Apply a delta update to a local orderbook
+    ///
+    /// Note: Uses per-symbol locking - concurrent updates for different symbols are allowed
     pub async fn apply_update(
         &self,
         symbol: &str,
@@ -830,13 +872,15 @@ impl OrderbookManager {
         ask_updates: Vec<OrderbookLevel>,
         is_incremental_delta: bool,
     ) -> anyhow::Result<()> {
-        // Acquire snapshot lock - waits if snapshot is in progress
-        let _lock = self.snapshot_lock.lock().await;
+        // Get orderbook reference with READ lock (allows concurrent lookups for different symbols)
+        let orderbook_arc = {
+            let orderbooks = self.orderbooks.read().await;
+            orderbooks.get(symbol).cloned()
+        }; // READ lock released immediately
 
-        let mut orderbooks = self.orderbooks.write().await;
-
-        if let Some(local_orderbook) = orderbooks.get_mut(symbol) {
-            match local_orderbook.apply_delta(
+        if let Some(orderbook) = orderbook_arc {
+            // LocalOrderbook handles its own locking internally
+            match orderbook.apply_delta(
                 first_update_id,
                 final_update_id,
                 previous_id,
@@ -848,9 +892,6 @@ impl OrderbookManager {
                     if applied {
                         self.updates_received.fetch_add(1, Ordering::SeqCst);
                         *self.last_update_at.write().await = Some(Utc::now());
-
-                        // Increment update counter for metrics
-                        local_orderbook.updates_since_db_write += 1;
                     }
                     Ok(())
                 }
@@ -882,18 +923,29 @@ impl OrderbookManager {
 
     /// Get orderbook snapshot from cache
     pub async fn get_orderbook(&self, symbol: &str, depth: usize) -> Option<Orderbook> {
-        let orderbooks = self.orderbooks.read().await;
-        orderbooks
-            .get(symbol)
-            .map(|local_orderbook| local_orderbook.to_orderbook(depth))
+        // Get orderbook reference with READ lock (allows concurrent lookups for different symbols)
+        let orderbook_arc = {
+            let orderbooks = self.orderbooks.read().await;
+            orderbooks.get(symbol).cloned()
+        }; // READ lock released immediately
+
+        // LocalOrderbook handles its own locking internally
+        orderbook_arc.map(|orderbook| orderbook.to_orderbook(depth))
     }
 
     /// Check if orderbook is fresh (not stale)
     pub async fn is_fresh(&self, symbol: &str) -> bool {
-        let orderbooks = self.orderbooks.read().await;
-        if let Some(local_orderbook) = orderbooks.get(symbol) {
+        // Get orderbook reference with READ lock
+        let orderbook_arc = {
+            let orderbooks = self.orderbooks.read().await;
+            orderbooks.get(symbol).cloned()
+        };
+
+        if let Some(orderbook) = orderbook_arc {
+            // LocalOrderbook handles its own locking internally
+            let timestamp = orderbook.get_timestamp();
             let age = Utc::now()
-                .signed_duration_since(local_orderbook.timestamp)
+                .signed_duration_since(timestamp)
                 .to_std()
                 .unwrap_or_default();
             age < self.config.staleness_threshold
@@ -918,6 +970,7 @@ impl OrderbookManager {
     pub async fn remove_symbol(&self, symbol: &str) {
         let mut orderbooks = self.orderbooks.write().await;
         orderbooks.remove(symbol);
+
         tracing::info!("[{}] Removed local orderbook for {}", self.exchange, symbol);
     }
 
