@@ -1,8 +1,11 @@
 use crate::cache::SymbolsCache;
 use crate::pacifica::types::*;
+use crate::pacifica::ws_client::PacificaWsClient;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, TimeZone, Utc};
+use perps_core::stream_manager::{StreamConfig, StreamManager};
+use perps_core::streaming::OrderbookStreamer;
 use perps_core::types::*;
 use perps_core::{execute_with_retry, IPerps, RateLimiter, RetryConfig};
 use rust_decimal::Decimal;
@@ -19,6 +22,8 @@ pub struct PacificaClient {
     symbols_cache: SymbolsCache,
     /// Rate limiter for API requests
     rate_limiter: Arc<RateLimiter>,
+    /// Optional StreamManager for WebSocket orderbook streaming
+    stream_manager: Option<Arc<StreamManager>>,
 }
 
 impl PacificaClient {
@@ -29,10 +34,31 @@ impl PacificaClient {
             .build()
             .expect("Failed to build HTTP client");
 
+        // Initialize StreamManager if DATABASE_URL is set
+        let stream_manager = if std::env::var("DATABASE_URL").is_ok() {
+            if std::env::var("ENABLE_ORDERBOOK_STREAMING")
+                .unwrap_or_else(|_| "true".to_string())
+                .to_lowercase()
+                != "false"
+            {
+                let ws_client: Arc<dyn OrderbookStreamer> = Arc::new(PacificaWsClient::new());
+                let stream_manager =
+                    Arc::new(StreamManager::new(ws_client, StreamConfig::default()));
+
+                tracing::info!("[Pacifica] StreamManager initialized");
+                Some(stream_manager)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         Self {
             http,
             symbols_cache: SymbolsCache::new(),
             rate_limiter: Arc::new(RateLimiter::pacifica()),
+            stream_manager,
         }
     }
 
@@ -44,6 +70,59 @@ impl PacificaClient {
                 Ok(markets.into_iter().map(|m| m.symbol).collect())
             })
             .await
+    }
+
+    /// Fetch orderbook from REST API (fallback method)
+    /// Returns (Orderbook, sequence_number) tuple for StreamManager compatibility
+    async fn fetch_orderbook_rest(&self, symbol: &str, _depth: u32) -> Result<(Orderbook, u64)> {
+        // Pacifica uses agg_level parameter for orderbook depth
+        // Using agg_level=10 as specified in requirements
+        let orderbook: PacificaOrderbookData = self
+            .get(&format!("/book?symbol={}&agg_level=10", symbol))
+            .await?;
+
+        // Parse nested orderbook structure
+        // l[0] = bids, l[1] = asks
+        let bids = if orderbook.l.is_empty() {
+            Vec::new()
+        } else {
+            orderbook.l[0]
+                .iter()
+                .map(|level| {
+                    Ok(OrderbookLevel {
+                        price: Decimal::from_str(&level.p)?,
+                        quantity: Decimal::from_str(&level.a)?,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?
+        };
+
+        let asks = if orderbook.l.len() < 2 {
+            Vec::new()
+        } else {
+            orderbook.l[1]
+                .iter()
+                .map(|level| {
+                    Ok(OrderbookLevel {
+                        price: Decimal::from_str(&level.p)?,
+                        quantity: Decimal::from_str(&level.a)?,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?
+        };
+
+        // Use timestamp as sequence number since Pacifica doesn't provide explicit sequence
+        let sequence = orderbook.t as u64;
+
+        Ok((
+            Orderbook {
+                symbol: symbol.to_string(),
+                bids,
+                asks,
+                timestamp: Utc.timestamp_millis_opt(orderbook.t).unwrap(),
+            },
+            sequence,
+        ))
     }
 
     /// Helper method to make GET requests with rate limiting and retry
@@ -286,49 +365,41 @@ impl IPerps for PacificaClient {
         Ok(tickers)
     }
 
-    async fn get_orderbook(&self, symbol: &str, _depth: u32) -> Result<Orderbook> {
+    async fn get_orderbook(&self, symbol: &str, depth: u32) -> Result<Orderbook> {
         let exchange_symbol = self.parse_symbol(symbol);
-        // Pacifica uses agg_level parameter for orderbook depth
-        let orderbook: PacificaOrderbookData = self
-            .get(&format!("/book?symbol={}&agg_level=20", exchange_symbol))
-            .await?;
 
-        // Parse nested orderbook structure
-        // l[0] = bids, l[1] = asks
-        let bids = if orderbook.l.is_empty() {
-            Vec::new()
-        } else {
-            orderbook.l[0]
-                .iter()
-                .map(|level| {
-                    Ok(OrderbookLevel {
-                        price: Decimal::from_str(&level.p)?,
-                        quantity: Decimal::from_str(&level.a)?,
-                    })
+        // Try StreamManager first (if enabled)
+        if let Some(stream_manager) = &self.stream_manager {
+            // Subscribe (idempotent, auto-starts streaming)
+            stream_manager.subscribe(exchange_symbol.clone()).await?;
+
+            let self_clone = self.clone();
+            let symbol_clone = exchange_symbol.clone();
+
+            match stream_manager
+                .get_orderbook(&exchange_symbol, depth, move || {
+                    let client = self_clone.clone();
+                    let sym = symbol_clone.clone();
+                    async move {
+                        // Fallback to REST API
+                        client.fetch_orderbook_rest(&sym, depth).await
+                    }
                 })
-                .collect::<Result<Vec<_>>>()?
-        };
+                .await
+            {
+                Ok(orderbook) => return Ok(orderbook),
+                Err(e) => {
+                    tracing::warn!(
+                        "[Pacifica] StreamManager failed, falling back to REST: {}",
+                        e
+                    );
+                }
+            }
+        }
 
-        let asks = if orderbook.l.len() < 2 {
-            Vec::new()
-        } else {
-            orderbook.l[1]
-                .iter()
-                .map(|level| {
-                    Ok(OrderbookLevel {
-                        price: Decimal::from_str(&level.p)?,
-                        quantity: Decimal::from_str(&level.a)?,
-                    })
-                })
-                .collect::<Result<Vec<_>>>()?
-        };
-
-        Ok(Orderbook {
-            symbol: symbol.to_string(),
-            bids,
-            asks,
-            timestamp: Utc.timestamp_millis_opt(orderbook.t).unwrap(),
-        })
+        // Fallback to REST API (return only orderbook, discard sequence)
+        let (orderbook, _sequence) = self.fetch_orderbook_rest(&exchange_symbol, depth).await?;
+        Ok(orderbook)
     }
 
     async fn get_recent_trades(&self, symbol: &str, _limit: u32) -> Result<Vec<Trade>> {
