@@ -745,7 +745,7 @@ impl IPerps for BinanceClient {
         Ok(tickers)
     }
 
-    async fn get_orderbook(&self, symbol: &str, depth: u32) -> anyhow::Result<Orderbook> {
+    async fn get_orderbook(&self, symbol: &str, depth: u32) -> anyhow::Result<MultiResolutionOrderbook> {
         // Check if StreamManager is available
         if let Some(ref manager) = self.stream_manager {
             let binance_symbol = denormalize_symbol(symbol);
@@ -765,14 +765,15 @@ impl IPerps for BinanceClient {
                 })
                 .await?;
 
-            return Ok(orderbook);
+            return Ok(MultiResolutionOrderbook::from_single(orderbook));
         }
 
         // Fallback when StreamManager is not available: direct REST API call
         let binance_symbol = denormalize_symbol(symbol);
         let endpoint = format!("/fapi/v1/depth?symbol={}&limit={}", binance_symbol, depth);
         let data: serde_json::Value = self.get(&endpoint).await?;
-        self.convert_orderbook(symbol, data)
+        let orderbook = self.convert_orderbook(symbol, data)?;
+        Ok(MultiResolutionOrderbook::from_single(orderbook))
     }
 
     async fn get_funding_rate(&self, symbol: &str) -> anyhow::Result<FundingRate> {

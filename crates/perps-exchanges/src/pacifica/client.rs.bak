@@ -263,11 +263,7 @@ impl IPerps for PacificaClient {
         };
 
         // Get orderbook for best bid/ask with quantities
-        let multi_orderbook = self.get_orderbook(symbol, 1).await?;
-        let orderbook = multi_orderbook
-            .best_for_tight_spreads()
-            .ok_or_else(|| anyhow::anyhow!("No orderbook available for {}", symbol))?;
-
+        let orderbook = self.get_orderbook(symbol, 1).await?;
         let (best_bid_price, best_bid_qty) = orderbook
             .bids
             .first()
@@ -369,7 +365,7 @@ impl IPerps for PacificaClient {
         Ok(tickers)
     }
 
-    async fn get_orderbook(&self, symbol: &str, depth: u32) -> Result<MultiResolutionOrderbook> {
+    async fn get_orderbook(&self, symbol: &str, depth: u32) -> Result<Orderbook> {
         let exchange_symbol = self.parse_symbol(symbol);
 
         // Try StreamManager first (if enabled)
@@ -391,7 +387,7 @@ impl IPerps for PacificaClient {
                 })
                 .await
             {
-                Ok(orderbook) => return Ok(MultiResolutionOrderbook::from_single(orderbook)),
+                Ok(orderbook) => return Ok(orderbook),
                 Err(e) => {
                     tracing::warn!(
                         "[Pacifica] StreamManager failed, falling back to REST: {}",
@@ -403,7 +399,7 @@ impl IPerps for PacificaClient {
 
         // Fallback to REST API (return only orderbook, discard sequence)
         let (orderbook, _sequence) = self.fetch_orderbook_rest(&exchange_symbol, depth).await?;
-        Ok(MultiResolutionOrderbook::from_single(orderbook))
+        Ok(orderbook)
     }
 
     async fn get_recent_trades(&self, symbol: &str, _limit: u32) -> Result<Vec<Trade>> {

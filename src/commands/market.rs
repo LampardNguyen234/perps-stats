@@ -12,7 +12,7 @@ struct MarketData {
     ticker: perps_core::Ticker,
     funding: perps_core::FundingRate,
     open_interest: perps_core::OpenInterest,
-    orderbook: Option<perps_core::Orderbook>,
+    orderbook: Option<perps_core::MultiResolutionOrderbook>,
 }
 
 /// Arguments for the market command
@@ -133,7 +133,7 @@ fn display_table(
     ticker: &perps_core::Ticker,
     funding: &perps_core::FundingRate,
     oi: &perps_core::OpenInterest,
-    orderbook: &Option<perps_core::Orderbook>,
+    orderbook: &Option<perps_core::MultiResolutionOrderbook>,
     timeframe: &str,
 ) -> Result<()> {
     // Main table for market data
@@ -297,47 +297,49 @@ fn display_table(
     table.printstd();
 
     // Orderbook table if detailed
-    if let Some(book) = orderbook {
-        let mut book_table = Table::new();
-        book_table.set_format(*format::consts::FORMAT_CLEAN);
-        book_table.set_titles(Row::new(vec![
-            Cell::new("Orderbook Depth (Top 10)").with_hspan(4)
-        ]));
-        book_table.add_row(Row::new(vec![
-            Cell::new("Bid Price").with_style(prettytable::Attr::Bold),
-            Cell::new("Bid Qty").with_style(prettytable::Attr::Bold),
-            Cell::new("Ask Price").with_style(prettytable::Attr::Bold),
-            Cell::new("Ask Qty").with_style(prettytable::Attr::Bold),
-        ]));
-
-        let max_len = book.bids.len().max(book.asks.len()).min(10);
-        for i in 0..max_len {
-            let bid_price = book
-                .bids
-                .get(i)
-                .map_or("-".to_string(), |l| l.price.to_string());
-            let bid_qty = book
-                .bids
-                .get(i)
-                .map_or("-".to_string(), |l| l.quantity.to_string());
-            let ask_price = book
-                .asks
-                .get(i)
-                .map_or("-".to_string(), |l| l.price.to_string());
-            let ask_qty = book
-                .asks
-                .get(i)
-                .map_or("-".to_string(), |l| l.quantity.to_string());
-
-            book_table.add_row(Row::new(vec![
-                Cell::new_align(&bid_price, format::Alignment::RIGHT),
-                Cell::new_align(&bid_qty, format::Alignment::RIGHT),
-                Cell::new_align(&ask_price, format::Alignment::RIGHT),
-                Cell::new_align(&ask_qty, format::Alignment::RIGHT),
+    if let Some(multi_book) = orderbook {
+        if let Some(book) = multi_book.best_for_tight_spreads() {
+            let mut book_table = Table::new();
+            book_table.set_format(*format::consts::FORMAT_CLEAN);
+            book_table.set_titles(Row::new(vec![
+                Cell::new("Orderbook Depth (Top 10)").with_hspan(4)
             ]));
+            book_table.add_row(Row::new(vec![
+                Cell::new("Bid Price").with_style(prettytable::Attr::Bold),
+                Cell::new("Bid Qty").with_style(prettytable::Attr::Bold),
+                Cell::new("Ask Price").with_style(prettytable::Attr::Bold),
+                Cell::new("Ask Qty").with_style(prettytable::Attr::Bold),
+            ]));
+
+            let max_len = book.bids.len().max(book.asks.len()).min(10);
+            for i in 0..max_len {
+                let bid_price = book
+                    .bids
+                    .get(i)
+                    .map_or("-".to_string(), |l| l.price.to_string());
+                let bid_qty = book
+                    .bids
+                    .get(i)
+                    .map_or("-".to_string(), |l| l.quantity.to_string());
+                let ask_price = book
+                    .asks
+                    .get(i)
+                    .map_or("-".to_string(), |l| l.price.to_string());
+                let ask_qty = book
+                    .asks
+                    .get(i)
+                    .map_or("-".to_string(), |l| l.quantity.to_string());
+
+                book_table.add_row(Row::new(vec![
+                    Cell::new_align(&bid_price, format::Alignment::RIGHT),
+                    Cell::new_align(&bid_qty, format::Alignment::RIGHT),
+                    Cell::new_align(&ask_price, format::Alignment::RIGHT),
+                    Cell::new_align(&ask_qty, format::Alignment::RIGHT),
+                ]));
+            }
+            println!();
+            book_table.printstd();
         }
-        println!();
-        book_table.printstd();
     }
 
     Ok(())
@@ -367,7 +369,7 @@ fn build_json_object(
     ticker: &perps_core::Ticker,
     funding: &perps_core::FundingRate,
     oi: &perps_core::OpenInterest,
-    orderbook: &Option<perps_core::Orderbook>,
+    orderbook: &Option<perps_core::MultiResolutionOrderbook>,
     timeframe: &str,
 ) -> serde_json::Value {
     let stats_key = format!("statistics_{}", timeframe);
@@ -413,22 +415,24 @@ fn build_json_object(
 
     data["timestamp"] = serde_json::json!(ticker.timestamp);
 
-    if let Some(book) = orderbook {
-        data["orderbook"] = serde_json::json!({
-            "bids": book.bids.iter().take(10).map(|level| {
-                serde_json::json!({
-                    "price": level.price,
-                    "quantity": level.quantity,
-                })
-            }).collect::<Vec<_>>(),
-            "asks": book.asks.iter().take(10).map(|level| {
-                serde_json::json!({
-                    "price": level.price,
-                    "quantity": level.quantity,
-                })
-            }).collect::<Vec<_>>(),
-            "timestamp": book.timestamp,
-        });
+    if let Some(multi_book) = orderbook {
+        if let Some(book) = multi_book.best_for_tight_spreads() {
+            data["orderbook"] = serde_json::json!({
+                "bids": book.bids.iter().take(10).map(|level| {
+                    serde_json::json!({
+                        "price": level.price,
+                        "quantity": level.quantity,
+                    })
+                }).collect::<Vec<_>>(),
+                "asks": book.asks.iter().take(10).map(|level| {
+                    serde_json::json!({
+                        "price": level.price,
+                        "quantity": level.quantity,
+                    })
+                }).collect::<Vec<_>>(),
+                "timestamp": book.timestamp,
+            });
+        }
     }
 
     data

@@ -292,6 +292,167 @@ impl Orderbook {
     }
 }
 
+/// Multi-resolution orderbook for adaptive aggregation across different trade sizes.
+///
+/// # Problem
+/// Single orderbook aggregation cannot satisfy both:
+/// - Tight spreads (1-5 bps) - requires fine aggregation
+/// - Large trades ($500K+) - requires coarse aggregation for sufficient depth
+///
+/// # Solution
+/// Stores multiple orderbook resolutions in a vector (fine → medium → coarse order):
+/// - **Index 0**: Finest resolution for tight spread calculations (1-5 bps liquidity depth)
+/// - **Index 1**: Medium resolution for moderate spreads (10-20 bps) - if available
+/// - **Index 2**: Coarsest resolution for large trade slippage ($500K-$10M) - if available
+///
+/// # Exchange Support
+/// - **Hyperliquid**: 3 orderbooks (nSigFigs: 5, 4, 2)
+/// - **Other exchanges**: 1 orderbook (single resolution)
+///
+/// # Design
+/// - Vector is ordered from finest to coarsest resolution
+/// - `best_for_tight_spreads()` returns first orderbook (finest)
+/// - `best_for_large_trades()` returns last orderbook (coarsest)
+/// - Empty vector is invalid and should not occur
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MultiResolutionOrderbook {
+    pub symbol: String,
+    pub timestamp: DateTime<Utc>,
+    /// Orderbooks ordered from finest to coarsest resolution.
+    /// Index 0 = finest, last index = coarsest.
+    /// Must contain at least one orderbook.
+    pub orderbooks: Vec<Orderbook>,
+}
+
+impl MultiResolutionOrderbook {
+    /// Create from a single orderbook (for exchanges that don't support multi-resolution).
+    pub fn from_single(orderbook: Orderbook) -> Self {
+        Self {
+            symbol: orderbook.symbol.clone(),
+            timestamp: orderbook.timestamp,
+            orderbooks: vec![orderbook],
+        }
+    }
+
+    /// Create from multiple orderbooks ordered from finest to coarsest resolution.
+    ///
+    /// # Arguments
+    /// * `symbol` - Trading pair symbol
+    /// * `timestamp` - Orderbook timestamp
+    /// * `orderbooks` - Vector of orderbooks ordered from finest to coarsest (must not be empty)
+    ///
+    /// # Panics
+    /// Panics if orderbooks vector is empty
+    pub fn from_multiple(
+        symbol: String,
+        timestamp: DateTime<Utc>,
+        orderbooks: Vec<Orderbook>,
+    ) -> Self {
+        assert!(!orderbooks.is_empty(), "MultiResolutionOrderbook must contain at least one orderbook");
+        Self {
+            symbol,
+            timestamp,
+            orderbooks,
+        }
+    }
+
+    /// Get the best orderbook for tight spread calculations (1-5 bps).
+    /// Returns the finest resolution (first orderbook in vector).
+    pub fn best_for_tight_spreads(&self) -> Option<&Orderbook> {
+        self.orderbooks.first()
+    }
+
+    /// Get the best orderbook for large trade slippage calculations ($500K-$10M).
+    /// Returns the coarsest resolution (last orderbook in vector).
+    pub fn best_for_large_trades(&self) -> Option<&Orderbook> {
+        self.orderbooks.last()
+    }
+
+    /// Get the number of available resolutions.
+    pub fn resolution_count(&self) -> usize {
+        self.orderbooks.len()
+    }
+
+    /// Get orderbook at specific index.
+    pub fn get(&self, index: usize) -> Option<&Orderbook> {
+        self.orderbooks.get(index)
+    }
+
+    /// Calculate slippage for a given trade amount and side, automatically selecting
+    /// the best resolution by comparing all available orderbooks.
+    ///
+    /// # Strategy
+    /// - Iterates through all orderbook resolutions (finest to coarsest)
+    /// - **Feasibility check**: Only considers orderbooks with sufficient liquidity to execute the full trade
+    /// - Calculates slippage for each feasible resolution
+    /// - Returns the **minimum (best)** slippage across all feasible resolutions
+    /// - Lower slippage = better execution price for the trader
+    ///
+    /// This approach ensures we always get the best possible execution by checking
+    /// all available orderbook aggregation levels and selecting the optimal one that
+    /// can actually execute the trade.
+    ///
+    /// # Arguments
+    /// * `amount` - Trade size in USD notional
+    /// * `side` - OrderSide::Buy or OrderSide::Sell
+    ///
+    /// # Returns
+    /// * `Some(slippage_bps)` - Best (minimum) slippage in basis points across all **feasible** resolutions
+    /// * `None` - If **no resolution** has sufficient liquidity to execute the full trade
+    pub fn get_slippage(&self, amount: Decimal, side: OrderSide) -> Option<Decimal> {
+        // Iterate through all orderbooks and collect all valid slippages
+        let slippages: Vec<Decimal> = self
+            .orderbooks
+            .iter()
+            .filter_map(|book| book.get_slippage(amount, side.clone()))
+            .collect();
+
+        // Return the minimum (best) slippage
+        // Lower slippage = better execution price
+        slippages.into_iter().min()
+    }
+
+    /// Calculate bid notional within given bps spread, automatically selecting
+    /// the resolution with the highest liquidity.
+    ///
+    /// Tries all resolutions and returns the maximum bid notional found.
+    /// This is useful for liquidity depth calculations where we want the
+    /// most accurate representation of available liquidity.
+    ///
+    /// # Arguments
+    /// * `bps` - Basis points spread from mid price (e.g., 5 = 0.05%)
+    ///
+    /// # Returns
+    /// Maximum bid notional across all resolutions
+    pub fn bid_notional(&self, bps: Decimal) -> Decimal {
+        self.orderbooks
+            .iter()
+            .map(|book| book.bid_notional(bps))
+            .max()
+            .unwrap_or(Decimal::ZERO)
+    }
+
+    /// Calculate ask notional within given bps spread, automatically selecting
+    /// the resolution with the highest liquidity.
+    ///
+    /// Tries all resolutions and returns the maximum ask notional found.
+    /// This is useful for liquidity depth calculations where we want the
+    /// most accurate representation of available liquidity.
+    ///
+    /// # Arguments
+    /// * `bps` - Basis points spread from mid price (e.g., 5 = 0.05%)
+    ///
+    /// # Returns
+    /// Maximum ask notional across all resolutions
+    pub fn ask_notional(&self, bps: Decimal) -> Decimal {
+        self.orderbooks
+            .iter()
+            .map(|book| book.ask_notional(bps))
+            .max()
+            .unwrap_or(Decimal::ZERO)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FundingRate {
     pub symbol: String,
@@ -721,5 +882,434 @@ mod tests {
         let sell_bps = sell_slippage.unwrap();
         // Should have significant slippage (> 1%)
         assert!(sell_bps > dec!(100)); // > 100 bps = > 1%
+    }
+
+    // MultiResolutionOrderbook tests
+    #[test]
+    fn test_multi_resolution_from_single() {
+        let orderbook = Orderbook {
+            symbol: "BTC".to_string(),
+            timestamp: Utc::now(),
+            bids: vec![OrderbookLevel {
+                price: dec!(100000),
+                quantity: dec!(0.1),
+            }],
+            asks: vec![OrderbookLevel {
+                price: dec!(100100),
+                quantity: dec!(0.1),
+            }],
+        };
+
+        let multi = MultiResolutionOrderbook::from_single(orderbook.clone());
+
+        assert_eq!(multi.symbol, "BTC");
+        assert_eq!(multi.orderbooks.len(), 1);
+        assert_eq!(multi.best_for_tight_spreads().unwrap().symbol, "BTC");
+        assert_eq!(multi.best_for_large_trades().unwrap().symbol, "BTC");
+        assert_eq!(multi.resolution_count(), 1);
+    }
+
+    #[test]
+    fn test_multi_resolution_from_multiple() {
+        let fine = Orderbook {
+            symbol: "BTC".to_string(),
+            timestamp: Utc::now(),
+            bids: vec![
+                OrderbookLevel {
+                    price: dec!(100000),
+                    quantity: dec!(0.1),
+                },
+                OrderbookLevel {
+                    price: dec!(99990),
+                    quantity: dec!(0.1),
+                },
+            ],
+            asks: vec![
+                OrderbookLevel {
+                    price: dec!(100100),
+                    quantity: dec!(0.1),
+                },
+                OrderbookLevel {
+                    price: dec!(100110),
+                    quantity: dec!(0.1),
+                },
+            ],
+        };
+
+        let coarse = Orderbook {
+            symbol: "BTC".to_string(),
+            timestamp: Utc::now(),
+            bids: vec![
+                OrderbookLevel {
+                    price: dec!(100000),
+                    quantity: dec!(1.0),
+                },
+                OrderbookLevel {
+                    price: dec!(99000),
+                    quantity: dec!(1.0),
+                },
+            ],
+            asks: vec![
+                OrderbookLevel {
+                    price: dec!(101000),
+                    quantity: dec!(1.0),
+                },
+                OrderbookLevel {
+                    price: dec!(102000),
+                    quantity: dec!(1.0),
+                },
+            ],
+        };
+
+        let multi = MultiResolutionOrderbook::from_multiple(
+            "BTC".to_string(),
+            Utc::now(),
+            vec![fine.clone(), coarse.clone()],
+        );
+
+        assert_eq!(multi.symbol, "BTC");
+        assert_eq!(multi.orderbooks.len(), 2);
+        assert_eq!(multi.resolution_count(), 2);
+
+        // Fine resolution should be first (best for tight spreads)
+        let tight = multi.best_for_tight_spreads().unwrap();
+        assert_eq!(tight.bids.len(), 2);
+        assert_eq!(tight.bids[0].price, dec!(100000));
+
+        // Coarse resolution should be last (best for large trades)
+        let large = multi.best_for_large_trades().unwrap();
+        assert_eq!(large.bids.len(), 2);
+        assert_eq!(large.bids[0].quantity, dec!(1.0));
+    }
+
+    #[test]
+    fn test_multi_resolution_get_slippage_picks_best() {
+        // Fine orderbook: tight spread, good for small trades
+        let fine = Orderbook {
+            symbol: "BTC".to_string(),
+            timestamp: Utc::now(),
+            bids: vec![OrderbookLevel {
+                price: dec!(100000),
+                quantity: dec!(0.1),
+            }],
+            asks: vec![OrderbookLevel {
+                price: dec!(100100),
+                quantity: dec!(0.1),
+            }],
+        };
+
+        // Coarse orderbook: wide spread, but has more depth
+        let coarse = Orderbook {
+            symbol: "BTC".to_string(),
+            timestamp: Utc::now(),
+            bids: vec![OrderbookLevel {
+                price: dec!(100000),
+                quantity: dec!(10.0),
+            }],
+            asks: vec![OrderbookLevel {
+                price: dec!(105000),
+                quantity: dec!(10.0),
+            }],
+        };
+
+        let multi =
+            MultiResolutionOrderbook::from_multiple("BTC".to_string(), Utc::now(), vec![fine, coarse]);
+
+        // Small trade ($5K) - both orderbooks can handle it
+        // Fine: ~5 bps, Coarse: ~2475 bps (much worse due to wide spread)
+        // Should return ~5 bps from fine orderbook
+        let slippage = multi.get_slippage(dec!(5000), OrderSide::Buy);
+        assert!(slippage.is_some());
+        let bps = slippage.unwrap();
+        // Should be ~5 bps (best execution from fine orderbook)
+        assert!(bps > dec!(4.5) && bps < dec!(5.5));
+    }
+
+    #[test]
+    fn test_multi_resolution_get_slippage_only_coarse_has_depth() {
+        // Fine orderbook: insufficient depth for large trades
+        let fine = Orderbook {
+            symbol: "BTC".to_string(),
+            timestamp: Utc::now(),
+            bids: vec![OrderbookLevel {
+                price: dec!(100000),
+                quantity: dec!(0.1),
+            }],
+            asks: vec![OrderbookLevel {
+                price: dec!(100100),
+                quantity: dec!(0.1),
+            }],
+        };
+
+        // Coarse orderbook: enough depth for large trades
+        let coarse = Orderbook {
+            symbol: "BTC".to_string(),
+            timestamp: Utc::now(),
+            bids: vec![OrderbookLevel {
+                price: dec!(99000),
+                quantity: dec!(10.0),
+            }],
+            asks: vec![OrderbookLevel {
+                price: dec!(101000),
+                quantity: dec!(10.0),
+            }],
+        };
+
+        let multi =
+            MultiResolutionOrderbook::from_multiple("BTC".to_string(), Utc::now(), vec![fine, coarse]);
+
+        // Large trade ($600K) - only coarse orderbook has enough depth
+        // Fine can't handle it (only $10K depth), coarse can (>$1M depth)
+        // Should return slippage from coarse orderbook
+        let slippage = multi.get_slippage(dec!(600000), OrderSide::Buy);
+        assert!(slippage.is_some());
+        // Coarse orderbook has enough depth for $600K trade
+        assert!(slippage.unwrap() > Decimal::ZERO);
+    }
+
+    #[test]
+    fn test_multi_resolution_get_slippage_selects_minimum() {
+        // Medium resolution: good for medium-sized trades (20 bps spread)
+        let medium = Orderbook {
+            symbol: "BTC".to_string(),
+            timestamp: Utc::now(),
+            bids: vec![OrderbookLevel {
+                price: dec!(100000),
+                quantity: dec!(1.0),
+            }],
+            asks: vec![OrderbookLevel {
+                price: dec!(100200),
+                quantity: dec!(1.0),
+            }],
+        };
+
+        // Coarse resolution: has depth but wider spread (100 bps spread)
+        let coarse = Orderbook {
+            symbol: "BTC".to_string(),
+            timestamp: Utc::now(),
+            bids: vec![OrderbookLevel {
+                price: dec!(99500),
+                quantity: dec!(5.0),
+            }],
+            asks: vec![OrderbookLevel {
+                price: dec!(100500),
+                quantity: dec!(5.0),
+            }],
+        };
+
+        let multi = MultiResolutionOrderbook::from_multiple(
+            "BTC".to_string(),
+            Utc::now(),
+            vec![medium.clone(), coarse.clone()],
+        );
+
+        // Trade size: $50K - both orderbooks can handle it
+        // Medium: ~10 bps slippage (tight spread)
+        // Coarse: ~50 bps slippage (wide spread)
+        // Should pick medium (minimum slippage)
+        let slippage = multi.get_slippage(dec!(50000), OrderSide::Buy);
+        assert!(slippage.is_some());
+
+        // Verify it's closer to medium's slippage than coarse's
+        let medium_slippage = medium.get_slippage(dec!(50000), OrderSide::Buy).unwrap();
+        let coarse_slippage = coarse.get_slippage(dec!(50000), OrderSide::Buy).unwrap();
+
+        assert!(medium_slippage < coarse_slippage, "Medium should have lower slippage than coarse");
+        assert_eq!(slippage.unwrap(), medium_slippage, "Should select medium's (best) slippage");
+    }
+
+    #[test]
+    fn test_multi_resolution_bid_notional() {
+        let fine = Orderbook {
+            symbol: "BTC".to_string(),
+            timestamp: Utc::now(),
+            bids: vec![
+                OrderbookLevel {
+                    price: dec!(100000),
+                    quantity: dec!(0.1),
+                }, // $10K
+                OrderbookLevel {
+                    price: dec!(99900),
+                    quantity: dec!(0.1),
+                }, // $9.99K
+            ],
+            asks: vec![OrderbookLevel {
+                price: dec!(100100),
+                quantity: dec!(0.1),
+            }],
+        };
+
+        let coarse = Orderbook {
+            symbol: "BTC".to_string(),
+            timestamp: Utc::now(),
+            bids: vec![
+                OrderbookLevel {
+                    price: dec!(100000),
+                    quantity: dec!(1.0),
+                }, // $100K
+                OrderbookLevel {
+                    price: dec!(99000),
+                    quantity: dec!(1.0),
+                }, // $99K
+            ],
+            asks: vec![OrderbookLevel {
+                price: dec!(101000),
+                quantity: dec!(1.0),
+            }],
+        };
+
+        let multi =
+            MultiResolutionOrderbook::from_multiple("BTC".to_string(), Utc::now(), vec![fine, coarse]);
+
+        // bid_notional should return the maximum across all resolutions
+        let notional = multi.bid_notional(dec!(100)); // 100 bps = 1% spread
+        // Coarse orderbook should provide more liquidity
+        assert!(notional > dec!(100000)); // More than $100K
+    }
+
+    #[test]
+    fn test_multi_resolution_ask_notional() {
+        let fine = Orderbook {
+            symbol: "BTC".to_string(),
+            timestamp: Utc::now(),
+            bids: vec![OrderbookLevel {
+                price: dec!(100000),
+                quantity: dec!(0.1),
+            }],
+            asks: vec![
+                OrderbookLevel {
+                    price: dec!(100100),
+                    quantity: dec!(0.1),
+                }, // $10.01K
+                OrderbookLevel {
+                    price: dec!(100200),
+                    quantity: dec!(0.1),
+                }, // $10.02K
+            ],
+        };
+
+        let coarse = Orderbook {
+            symbol: "BTC".to_string(),
+            timestamp: Utc::now(),
+            bids: vec![OrderbookLevel {
+                price: dec!(99000),
+                quantity: dec!(1.0),
+            }],
+            asks: vec![
+                OrderbookLevel {
+                    price: dec!(101000),
+                    quantity: dec!(1.0),
+                }, // $101K
+                OrderbookLevel {
+                    price: dec!(102000),
+                    quantity: dec!(1.0),
+                }, // $102K
+            ],
+        };
+
+        let multi =
+            MultiResolutionOrderbook::from_multiple("BTC".to_string(), Utc::now(), vec![fine, coarse]);
+
+        // ask_notional should return the maximum across all resolutions
+        let notional = multi.ask_notional(dec!(100)); // 100 bps = 1% spread
+        // Coarse orderbook should provide more liquidity
+        assert!(notional > dec!(100000)); // More than $100K
+    }
+
+    #[test]
+    #[should_panic(expected = "MultiResolutionOrderbook must contain at least one orderbook")]
+    fn test_multi_resolution_from_multiple_empty_panic() {
+        MultiResolutionOrderbook::from_multiple("BTC".to_string(), Utc::now(), vec![]);
+    }
+
+    #[test]
+    fn test_multi_resolution_get_slippage_feasibility_check() {
+        // Fine orderbook: tight spread but very shallow depth ($10K total)
+        let fine = Orderbook {
+            symbol: "BTC".to_string(),
+            timestamp: Utc::now(),
+            bids: vec![OrderbookLevel {
+                price: dec!(100000),
+                quantity: dec!(0.1),
+            }],
+            asks: vec![OrderbookLevel {
+                price: dec!(100100),
+                quantity: dec!(0.1),
+            }], // Total: $10,010
+        };
+
+        // Medium orderbook: moderate spread, moderate depth ($100K total)
+        let medium = Orderbook {
+            symbol: "BTC".to_string(),
+            timestamp: Utc::now(),
+            bids: vec![OrderbookLevel {
+                price: dec!(99900),
+                quantity: dec!(1.0),
+            }],
+            asks: vec![OrderbookLevel {
+                price: dec!(100100),
+                quantity: dec!(1.0),
+            }], // Total: $100,100
+        };
+
+        // Coarse orderbook: wide spread but deep ($500K total)
+        let coarse = Orderbook {
+            symbol: "BTC".to_string(),
+            timestamp: Utc::now(),
+            bids: vec![OrderbookLevel {
+                price: dec!(98000),
+                quantity: dec!(5.0),
+            }],
+            asks: vec![OrderbookLevel {
+                price: dec!(102000),
+                quantity: dec!(5.0),
+            }], // Total: $510,000
+        };
+
+        let multi = MultiResolutionOrderbook::from_multiple(
+            "BTC".to_string(),
+            Utc::now(),
+            vec![fine.clone(), medium.clone(), coarse.clone()],
+        );
+
+        // Test 1: Small trade ($5K) - all resolutions feasible
+        let small_trade = multi.get_slippage(dec!(5000), OrderSide::Buy);
+        assert!(small_trade.is_some(), "Small trade should be feasible");
+        // Should pick fine (best slippage)
+        let fine_slippage = fine.get_slippage(dec!(5000), OrderSide::Buy).unwrap();
+        assert_eq!(small_trade.unwrap(), fine_slippage, "Should pick fine orderbook for small trade");
+
+        // Test 2: Medium trade ($50K) - only medium and coarse feasible
+        let medium_trade = multi.get_slippage(dec!(50000), OrderSide::Buy);
+        assert!(medium_trade.is_some(), "Medium trade should be feasible");
+        // Fine can't handle $50K (only $10K depth), so should pick medium
+        assert!(fine.get_slippage(dec!(50000), OrderSide::Buy).is_none(), "Fine should be infeasible");
+        let medium_slippage = medium.get_slippage(dec!(50000), OrderSide::Buy).unwrap();
+        assert_eq!(
+            medium_trade.unwrap(),
+            medium_slippage,
+            "Should pick medium orderbook when fine is infeasible"
+        );
+
+        // Test 3: Large trade ($200K) - only coarse feasible
+        let large_trade = multi.get_slippage(dec!(200000), OrderSide::Buy);
+        assert!(large_trade.is_some(), "Large trade should be feasible");
+        // Both fine and medium can't handle $200K
+        assert!(fine.get_slippage(dec!(200000), OrderSide::Buy).is_none(), "Fine should be infeasible");
+        assert!(medium.get_slippage(dec!(200000), OrderSide::Buy).is_none(), "Medium should be infeasible");
+        let coarse_slippage = coarse.get_slippage(dec!(200000), OrderSide::Buy).unwrap();
+        assert_eq!(
+            large_trade.unwrap(),
+            coarse_slippage,
+            "Should pick coarse orderbook when others are infeasible"
+        );
+
+        // Test 4: Impossible trade ($1M) - no resolution feasible
+        let impossible_trade = multi.get_slippage(dec!(1000000), OrderSide::Buy);
+        assert!(impossible_trade.is_none(), "Trade exceeding all resolutions should return None");
+        // Verify all resolutions are indeed infeasible
+        assert!(fine.get_slippage(dec!(1000000), OrderSide::Buy).is_none());
+        assert!(medium.get_slippage(dec!(1000000), OrderSide::Buy).is_none());
+        assert!(coarse.get_slippage(dec!(1000000), OrderSide::Buy).is_none());
     }
 }

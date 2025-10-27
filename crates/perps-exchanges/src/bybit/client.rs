@@ -192,7 +192,7 @@ impl IPerps for BybitClient {
         })
     }
 
-    async fn get_orderbook(&self, symbol: &str, depth: u32) -> Result<Orderbook> {
+    async fn get_orderbook(&self, symbol: &str, depth: u32) -> Result<MultiResolutionOrderbook> {
         let result: OrderbookResult = self
             .get(&format!(
                 "/v5/market/orderbook?category=linear&symbol={}&limit={}",
@@ -222,12 +222,14 @@ impl IPerps for BybitClient {
             })
             .collect::<Result<Vec<_>>>()?;
 
-        Ok(Orderbook {
+        let orderbook = Orderbook {
             symbol: result.s,
             bids,
             asks,
             timestamp: Utc.timestamp_millis_opt(result.ts).unwrap(),
-        })
+        };
+
+        Ok(MultiResolutionOrderbook::from_single(orderbook))
     }
 
     async fn get_recent_trades(&self, symbol: &str, limit: u32) -> Result<Vec<Trade>> {

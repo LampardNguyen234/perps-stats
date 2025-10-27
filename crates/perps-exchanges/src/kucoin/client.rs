@@ -328,7 +328,7 @@ impl IPerps for KucoinClient {
         })
     }
 
-    async fn get_orderbook(&self, symbol: &str, depth: u32) -> Result<Orderbook> {
+    async fn get_orderbook(&self, symbol: &str, depth: u32) -> Result<MultiResolutionOrderbook> {
         // Check if StreamManager is available
         #[cfg(feature = "streaming")]
         if let Some(ref manager) = self.stream_manager {
@@ -348,7 +348,7 @@ impl IPerps for KucoinClient {
                 })
                 .await?;
 
-            return Ok(orderbook);
+            return Ok(MultiResolutionOrderbook::from_single(orderbook));
         }
 
         // Fallback: direct REST API call with quantity conversion
@@ -383,12 +383,14 @@ impl IPerps for KucoinClient {
             })
             .collect::<Result<Vec<_>>>()?;
 
-        Ok(Orderbook {
+        let orderbook = Orderbook {
             symbol: response.symbol,
             bids,
             asks,
             timestamp: Utc.timestamp_nanos(response.timestamp),
-        })
+        };
+
+        Ok(MultiResolutionOrderbook::from_single(orderbook))
     }
 
     async fn get_recent_trades(&self, symbol: &str, _limit: u32) -> Result<Vec<Trade>> {

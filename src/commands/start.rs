@@ -1088,10 +1088,12 @@ async fn spawn_liquidity_report_task(
 
                     // Fetch orderbook once and calculate both liquidity depth and slippage
                     match client.get_orderbook(&parsed_symbol, 1000).await {
-                        Ok(orderbook) => {
+                        Ok(multi_orderbook) => {
+                            // MultiResolutionOrderbook automatically selects best resolution for each calculation
+
                             // Calculate liquidity depth
                             match aggregator
-                                .calculate_liquidity_depth(&orderbook, exchange, symbol)
+                                .calculate_liquidity_depth(&multi_orderbook, exchange, symbol)
                                 .await
                             {
                                 Ok(depth_stats) => {
@@ -1127,7 +1129,7 @@ async fn spawn_liquidity_report_task(
                             }
 
                             // Calculate slippage for all trade amounts
-                            let slippages = aggregator.calculate_all_slippages(&orderbook);
+                            let slippages = aggregator.calculate_all_slippages(&multi_orderbook);
 
                             // Store slippage
                             let repo = repository.lock().await;
@@ -1154,12 +1156,13 @@ async fn spawn_liquidity_report_task(
                             }
                             drop(repo);
 
-                            // Store orderbook
-                            let repo = repository.lock().await;
-                            match repo
-                                .store_orderbooks_with_exchange(exchange, &[orderbook])
-                                .await
-                            {
+                            // Store orderbook (use finest resolution for storage)
+                            if let Some(finest_book) = multi_orderbook.best_for_tight_spreads() {
+                                let repo = repository.lock().await;
+                                match repo
+                                    .store_orderbooks_with_exchange(exchange, &[finest_book.clone()])
+                                    .await
+                                {
                                 Ok(_) => {
                                     tracing::debug!("Stored orderbook for {}/{}", exchange, symbol);
                                 }
@@ -1172,6 +1175,8 @@ async fn spawn_liquidity_report_task(
                                     );
                                 }
                             }
+                            drop(repo);
+                        }
                         }
                         Err(e) => {
                             tracing::error!(

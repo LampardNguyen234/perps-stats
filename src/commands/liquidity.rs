@@ -2,7 +2,7 @@ use anyhow::Result;
 use chrono::Utc;
 use csv::Writer;
 use perps_aggregator::{Aggregator, IAggregator};
-use perps_core::{IPerps, LiquidityDepthStats, Orderbook, Slippage};
+use perps_core::{IPerps, LiquidityDepthStats, MultiResolutionOrderbook, Orderbook, Slippage};
 use perps_database::Repository;
 use perps_exchanges::{all_exchanges, get_exchange};
 use prettytable::{format, Cell, Row, Table};
@@ -22,7 +22,7 @@ struct LiquidityData {
     liquidity: LiquidityDepthStats,
     slippage: Vec<Slippage>,
     #[serde(skip_serializing)]
-    orderbook: Orderbook,
+    orderbook: MultiResolutionOrderbook,
 }
 
 /// Arguments for the liquidity command
@@ -371,10 +371,13 @@ async fn run_periodic_fetcher_all(
                             .entry(exchange_name.clone())
                             .or_default()
                             .extend(data.slippage.clone());
-                        orderbooks_by_exchange
-                            .entry(exchange_name.clone())
-                            .or_default()
-                            .push(data.orderbook.clone());
+                        // Extract best orderbook for storage (prefer tight spreads)
+                        if let Some(orderbook) = data.orderbook.best_for_tight_spreads() {
+                            orderbooks_by_exchange
+                                .entry(exchange_name.clone())
+                                .or_default()
+                                .push(orderbook.clone());
+                        }
                     }
                     Err(e) => {
                         tracing::error!(
@@ -533,10 +536,13 @@ async fn run_periodic_fetcher_selected(
                             .entry(exchange_name.clone())
                             .or_default()
                             .extend(data.slippage.clone());
-                        orderbooks_by_exchange
-                            .entry(exchange_name.clone())
-                            .or_default()
-                            .push(data.orderbook.clone());
+                        // Extract best orderbook for storage (prefer tight spreads)
+                        if let Some(orderbook) = data.orderbook.best_for_tight_spreads() {
+                            orderbooks_by_exchange
+                                .entry(exchange_name.clone())
+                                .or_default()
+                                .push(orderbook.clone());
+                        }
                     }
                     Err(e) => {
                         tracing::error!(
@@ -682,7 +688,10 @@ async fn run_periodic_fetcher(
                         .push(data.clone());
                     current_liquidity_snapshot.push(data.liquidity.clone());
                     current_slippage_snapshot.extend(data.slippage.clone());
-                    current_orderbook_snapshot.push(data.orderbook.clone());
+                    // Extract best orderbook for storage (prefer tight spreads)
+                    if let Some(orderbook) = data.orderbook.best_for_tight_spreads() {
+                        current_orderbook_snapshot.push(orderbook.clone());
+                    }
                 }
                 Err(e) => {
                     tracing::error!("Failed to fetch liquidity for {}: {}", symbol, e);
@@ -753,16 +762,18 @@ async fn fetch_liquidity_data(
     exchange: &str,
 ) -> Result<LiquidityData> {
     // Fetch orderbook once and calculate both liquidity depth and slippage
-    let orderbook = client.get_orderbook(symbol, 1000).await?;
+    let multi_orderbook = client.get_orderbook(symbol, 1000).await?;
+
+    // MultiResolutionOrderbook methods automatically select best resolution
     let liquidity = aggregator
-        .calculate_liquidity_depth(&orderbook, exchange, global_symbol)
+        .calculate_liquidity_depth(&multi_orderbook, exchange, global_symbol)
         .await?;
-    let slippage = aggregator.calculate_all_slippages(&orderbook);
+    let slippage = aggregator.calculate_all_slippages(&multi_orderbook);
 
     Ok(LiquidityData {
         liquidity,
         slippage,
-        orderbook,
+        orderbook: multi_orderbook,
     })
 }
 
@@ -1306,16 +1317,18 @@ async fn fetch_and_display_liquidity_data(
     exchange: &str,
 ) -> Result<()> {
     // Fetch orderbook once and calculate both liquidity depth and slippage
-    let orderbook = client.get_orderbook(symbol, 1000).await?;
+    let multi_orderbook = client.get_orderbook(symbol, 1000).await?;
+
+    // MultiResolutionOrderbook methods automatically select best resolution
     let liquidity = aggregator
-        .calculate_liquidity_depth(&orderbook, exchange, global_symbol)
+        .calculate_liquidity_depth(&multi_orderbook, exchange, global_symbol)
         .await?;
-    let slippage = aggregator.calculate_all_slippages(&orderbook);
+    let slippage = aggregator.calculate_all_slippages(&multi_orderbook);
 
     let data = LiquidityData {
         liquidity,
         slippage,
-        orderbook,
+        orderbook: multi_orderbook,
     };
 
     match format.to_lowercase().as_str() {

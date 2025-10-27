@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use chrono::Utc;
 use futures::future::join_all;
-use perps_core::{FundingRate, IPerps, LiquidityDepthStats, OrderSide, Orderbook, Slippage, Trade};
+use perps_core::{FundingRate, IPerps, LiquidityDepthStats, MultiResolutionOrderbook, OrderSide, Orderbook, Slippage, Trade};
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use std::time::Instant;
@@ -42,9 +42,12 @@ pub trait IAggregator: Send + Sync {
 
     /// Analyzes an order book to determine the cumulative notional value
     /// available at different basis point spreads from the mid-price.
+    ///
+    /// Accepts `MultiResolutionOrderbook` and automatically selects the best
+    /// resolution for each bps level to maximize liquidity accuracy.
     async fn calculate_liquidity_depth(
         &self,
-        book: &Orderbook,
+        book: &MultiResolutionOrderbook,
         exchange: &str,
         global_symbol: &str,
     ) -> anyhow::Result<LiquidityDepthStats>;
@@ -74,7 +77,10 @@ pub trait IAggregator: Send + Sync {
 
     /// Calculate slippage for all standard trade amounts (1K, 10K, 50K, 100K, 500K, 5M, 10M USD).
     /// Returns a vector of slippage metrics for each trade amount.
-    fn calculate_all_slippages(&self, orderbook: &Orderbook) -> Vec<Slippage>;
+    ///
+    /// Accepts `MultiResolutionOrderbook` and automatically selects the best resolution
+    /// for each trade size (small trades use fine resolution, large trades use coarse).
+    fn calculate_all_slippages(&self, orderbook: &MultiResolutionOrderbook) -> Vec<Slippage>;
 }
 
 /// Default implementation of the IAggregator trait
@@ -134,14 +140,18 @@ impl IAggregator for Aggregator {
 
     async fn calculate_liquidity_depth(
         &self,
-        book: &Orderbook,
+        book: &MultiResolutionOrderbook,
         exchange: &str,
         global_symbol: &str,
     ) -> anyhow::Result<LiquidityDepthStats> {
         let start = Instant::now();
 
-        // Use the new mid_price() method
-        let mid_price = book.mid_price().ok_or_else(|| {
+        // Get mid price from finest resolution (first orderbook)
+        let finest = book.best_for_tight_spreads().ok_or_else(|| {
+            anyhow::anyhow!("MultiResolutionOrderbook has no orderbooks available")
+        })?;
+
+        let mid_price = finest.mid_price().ok_or_else(|| {
             anyhow::anyhow!("Orderbook is empty or one-sided, cannot calculate liquidity depth.")
         })?;
 
@@ -149,7 +159,7 @@ impl IAggregator for Aggregator {
             anyhow::bail!("Mid price is zero, cannot calculate percentage-based depth.");
         }
 
-        // Define bps levels in basis points (will be converted in bid_notional/ask_notional)
+        // Define bps levels in basis points
         let bps_levels = [
             dec!(1),   // 1 bps
             dec!(2.5), // 2.5 bps
@@ -158,7 +168,8 @@ impl IAggregator for Aggregator {
             dec!(20),  // 20 bps
         ];
 
-        // Use the new bid_notional() and ask_notional() methods
+        // Use MultiResolutionOrderbook's bid_notional/ask_notional methods
+        // These automatically select the resolution with highest liquidity for each bps level
         let bid_notionals: Vec<Decimal> = bps_levels
             .iter()
             .map(|&bps| book.bid_notional(bps))
@@ -171,10 +182,11 @@ impl IAggregator for Aggregator {
 
         let duration = start.elapsed();
         tracing::debug!(
-            "Calculated liquidity for {} on {} in {:.2?}",
+            "Calculated liquidity for {} on {} in {:.2?} ({} resolutions)",
             global_symbol,
             exchange,
-            duration
+            duration,
+            book.resolution_count()
         );
 
         Ok(LiquidityDepthStats {
@@ -209,8 +221,10 @@ impl IAggregator for Aggregator {
                     let exchange_name = client.get_name();
                     let parsed_symbol = client.parse_symbol(&symbol);
                     let result = match client.get_orderbook(&parsed_symbol, 1000).await {
-                        Ok(orderbook) => {
-                            self.calculate_liquidity_depth(&orderbook, exchange_name, &symbol)
+                        Ok(multi_orderbook) => {
+                            // Pass MultiResolutionOrderbook directly - it will automatically
+                            // select the best resolution for each bps level
+                            self.calculate_liquidity_depth(&multi_orderbook, exchange_name, &symbol)
                                 .await
                         }
                         Err(e) => {
@@ -393,10 +407,62 @@ impl IAggregator for Aggregator {
         }
     }
 
-    fn calculate_all_slippages(&self, orderbook: &Orderbook) -> Vec<Slippage> {
+    fn calculate_all_slippages(&self, multi_orderbook: &MultiResolutionOrderbook) -> Vec<Slippage> {
+        let finest = multi_orderbook.best_for_tight_spreads();
+        let mid_price = finest.and_then(|book| book.mid_price());
+
         TRADE_AMOUNTS
             .iter()
-            .map(|&amount| self.calculate_slippage_for_amount(orderbook, amount))
+            .map(|&amount| {
+                // Use MultiResolutionOrderbook's intelligent get_slippage method
+                let buy_slippage_bps = multi_orderbook.get_slippage(amount, OrderSide::Buy);
+                let sell_slippage_bps = multi_orderbook.get_slippage(amount, OrderSide::Sell);
+
+                let buy_slippage_pct = buy_slippage_bps.map(|bps| bps / dec!(100));
+                let sell_slippage_pct = sell_slippage_bps.map(|bps| bps / dec!(100));
+
+                // For detailed metrics, use finest resolution orderbook if available
+                let (buy_avg_price, buy_total_cost) = if let (Some(_book), Some(mid)) = (finest, mid_price) {
+                    if let Some(slippage_bps) = buy_slippage_bps {
+                        let avg_price = mid * (Decimal::ONE + slippage_bps / dec!(10000));
+                        let total_cost = Some(amount);
+                        (Some(avg_price), total_cost)
+                    } else {
+                        (None, None)
+                    }
+                } else {
+                    (None, None)
+                };
+
+                let (sell_avg_price, sell_total_cost) = if let (Some(_book), Some(mid)) = (finest, mid_price) {
+                    if let Some(slippage_bps) = sell_slippage_bps {
+                        let avg_price = mid * (Decimal::ONE - slippage_bps / dec!(10000));
+                        let total_cost = Some(amount);
+                        (Some(avg_price), total_cost)
+                    } else {
+                        (None, None)
+                    }
+                } else {
+                    (None, None)
+                };
+
+                Slippage {
+                    symbol: multi_orderbook.symbol.clone(),
+                    timestamp: multi_orderbook.timestamp,
+                    mid_price: mid_price.unwrap_or(Decimal::ZERO),
+                    trade_amount: amount,
+                    buy_avg_price,
+                    buy_slippage_bps,
+                    buy_slippage_pct,
+                    buy_total_cost,
+                    buy_feasible: buy_slippage_bps.is_some(),
+                    sell_avg_price,
+                    sell_slippage_bps,
+                    sell_slippage_pct,
+                    sell_total_cost,
+                    sell_feasible: sell_slippage_bps.is_some(),
+                }
+            })
             .collect()
     }
 }

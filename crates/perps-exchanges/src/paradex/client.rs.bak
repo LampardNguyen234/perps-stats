@@ -140,7 +140,7 @@ impl IPerps for ParadexClient {
             .ok_or_else(|| anyhow!("Market {} not found", symbol))
     }
 
-    async fn get_orderbook(&self, symbol: &str, _depth: u32) -> Result<MultiResolutionOrderbook> {
+    async fn get_orderbook(&self, symbol: &str, _depth: u32) -> Result<Orderbook> {
         let response: OrderbookResponse = self
             .get(&format!("/orderbook/{}?depth=100", symbol))
             .await?;
@@ -165,16 +165,14 @@ impl IPerps for ParadexClient {
             })
             .collect::<Result<Vec<_>>>()?;
 
-        let orderbook = Orderbook {
+        Ok(Orderbook {
             symbol: response.market,
             bids,
             asks,
             timestamp: Utc
                 .timestamp_millis_opt(response.last_updated_at as i64)
                 .unwrap(),
-        };
-
-        Ok(MultiResolutionOrderbook::from_single(orderbook))
+        })
     }
 
     async fn get_recent_trades(&self, symbol: &str, _limit: u32) -> Result<Vec<Trade>> {

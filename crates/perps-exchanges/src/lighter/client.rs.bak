@@ -3,8 +3,8 @@ use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use perps_core::{
-    execute_with_retry, FundingRate, IPerps, Kline, Market, MarketStats, MultiResolutionOrderbook,
-    OpenInterest, RateLimiter, RetryConfig, Ticker, Trade,
+    execute_with_retry, FundingRate, IPerps, Kline, Market, MarketStats, OpenInterest, Orderbook,
+    RateLimiter, RetryConfig, Ticker, Trade,
 };
 use reqwest::Client;
 use rust_decimal::prelude::FromPrimitive;
@@ -216,12 +216,9 @@ impl IPerps for LighterClient {
 
         // Also fetch orderbook to get best bid/ask quantities
         // Use a small depth (5) to minimize API load
-        let multi_orderbook = self.get_orderbook(symbol, 5).await?;
-        let orderbook = multi_orderbook
-            .best_for_tight_spreads()
-            .ok_or_else(|| anyhow!("No orderbook available for {}", symbol))?;
+        let orderbook = self.get_orderbook(symbol, 5).await?;
 
-        conversions::to_ticker_with_orderbook(&detail, orderbook)
+        conversions::to_ticker_with_orderbook(&detail, &orderbook)
     }
 
     async fn get_all_tickers(&self) -> Result<Vec<Ticker>> {
@@ -268,8 +265,7 @@ impl IPerps for LighterClient {
             return Err(anyhow!("API error: code {}", response.code));
         }
 
-        let orderbook = conversions::to_orderbook(symbol, &response.data.bids, &response.data.asks)?;
-        Ok(MultiResolutionOrderbook::from_single(orderbook))
+        conversions::to_orderbook(symbol, &response.data.bids, &response.data.asks)
     }
 
     async fn get_funding_rate(&self, symbol: &str) -> Result<FundingRate> {

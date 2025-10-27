@@ -235,12 +235,13 @@ pub async fn fetch_and_calculate_liquidity(
     exchange: &str,
     depth: u32,
 ) -> Result<LiquidityDepthStats> {
-    // Fetch orderbook from REST API
-    let orderbook = client.get_orderbook(symbol, depth).await?;
+    // Fetch multi-resolution orderbook from REST API
+    let multi_orderbook = client.get_orderbook(symbol, depth).await?;
 
     // Calculate liquidity depth using aggregator
+    // MultiResolutionOrderbook automatically selects best resolution for each bps level
     let stats = aggregator
-        .calculate_liquidity_depth(&orderbook, exchange, global_symbol)
+        .calculate_liquidity_depth(&multi_orderbook, exchange, global_symbol)
         .await?;
 
     Ok(stats)

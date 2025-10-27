@@ -4,8 +4,8 @@ use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, TimeZone, Utc};
 use perps_core::types::{
-    FundingRate, Kline, Market, MarketStats, OpenInterest, OrderSide, Orderbook, OrderbookLevel,
-    Ticker, Trade,
+    FundingRate, Kline, Market, MarketStats, MultiResolutionOrderbook, OpenInterest, OrderSide,
+    Orderbook, OrderbookLevel, Ticker, Trade,
 };
 use perps_core::{execute_with_retry, IPerps, RateLimiter, RetryConfig};
 use rust_decimal::Decimal;
@@ -381,7 +381,7 @@ impl IPerps for AsterClient {
         Ok(results)
     }
 
-    async fn get_orderbook(&self, symbol: &str, depth: u32) -> Result<Orderbook> {
+    async fn get_orderbook(&self, symbol: &str, depth: u32) -> Result<MultiResolutionOrderbook> {
         // Check if StreamManager is available
         if let Some(ref manager) = self.stream_manager {
             // Subscribe to symbol (idempotent - no-op if already subscribed)
@@ -400,11 +400,12 @@ impl IPerps for AsterClient {
                 })
                 .await?;
 
-            return Ok(orderbook);
+            return Ok(MultiResolutionOrderbook::from_single(orderbook));
         }
 
         // Fallback when StreamManager is not available: direct REST API call
-        self.fetch_orderbook_rest(symbol, depth).await
+        let orderbook = self.fetch_orderbook_rest(symbol, depth).await?;
+        Ok(MultiResolutionOrderbook::from_single(orderbook))
     }
 
     async fn get_recent_trades(&self, symbol: &str, limit: u32) -> Result<Vec<Trade>> {

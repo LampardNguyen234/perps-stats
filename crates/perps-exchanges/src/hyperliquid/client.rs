@@ -99,6 +99,47 @@ impl HyperliquidClient {
         })
     }
 
+    /// Helper method to fetch orderbook at a specific resolution (nSigFigs)
+    async fn fetch_orderbook_at_resolution(&self, symbol: &str, n_sig_figs: u32) -> Result<Orderbook> {
+        let mut body = serde_json::json!({
+            "type": "l2Book",
+            "coin": symbol,
+            "nSigFigs": n_sig_figs,
+            "mantisa": 5,
+        });
+        if n_sig_figs == 0 {
+            body["nSigFigs"] = Value::Null;
+        }
+        let book: L2Book = self.post(body).await?;
+
+        let bids = book.levels[0]
+            .iter()
+            .map(|l| {
+                Ok(OrderbookLevel {
+                    price: Decimal::from_str(&l.px)?,
+                    quantity: Decimal::from_str(&l.sz)?,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        let asks = book.levels[1]
+            .iter()
+            .map(|l| {
+                Ok(OrderbookLevel {
+                    price: Decimal::from_str(&l.px)?,
+                    quantity: Decimal::from_str(&l.sz)?,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        Ok(Orderbook {
+            symbol: book.coin,
+            bids,
+            asks,
+            timestamp: Utc::now(),
+        })
+    }
+
     /// Helper method to fetch 24h high/low prices from 1-hour candles
     async fn get_24h_high_low(&self, symbol: &str) -> Result<(Decimal, Decimal)> {
         // Fetch last 24 1-hour candles to calculate high/low
@@ -205,7 +246,12 @@ impl IPerps for HyperliquidClient {
             .ok_or_else(|| anyhow!("Asset context not found for {}", symbol))?;
 
         // Get orderbook for best bid/ask with quantities
-        let orderbook = self.get_orderbook(symbol, 1).await?;
+        // Use best available resolution (fine → medium → coarse)
+        let multi_orderbook = self.get_orderbook(symbol, 1).await?;
+        let orderbook = multi_orderbook
+            .best_for_tight_spreads()
+            .ok_or_else(|| anyhow!("No orderbook available for {}", symbol))?;
+
         let (best_bid_price, best_bid_qty) = orderbook
             .bids
             .first()
@@ -304,34 +350,106 @@ impl IPerps for HyperliquidClient {
         Ok(tickers)
     }
 
-    async fn get_orderbook(&self, symbol: &str, _depth: u32) -> Result<Orderbook> {
-        let body =
-            serde_json::json!({ "type": "l2Book", "coin": symbol, "nSigFigs": 5, "mantisa": 1 });
-        let book: L2Book = self.post(body).await?;
-        let bids = book.levels[0]
-            .iter()
-            .map(|l| {
-                Ok(OrderbookLevel {
-                    price: Decimal::from_str(&l.px)?,
-                    quantity: Decimal::from_str(&l.sz)?,
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
-        let asks = book.levels[1]
-            .iter()
-            .map(|l| {
-                Ok(OrderbookLevel {
-                    price: Decimal::from_str(&l.px)?,
-                    quantity: Decimal::from_str(&l.sz)?,
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
-        Ok(Orderbook {
-            symbol: book.coin,
-            bids,
-            asks,
-            timestamp: Utc::now(),
-        })
+    async fn get_orderbook(&self, symbol: &str, _depth: u32) -> Result<MultiResolutionOrderbook> {
+        // Fetch all 3 resolutions in parallel for optimal performance
+        let (fine_result, medium_result, coarse_result) = match symbol {
+            "BTC" =>  tokio::join!(
+            self.fetch_orderbook_at_resolution(symbol, 0),
+            self.fetch_orderbook_at_resolution(symbol, 5),
+            self.fetch_orderbook_at_resolution(symbol, 4),
+            ),
+            _ => tokio::join!(
+            self.fetch_orderbook_at_resolution(symbol, 5),
+            self.fetch_orderbook_at_resolution(symbol, 4),
+            self.fetch_orderbook_at_resolution(symbol, 2),
+            ),
+        };
+
+
+
+
+        // Log results with enhanced debugging information
+        match &fine_result {
+            Ok(book) => {
+                let best_bid = book.bids.first().map(|l| (l.price, l.quantity));
+                let best_ask = book.asks.first().map(|l| (l.price, l.quantity));
+                tracing::debug!(
+                    "✓ Fine orderbook fetched for {}: {} bids, {} asks | Best bid: {} @ {} | Best ask: {} @ {}",
+                    symbol,
+                    book.bids.len(),
+                    book.asks.len(),
+                    best_bid.map(|(p, _)| p.to_string()).unwrap_or_else(|| "N/A".to_string()),
+                    best_bid.map(|(_, q)| q.to_string()).unwrap_or_else(|| "N/A".to_string()),
+                    best_ask.map(|(p, _)| p.to_string()).unwrap_or_else(|| "N/A".to_string()),
+                    best_ask.map(|(_, q)| q.to_string()).unwrap_or_else(|| "N/A".to_string()),
+                );
+            },
+            Err(e) => tracing::warn!("✗ Fine orderbook fetch failed for {}: {}", symbol, e),
+        }
+
+        match &medium_result {
+            Ok(book) => {
+                let best_bid = book.bids.first().map(|l| (l.price, l.quantity));
+                let best_ask = book.asks.first().map(|l| (l.price, l.quantity));
+                tracing::debug!(
+                    "✓ Medium orderbook fetched for {}: {} bids, {} asks | Best bid: {} @ {} | Best ask: {} @ {}",
+                    symbol,
+                    book.bids.len(),
+                    book.asks.len(),
+                    best_bid.map(|(p, _)| p.to_string()).unwrap_or_else(|| "N/A".to_string()),
+                    best_bid.map(|(_, q)| q.to_string()).unwrap_or_else(|| "N/A".to_string()),
+                    best_ask.map(|(p, _)| p.to_string()).unwrap_or_else(|| "N/A".to_string()),
+                    best_ask.map(|(_, q)| q.to_string()).unwrap_or_else(|| "N/A".to_string()),
+                );
+            },
+            Err(e) => tracing::warn!("✗ Medium orderbook fetch failed for {}: {}", symbol, e),
+        }
+
+        match &coarse_result {
+            Ok(book) => {
+                let best_bid = book.bids.first().map(|l| (l.price, l.quantity));
+                let best_ask = book.asks.first().map(|l| (l.price, l.quantity));
+                tracing::debug!(
+                    "✓ Coarse orderbook fetched for {}: {} bids, {} asks | Best bid: {} @ {} | Best ask: {} @ {}",
+                    symbol,
+                    book.bids.len(),
+                    book.asks.len(),
+                    best_bid.map(|(p, _)| p.to_string()).unwrap_or_else(|| "N/A".to_string()),
+                    best_bid.map(|(_, q)| q.to_string()).unwrap_or_else(|| "N/A".to_string()),
+                    best_ask.map(|(p, _)| p.to_string()).unwrap_or_else(|| "N/A".to_string()),
+                    best_ask.map(|(_, q)| q.to_string()).unwrap_or_else(|| "N/A".to_string()),
+                );
+            },
+            Err(e) => tracing::warn!("✗ Coarse orderbook fetch failed for {}: {}", symbol, e),
+        }
+
+        // Collect successful orderbooks in order: fine → medium → coarse
+        let mut orderbooks = Vec::new();
+
+        if let Ok(fine_book) = fine_result {
+            orderbooks.push(fine_book);
+        }
+        if let Ok(medium_book) = medium_result {
+            orderbooks.push(medium_book);
+        }
+        if let Ok(coarse_book) = coarse_result {
+            orderbooks.push(coarse_book);
+        }
+
+        // Ensure at least one resolution succeeded
+        if orderbooks.is_empty() {
+            return Err(anyhow!(
+                "All orderbook resolutions failed for {}",
+                symbol
+            ));
+        }
+
+        let timestamp = Utc::now();
+        Ok(MultiResolutionOrderbook::from_multiple(
+            symbol.to_string(),
+            timestamp,
+            orderbooks,
+        ))
     }
 
     async fn get_funding_rate(&self, symbol: &str) -> Result<FundingRate> {

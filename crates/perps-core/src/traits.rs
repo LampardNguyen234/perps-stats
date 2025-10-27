@@ -27,7 +27,9 @@ pub trait IPerps: Send + Sync {
     async fn get_all_tickers(&self) -> anyhow::Result<Vec<Ticker>>;
 
     /// GetOrderbook returns the order book for a market.
-    async fn get_orderbook(&self, symbol: &str, depth: u32) -> anyhow::Result<Orderbook>;
+    /// For exchanges with aggregation control (e.g., Hyperliquid), returns multiple resolutions (fine/medium/coarse).
+    /// For other exchanges, returns a single orderbook wrapped in MultiResolutionOrderbook (medium field).
+    async fn get_orderbook(&self, symbol: &str, depth: u32) -> anyhow::Result<MultiResolutionOrderbook>;
 
     /// GetFundingRate returns the current and predicted funding rate for a market.
     async fn get_funding_rate(&self, symbol: &str) -> anyhow::Result<FundingRate>;

@@ -184,7 +184,7 @@ pub async fn execute(args: RunArgs) -> Result<()> {
 
                         // Fetch orderbook and calculate liquidity
                         match client_clone.get_orderbook(&symbol_clone, 100).await {
-                            Ok(orderbook) => {
+                            Ok(multi_orderbook) => {
                                 // Extract global symbol
                                 let symbol_string = symbol_clone.to_string();
                                 let global_symbol = symbols_clone
@@ -192,9 +192,10 @@ pub async fn execute(args: RunArgs) -> Result<()> {
                                     .find(|s| client_clone.parse_symbol(s) == symbol_clone)
                                     .unwrap_or(&symbol_string);
 
+                                // MultiResolutionOrderbook automatically selects best resolution
                                 match aggregator_clone
                                     .calculate_liquidity_depth(
-                                        &orderbook,
+                                        &multi_orderbook,
                                         &ex_name_clone,
                                         global_symbol,
                                     )

@@ -299,30 +299,35 @@ impl IPerps for ExtendedClient {
         // Fetch orderbook to get best bid/ask quantities
         // Use minimal depth (1) to reduce API overhead
         let (best_bid_qty, best_ask_qty) = match self.get_orderbook(symbol, 1).await {
-            Ok(orderbook) => {
-                bid_price = orderbook
-                    .bids
-                    .first()
-                    .map(|level| level.price)
-                    .unwrap_or(bid_price);
+            Ok(multi_orderbook) => {
+                // Use best available resolution
+                if let Some(orderbook) = multi_orderbook.best_for_tight_spreads() {
+                    bid_price = orderbook
+                        .bids
+                        .first()
+                        .map(|level| level.price)
+                        .unwrap_or(bid_price);
 
-                let bid_qty = orderbook
-                    .bids
-                    .first()
-                    .map(|level| level.quantity)
-                    .unwrap_or(Decimal::ZERO);
+                    let bid_qty = orderbook
+                        .bids
+                        .first()
+                        .map(|level| level.quantity)
+                        .unwrap_or(Decimal::ZERO);
 
-                ask_price = orderbook
-                    .asks
-                    .first()
-                    .map(|level| level.price)
-                    .unwrap_or(ask_price);
-                let ask_qty = orderbook
-                    .asks
-                    .first()
-                    .map(|level| level.quantity)
-                    .unwrap_or(Decimal::ZERO);
-                (bid_qty, ask_qty)
+                    ask_price = orderbook
+                        .asks
+                        .first()
+                        .map(|level| level.price)
+                        .unwrap_or(ask_price);
+                    let ask_qty = orderbook
+                        .asks
+                        .first()
+                        .map(|level| level.quantity)
+                        .unwrap_or(Decimal::ZERO);
+                    (bid_qty, ask_qty)
+                } else {
+                    (Decimal::ZERO, Decimal::ZERO)
+                }
             }
             Err(e) => {
                 tracing::warn!(
@@ -371,7 +376,7 @@ impl IPerps for ExtendedClient {
         Ok(tickers)
     }
 
-    async fn get_orderbook(&self, symbol: &str, depth: u32) -> Result<Orderbook> {
+    async fn get_orderbook(&self, symbol: &str, depth: u32) -> Result<MultiResolutionOrderbook> {
         // Check if StreamManager is available (streaming mode)
         #[cfg(feature = "streaming")]
         if let Some(ref manager) = self.stream_manager {
@@ -388,7 +393,7 @@ impl IPerps for ExtendedClient {
                 })
                 .await?;
 
-            return Ok(orderbook);
+            return Ok(MultiResolutionOrderbook::from_single(orderbook));
         }
 
         // REST API fallback
@@ -419,12 +424,14 @@ impl IPerps for ExtendedClient {
             })
             .collect::<Result<Vec<_>>>()?;
 
-        Ok(Orderbook {
+        let single_orderbook = Orderbook {
             symbol: symbol.to_string(),
             bids,
             asks,
             timestamp: Utc::now(),
-        })
+        };
+
+        Ok(MultiResolutionOrderbook::from_single(single_orderbook))
     }
 
     async fn get_recent_trades(&self, symbol: &str, limit: u32) -> Result<Vec<Trade>> {
