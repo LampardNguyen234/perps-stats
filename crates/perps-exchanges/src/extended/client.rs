@@ -143,7 +143,7 @@ impl ExtendedClient {
                         let url = url.clone();
                         let http = http.clone();
                         async move {
-                            tracing::debug!("Requesting: {}", url);
+                            tracing::trace!("Requesting: {}", url);
                             let response = http.get(&url).send().await?;
 
                             if !response.status().is_success() {

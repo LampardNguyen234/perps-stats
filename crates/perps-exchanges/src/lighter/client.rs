@@ -66,7 +66,7 @@ impl LighterClient {
                         let url = url.clone();
                         let client = client.clone();
                         async move {
-                            tracing::debug!("Requesting: {}", url);
+                            tracing::trace!("Requesting: {}", url);
                             let response = client.get(&url).send().await?;
 
                             // Check HTTP status first

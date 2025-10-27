@@ -5,7 +5,7 @@ use perps_core::{execute_with_retry, RetryConfig};
 use rust_decimal::Decimal;
 use std::sync::Arc;
 use tracing::{debug, warn};
-
+use tracing::log::trace;
 use super::conversions::*;
 use super::error::BinanceError;
 use super::ticker_calculator::{calculate_ticker_from_klines, parse_timeframe};
@@ -193,7 +193,7 @@ impl BinanceClient {
                         let url = url.clone();
                         let client = client.clone();
                         async move {
-                            debug!("Requesting: {}", url);
+                            trace!("Requesting: {}", url);
 
                             let response = client.get(&url).send().await?;
 
