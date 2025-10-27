@@ -378,38 +378,40 @@ impl MultiResolutionOrderbook {
         self.orderbooks.get(index)
     }
 
-    /// Calculate slippage for a given trade amount and side, automatically selecting
-    /// the best resolution by comparing all available orderbooks.
+    /// Calculate slippage for a given trade amount and side, prioritizing orderbooks
+    /// with tighter spreads (finer resolutions).
     ///
     /// # Strategy
-    /// - Iterates through all orderbook resolutions (finest to coarsest)
+    /// - Iterates through orderbooks in order (finest to coarsest = index 0 to N-1)
+    /// - Orderbooks with smaller index typically have **tighter spreads** (better price discovery)
     /// - **Feasibility check**: Only considers orderbooks with sufficient liquidity to execute the full trade
-    /// - Calculates slippage for each feasible resolution
-    /// - Returns the **minimum (best)** slippage across all feasible resolutions
-    /// - Lower slippage = better execution price for the trader
+    /// - Returns the slippage from the **first orderbook** that can execute the trade (has sufficient liquidity)
+    /// - Falls back to coarser resolutions if finer ones cannot provide sufficient liquidity
     ///
-    /// This approach ensures we always get the best possible execution by checking
-    /// all available orderbook aggregation levels and selecting the optimal one that
-    /// can actually execute the trade.
+    /// This prioritization ensures we always get slippage from the most accurate orderbook
+    /// representation (finest price granularity) that can actually execute the trade.
     ///
     /// # Arguments
     /// * `amount` - Trade size in USD notional
     /// * `side` - OrderSide::Buy or OrderSide::Sell
     ///
     /// # Returns
-    /// * `Some(slippage_bps)` - Best (minimum) slippage in basis points across all **feasible** resolutions
+    /// * `Some(slippage_bps)` - Slippage in basis points from the first feasible orderbook
     /// * `None` - If **no resolution** has sufficient liquidity to execute the full trade
+    ///
+    /// # Example
+    /// ```
+    /// // For a multi-resolution orderbook with 2 resolutions:
+    /// // - Index 0 (fine, tight spread): Can execute $10K trade -> slippage = 5 bps
+    /// // - Index 1 (coarse, wider spread): Can execute $100K trade -> slippage = 3 bps
+    /// // For $10K trade: Returns Some(5) (from index 0, uses finer resolution)
+    /// // For $50K trade: Returns Some(3) (falls back to index 1, index 0 cannot execute)
+    /// ```
     pub fn get_slippage(&self, amount: Decimal, side: OrderSide) -> Option<Decimal> {
-        // Iterate through all orderbooks and collect all valid slippages
-        let slippages: Vec<Decimal> = self
-            .orderbooks
+        // Iterate in order (finest to coarsest) and return first valid slippage
+        self.orderbooks
             .iter()
-            .filter_map(|book| book.get_slippage(amount, side.clone()))
-            .collect();
-
-        // Return the minimum (best) slippage
-        // Lower slippage = better execution price
-        slippages.into_iter().min()
+            .find_map(|book| book.get_slippage(amount, side.clone()))
     }
 
     /// Calculate bid notional within given bps spread, automatically selecting
@@ -983,8 +985,8 @@ mod tests {
     }
 
     #[test]
-    fn test_multi_resolution_get_slippage_picks_best() {
-        // Fine orderbook: tight spread, good for small trades
+    fn test_multi_resolution_get_slippage_prioritizes_fine() {
+        // Fine orderbook (index 0): tight spread, good for small trades
         let fine = Orderbook {
             symbol: "BTC".to_string(),
             timestamp: Utc::now(),
@@ -998,7 +1000,7 @@ mod tests {
             }],
         };
 
-        // Coarse orderbook: wide spread, but has more depth
+        // Coarse orderbook (index 1): wide spread, but has more depth
         let coarse = Orderbook {
             symbol: "BTC".to_string(),
             timestamp: Utc::now(),
@@ -1013,16 +1015,22 @@ mod tests {
         };
 
         let multi =
-            MultiResolutionOrderbook::from_multiple("BTC".to_string(), Utc::now(), vec![fine, coarse]);
+            MultiResolutionOrderbook::from_multiple("BTC".to_string(), Utc::now(), vec![fine.clone(), coarse.clone()]);
 
         // Small trade ($5K) - both orderbooks can handle it
-        // Fine: ~5 bps, Coarse: ~2475 bps (much worse due to wide spread)
-        // Should return ~5 bps from fine orderbook
-        let slippage = multi.get_slippage(dec!(5000), OrderSide::Buy);
-        assert!(slippage.is_some());
-        let bps = slippage.unwrap();
-        // Should be ~5 bps (best execution from fine orderbook)
-        assert!(bps > dec!(4.5) && bps < dec!(5.5));
+        // Fine (index 0): ~5 bps
+        // Coarse (index 1): ~2475 bps (much worse due to wide spread)
+        // Should return ~5 bps from fine orderbook (prioritizes index 0)
+        let multi_slippage = multi.get_slippage(dec!(5000), OrderSide::Buy);
+        assert!(multi_slippage.is_some());
+
+        // Verify it returns slippage from fine (index 0), not coarse
+        let fine_slippage = fine.get_slippage(dec!(5000), OrderSide::Buy).unwrap();
+        assert_eq!(multi_slippage.unwrap(), fine_slippage, "Should prioritize fine orderbook (index 0)");
+
+        // Verify fine slippage is much better than coarse
+        let coarse_slippage = coarse.get_slippage(dec!(5000), OrderSide::Buy).unwrap();
+        assert!(fine_slippage < coarse_slippage, "Fine should have better slippage than coarse");
     }
 
     #[test]
@@ -1068,8 +1076,8 @@ mod tests {
     }
 
     #[test]
-    fn test_multi_resolution_get_slippage_selects_minimum() {
-        // Medium resolution: good for medium-sized trades (20 bps spread)
+    fn test_multi_resolution_get_slippage_prioritizes_by_index() {
+        // Medium resolution (index 0): good for medium-sized trades (20 bps spread)
         let medium = Orderbook {
             symbol: "BTC".to_string(),
             timestamp: Utc::now(),
@@ -1083,7 +1091,7 @@ mod tests {
             }],
         };
 
-        // Coarse resolution: has depth but wider spread (100 bps spread)
+        // Coarse resolution (index 1): has depth but wider spread (100 bps spread)
         let coarse = Orderbook {
             symbol: "BTC".to_string(),
             timestamp: Utc::now(),
@@ -1104,18 +1112,18 @@ mod tests {
         );
 
         // Trade size: $50K - both orderbooks can handle it
-        // Medium: ~10 bps slippage (tight spread)
-        // Coarse: ~50 bps slippage (wide spread)
-        // Should pick medium (minimum slippage)
-        let slippage = multi.get_slippage(dec!(50000), OrderSide::Buy);
-        assert!(slippage.is_some());
+        // Medium (index 0): ~10 bps slippage (tight spread)
+        // Coarse (index 1): ~50 bps slippage (wide spread)
+        // Should pick medium (index 0, prioritized)
+        let multi_slippage = multi.get_slippage(dec!(50000), OrderSide::Buy);
+        assert!(multi_slippage.is_some());
 
-        // Verify it's closer to medium's slippage than coarse's
+        // Verify it returns slippage from medium (index 0), not coarse
         let medium_slippage = medium.get_slippage(dec!(50000), OrderSide::Buy).unwrap();
         let coarse_slippage = coarse.get_slippage(dec!(50000), OrderSide::Buy).unwrap();
 
         assert!(medium_slippage < coarse_slippage, "Medium should have lower slippage than coarse");
-        assert_eq!(slippage.unwrap(), medium_slippage, "Should select medium's (best) slippage");
+        assert_eq!(multi_slippage.unwrap(), medium_slippage, "Should prioritize medium (index 0)");
     }
 
     #[test]
@@ -1275,9 +1283,9 @@ mod tests {
         // Test 1: Small trade ($5K) - all resolutions feasible
         let small_trade = multi.get_slippage(dec!(5000), OrderSide::Buy);
         assert!(small_trade.is_some(), "Small trade should be feasible");
-        // Should pick fine (best slippage)
+        // Should pick fine (index 0, prioritized)
         let fine_slippage = fine.get_slippage(dec!(5000), OrderSide::Buy).unwrap();
-        assert_eq!(small_trade.unwrap(), fine_slippage, "Should pick fine orderbook for small trade");
+        assert_eq!(small_trade.unwrap(), fine_slippage, "Should pick fine orderbook (index 0) for small trade");
 
         // Test 2: Medium trade ($50K) - only medium and coarse feasible
         let medium_trade = multi.get_slippage(dec!(50000), OrderSide::Buy);

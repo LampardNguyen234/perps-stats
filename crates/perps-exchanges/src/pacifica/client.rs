@@ -72,13 +72,19 @@ impl PacificaClient {
             .await
     }
 
-    /// Fetch orderbook from REST API (fallback method)
+    /// Fetch orderbook from REST API with specific aggregation level
     /// Returns (Orderbook, sequence_number) tuple for StreamManager compatibility
-    async fn fetch_orderbook_rest(&self, symbol: &str, _depth: u32) -> Result<(Orderbook, u64)> {
-        // Pacifica uses agg_level parameter for orderbook depth
-        // Using agg_level=10 as specified in requirements
+    ///
+    /// # Arguments
+    /// * `symbol` - Exchange symbol
+    /// * `agg_level` - Aggregation level (1=finest, 20/100=coarsest depending on symbol)
+    async fn fetch_orderbook_with_agg_level(
+        &self,
+        symbol: &str,
+        agg_level: u32,
+    ) -> Result<(Orderbook, u64)> {
         let orderbook: PacificaOrderbookData = self
-            .get(&format!("/book?symbol={}&agg_level=10", symbol))
+            .get(&format!("/book?symbol={}&agg_level={}", symbol, agg_level))
             .await?;
 
         // Parse nested orderbook structure
@@ -125,6 +131,13 @@ impl PacificaClient {
         ))
     }
 
+    /// Fetch orderbook from REST API (backward-compatible wrapper)
+    /// Returns (Orderbook, sequence_number) tuple for StreamManager compatibility
+    /// Uses default agg_level=10
+    async fn fetch_orderbook_rest(&self, symbol: &str, _depth: u32) -> Result<(Orderbook, u64)> {
+        self.fetch_orderbook_with_agg_level(symbol, 10).await
+    }
+
     /// Helper method to make GET requests with rate limiting and retry
     async fn get<T: serde::de::DeserializeOwned>(&self, endpoint: &str) -> Result<T> {
         let config = RetryConfig::default();
@@ -142,7 +155,7 @@ impl PacificaClient {
                         let url = url.clone();
                         let http = http.clone();
                         async move {
-                            tracing::debug!("Requesting: {}", url);
+                            tracing::trace!("Requesting: {}", url);
                             let response = http.get(&url).send().await?;
 
                             if !response.status().is_success() {
@@ -385,7 +398,7 @@ impl IPerps for PacificaClient {
                     let client = self_clone.clone();
                     let sym = symbol_clone.clone();
                     async move {
-                        // Fallback to REST API
+                        // Fallback to REST API (default agg_level=10)
                         client.fetch_orderbook_rest(&sym, depth).await
                     }
                 })
@@ -401,9 +414,70 @@ impl IPerps for PacificaClient {
             }
         }
 
-        // Fallback to REST API (return only orderbook, discard sequence)
-        let (orderbook, _sequence) = self.fetch_orderbook_rest(&exchange_symbol, depth).await?;
-        Ok(MultiResolutionOrderbook::from_single(orderbook))
+        let symbol_clone = exchange_symbol.clone();
+        let self_fine = self.clone();
+        let self_coarse = self.clone();
+
+        let (fine_result, coarse_result) = match symbol {
+            "ETH" | "BTC" => tokio::join!(
+                self_fine.fetch_orderbook_with_agg_level(&symbol_clone, 1),
+                self_coarse.fetch_orderbook_with_agg_level(&symbol_clone, 20)
+            ),
+            _ => tokio::join!(
+                self_fine.fetch_orderbook_with_agg_level(&symbol_clone, 1),
+                self_coarse.fetch_orderbook_with_agg_level(&symbol_clone, 100)
+            )
+        };
+
+        // Collect successful orderbooks (ordered from finest to coarsest)
+        let mut orderbooks = Vec::new();
+        let timestamp = Utc::now();
+
+        if let Ok((fine_book, _)) = fine_result {
+            tracing::debug!(
+                "[Pacifica] ✓ Fine orderbook fetched for {} (notional={}): {} bids, {} asks | Best bid: {} @ {} | Best ask: {} @ {}",
+                symbol,
+                fine_book.total_notional().0,
+                fine_book.bids.len(),
+                fine_book.asks.len(),
+                fine_book.bids.first().map(|l| l.price).unwrap_or_default(),
+                fine_book.bids.first().map(|l| l.quantity).unwrap_or_default(),
+                fine_book.asks.first().map(|l| l.price).unwrap_or_default(),
+                fine_book.asks.first().map(|l| l.quantity).unwrap_or_default()
+            );
+            orderbooks.push(fine_book);
+        } else if let Err(e) = fine_result {
+            tracing::warn!("[Pacifica] Fine orderbook failed for {}: {}", symbol, e);
+        }
+
+
+        if let Ok((coarse_book, _)) = coarse_result {
+            tracing::debug!(
+                "[Pacifica] ✓ Coarse orderbook fetched for {} (notional={}): {} bids, {} asks | Best bid: {} @ {} | Best ask: {} @ {}",
+                symbol,
+                coarse_book.total_notional().0,
+                coarse_book.bids.len(),
+                coarse_book.asks.len(),
+                coarse_book.bids.first().map(|l| l.price).unwrap_or_default(),
+                coarse_book.bids.first().map(|l| l.quantity).unwrap_or_default(),
+                coarse_book.asks.first().map(|l| l.price).unwrap_or_default(),
+                coarse_book.asks.first().map(|l| l.quantity).unwrap_or_default()
+            );
+            orderbooks.push(coarse_book);
+        } else if let Err(e) = coarse_result {
+            tracing::warn!("[Pacifica] Coarse orderbook failed for {}: {}", symbol, e);
+        }
+
+        // Ensure at least one orderbook was fetched
+        if orderbooks.is_empty() {
+            return Err(anyhow!("All orderbook resolutions failed for {}", symbol));
+        }
+
+        Ok(MultiResolutionOrderbook::from_multiple(
+            symbol.to_string(),
+            timestamp,
+            orderbooks,
+        ))
     }
 
     async fn get_recent_trades(&self, symbol: &str, _limit: u32) -> Result<Vec<Trade>> {
