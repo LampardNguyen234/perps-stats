@@ -43,6 +43,8 @@ DATABASE_URL=postgresql://perps_user:password@localhost:5432/perps_stats
 
 # Logging level (trace, debug, info, warn, error)
 RUST_LOG=perps_stats=info
+
+ENABLE_ORDERBOOK_STREAMING=false
 ```
 - Run the following command to create/migrate table.
 ```bash
