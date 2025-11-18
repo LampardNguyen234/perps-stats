@@ -120,6 +120,14 @@ pub enum Commands {
         /// Database URL for storing data (required when using --interval without --format)
         #[arg(long, env = "DATABASE_URL")]
         database_url: Option<String>,
+
+        /// Exclude fees from slippage calculations (force fee=None)
+        #[arg(long)]
+        exclude_fees: bool,
+
+        /// Override taker fee with custom value (e.g., 0.0005 for 0.05%)
+        #[arg(long)]
+        override_fee: Option<f64>,
     },
 
     /// Retrieve ticker data for contracts
@@ -186,5 +194,20 @@ pub enum DbCommands {
         /// Output format (table, json)
         #[arg(short, long, default_value = "table")]
         format: String,
+    },
+
+    /// Update exchange fees (maker and taker)
+    UpdateFees {
+        /// Exchange name (e.g., binance, hyperliquid)
+        #[arg(short, long)]
+        exchange: String,
+
+        /// Maker fee as decimal (e.g., 0.0001 for 0.01%)
+        #[arg(short, long)]
+        maker: Option<f64>,
+
+        /// Taker fee as decimal (e.g., 0.0002 for 0.02%)
+        #[arg(short, long)]
+        taker: Option<f64>,
     },
 }

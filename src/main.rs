@@ -76,6 +76,13 @@ async fn main() -> Result<()> {
                 .await?
             }
             DbCommands::Stats { format } => commands::db::stats(database_url, &format).await?,
+            DbCommands::UpdateFees {
+                exchange,
+                maker,
+                taker,
+            } => {
+                commands::db::update_fees(database_url, &exchange, maker, taker).await?
+            }
         },
         Commands::Market {
             exchange,
@@ -102,6 +109,8 @@ async fn main() -> Result<()> {
             interval,
             max_snapshots,
             database_url,
+            exclude_fees,
+            override_fee,
         } => {
             commands::liquidity::execute(commands::liquidity::LiquidityArgs {
                 exchange,
@@ -112,6 +121,8 @@ async fn main() -> Result<()> {
                 interval,
                 max_snapshots,
                 database_url,
+                exclude_fees,
+                override_fee,
             })
             .await?;
         }

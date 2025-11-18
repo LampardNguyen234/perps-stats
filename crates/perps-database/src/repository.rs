@@ -219,6 +219,23 @@ pub trait Repository: Send + Sync {
         symbol: &str,
     ) -> anyhow::Result<Option<Vec<Slippage>>>;
 
+    /// Get exchange fees (maker_fee, taker_fee) for a specific exchange
+    /// Returns (maker_fee, taker_fee) as Option<(Decimal, Decimal)>
+    /// Returns None if exchange not found or fees are NULL
+    async fn get_exchange_fees(
+        &self,
+        exchange: &str,
+    ) -> anyhow::Result<Option<(Decimal, Decimal)>>;
+
+    /// Update exchange fees (maker and/or taker)
+    /// Only updates fields that are provided (Some)
+    async fn update_exchange_fees(
+        &self,
+        exchange: &str,
+        maker_fee: Option<Decimal>,
+        taker_fee: Option<Decimal>,
+    ) -> anyhow::Result<()>;
+
     // Discovery cache methods
 
     /// Get cached earliest kline timestamp for a symbol/interval
@@ -1544,6 +1561,78 @@ impl Repository for PostgresRepository {
         } else {
             Ok(None)
         }
+    }
+
+    async fn get_exchange_fees(
+        &self,
+        exchange: &str,
+    ) -> anyhow::Result<Option<(Decimal, Decimal)>> {
+        let row = sqlx::query(
+            r#"
+            SELECT maker_fee, taker_fee
+            FROM exchanges
+            WHERE name = $1
+            "#,
+        )
+        .bind(exchange)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.and_then(|r| {
+            let maker_fee: Option<Decimal> = r.get("maker_fee");
+            let taker_fee: Option<Decimal> = r.get("taker_fee");
+
+            // Only return Some if both fees are present
+            match (maker_fee, taker_fee) {
+                (Some(m), Some(t)) => Some((m, t)),
+                _ => None,
+            }
+        }))
+    }
+
+    async fn update_exchange_fees(
+        &self,
+        exchange: &str,
+        maker_fee: Option<Decimal>,
+        taker_fee: Option<Decimal>,
+    ) -> anyhow::Result<()> {
+        // Build dynamic UPDATE query based on which fees are provided
+        let mut updates = Vec::new();
+        let mut bind_index = 2; // $1 is reserved for exchange name
+
+        if maker_fee.is_some() {
+            updates.push(format!("maker_fee = ${}", bind_index));
+            bind_index += 1;
+        }
+        if taker_fee.is_some() {
+            updates.push(format!("taker_fee = ${}", bind_index));
+        }
+
+        if updates.is_empty() {
+            anyhow::bail!("At least one fee (maker or taker) must be provided");
+        }
+
+        let query_str = format!(
+            "UPDATE exchanges SET {} WHERE name = $1",
+            updates.join(", ")
+        );
+
+        let mut query = sqlx::query(&query_str).bind(exchange);
+
+        if let Some(m) = maker_fee {
+            query = query.bind(m);
+        }
+        if let Some(t) = taker_fee {
+            query = query.bind(t);
+        }
+
+        let result = query.execute(&self.pool).await?;
+
+        if result.rows_affected() == 0 {
+            anyhow::bail!("Exchange '{}' not found in database", exchange);
+        }
+
+        Ok(())
     }
 
     async fn get_discovery_cache(

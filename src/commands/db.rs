@@ -463,3 +463,65 @@ fn mask_password(url: &str) -> String {
         url.to_string()
     }
 }
+
+/// Update exchange fees (maker and/or taker)
+pub async fn update_fees(
+    database_url: Option<String>,
+    exchange: &str,
+    maker_fee: Option<f64>,
+    taker_fee: Option<f64>,
+) -> Result<()> {
+    use perps_database::{PostgresRepository, Repository};
+    use rust_decimal::Decimal;
+
+    let db_url = database_url.ok_or_else(|| {
+        anyhow::anyhow!(
+            "DATABASE_URL is required. Set via --database-url flag or DATABASE_URL environment variable"
+        )
+    })?;
+
+    if maker_fee.is_none() && taker_fee.is_none() {
+        anyhow::bail!("At least one fee must be specified: --maker or --taker");
+    }
+
+    tracing::info!("Updating fees for exchange: {}", exchange);
+
+    let pool = PgPool::connect(&db_url).await?;
+    let repository = PostgresRepository::new(pool);
+
+    // Convert f64 to Decimal
+    let maker_decimal = maker_fee.map(|f| Decimal::try_from(f).expect("Invalid maker fee value"));
+    let taker_decimal = taker_fee.map(|f| Decimal::try_from(f).expect("Invalid taker fee value"));
+
+    // Get current fees before update
+    match repository.get_exchange_fees(exchange).await? {
+        Some((current_maker, current_taker)) => {
+            tracing::info!(
+                "Current fees - Maker: {}, Taker: {}",
+                current_maker,
+                current_taker
+            );
+        }
+        None => {
+            tracing::info!("Current fees: Not set or incomplete");
+        }
+    }
+
+    // Update fees
+    repository
+        .update_exchange_fees(exchange, maker_decimal, taker_decimal)
+        .await?;
+
+    // Verify update
+    match repository.get_exchange_fees(exchange).await? {
+        Some((new_maker, new_taker)) => {
+            tracing::info!("✓ Fees updated successfully");
+            tracing::info!("New fees - Maker: {}, Taker: {}", new_maker, new_taker);
+        }
+        None => {
+            tracing::warn!("Warning: Fees updated but incomplete (one or both are NULL)");
+        }
+    }
+
+    Ok(())
+}

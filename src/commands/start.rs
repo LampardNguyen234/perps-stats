@@ -7,6 +7,7 @@ use perps_core::streaming::StreamEvent;
 use perps_core::types::{FundingRate, Kline, Orderbook, Ticker, Trade};
 use perps_database::{PostgresRepository, Repository};
 use perps_exchanges::factory;
+use rust_decimal::Decimal;
 use sqlx::PgPool;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -60,6 +61,14 @@ pub struct StartArgs {
     /// Enable backfilling of historical klines data on startup
     #[arg(long, default_value = "false")]
     pub enable_backfill: bool,
+
+    /// Exclude fees from slippage calculations (force fee=None)
+    #[arg(long)]
+    pub exclude_fees: bool,
+
+    /// Override taker fee with custom value (e.g., 0.0005 for 0.05%)
+    #[arg(long)]
+    pub override_fee: Option<f64>,
 }
 
 /// Load symbols from file (supports both line-separated and comma-separated formats)
@@ -116,6 +125,61 @@ async fn validate_symbols(exchange: &str, symbols: &[String]) -> Result<Vec<Stri
         exchange
     );
     Ok(valid_symbols)
+}
+
+/// Load exchange fees from database with optional override or exclusion
+/// Priority: override_fee > exclude_fees > database
+async fn load_exchange_fees(
+    repository: &dyn Repository,
+    exchange_names: &[String],
+    exclude_fees: bool,
+    override_fee: Option<f64>,
+) -> HashMap<String, Option<Decimal>> {
+    use rust_decimal::prelude::*;
+
+    let mut fee_cache = HashMap::new();
+
+    // If override is set, use it for all exchanges
+    if let Some(custom_fee) = override_fee {
+        let fee_decimal = Decimal::try_from(custom_fee).expect("Invalid override fee value");
+        tracing::info!("Using override taker fee for all exchanges: {}", fee_decimal);
+        for exchange_name in exchange_names {
+            fee_cache.insert(exchange_name.clone(), Some(fee_decimal));
+        }
+        return fee_cache;
+    }
+
+    // If exclude_fees is set, use None for all
+    if exclude_fees {
+        tracing::info!("Excluding fees from slippage calculations (--exclude-fees)");
+        for exchange_name in exchange_names {
+            fee_cache.insert(exchange_name.clone(), None);
+        }
+        return fee_cache;
+    }
+
+    // Otherwise load from database (existing logic)
+    for exchange_name in exchange_names {
+        match repository.get_exchange_fees(exchange_name).await {
+            Ok(Some((_, taker_fee))) => {
+                tracing::info!("Loaded taker fee for {}: {}", exchange_name, taker_fee);
+                fee_cache.insert(exchange_name.clone(), Some(taker_fee));
+            }
+            Ok(None) => {
+                tracing::debug!("No taker fee configured for {}", exchange_name);
+                fee_cache.insert(exchange_name.clone(), None);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to load taker fee for {}: {}. Using None.",
+                    exchange_name,
+                    e
+                );
+                fee_cache.insert(exchange_name.clone(), None);
+            }
+        }
+    }
+    fee_cache
 }
 
 /// Get supported data types for a specific exchange
@@ -1012,6 +1076,8 @@ async fn spawn_liquidity_report_task(
     report_interval: u64,
     repository: Arc<Mutex<PostgresRepository>>,
     shutdown: Arc<AtomicBool>,
+    exclude_fees: bool,
+    override_fee: Option<f64>,
 ) -> Result<tokio::task::JoinHandle<Result<()>>> {
     Ok(tokio::spawn(async move {
         tracing::info!(
@@ -1036,6 +1102,13 @@ async fn spawn_liquidity_report_task(
                 }
             }
         }
+
+        // Load exchange fees from database once (at startup)
+        let exchange_names: Vec<String> = exchange_symbols.keys().cloned().collect();
+        let fee_cache = {
+            let repo = repository.lock().await;
+            load_exchange_fees(&*repo, &exchange_names, exclude_fees, override_fee).await
+        };
 
         loop {
             // Use tokio::select! to check shutdown signal while waiting for next tick
@@ -1128,8 +1201,9 @@ async fn spawn_liquidity_report_task(
                                 }
                             }
 
-                            // Calculate slippage for all trade amounts
-                            let slippages = aggregator.calculate_all_slippages(&multi_orderbook);
+                            // Calculate slippage for all trade amounts (using cached taker_fee)
+                            let taker_fee = fee_cache.get(exchange).and_then(|f| *f);
+                            let slippages = aggregator.calculate_all_slippages(&multi_orderbook, taker_fee);
 
                             // Store slippage
                             let repo = repository.lock().await;
@@ -1466,6 +1540,8 @@ pub async fn execute(args: StartArgs) -> Result<()> {
         args.report_interval,
         repository.clone(),
         shutdown.clone(),
+        args.exclude_fees,
+        args.override_fee,
     )
     .await?;
     tasks.push(liquidity_report_task);

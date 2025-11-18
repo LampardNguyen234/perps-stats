@@ -4,12 +4,11 @@ use chrono::Utc;
 use perps_aggregator::aggregator::Aggregator;
 use perps_aggregator::IAggregator;
 use perps_core::types::{
-    FundingRate, Kline, LiquidityDepthStats, Market, MarketStats, OpenInterest, Orderbook, Ticker,
-    Trade,
+    FundingRate, Kline, Market, MarketStats, MultiResolutionOrderbook, OpenInterest, Orderbook,
+    OrderbookLevel, Ticker, Trade,
 };
 use perps_core::IPerps;
 use rust_decimal::Decimal;
-use serde_json::json;
 use std::str::FromStr;
 
 struct MockExchange {
@@ -27,8 +26,8 @@ impl IPerps for MockExchange {
         symbol.to_string()
     }
 
-    async fn get_orderbook(&self, _symbol: &str, _depth: u32) -> Result<Orderbook> {
-        Ok(self.orderbook.clone())
+    async fn get_orderbook(&self, _symbol: &str, _depth: u32) -> Result<MultiResolutionOrderbook> {
+        Ok(MultiResolutionOrderbook::from_single(self.orderbook.clone()))
     }
 
     // Unused methods
@@ -87,27 +86,26 @@ fn create_mock_orderbook() -> Orderbook {
     Orderbook {
         symbol: "BTC-USDT".to_string(),
         bids: vec![
-            (
-                Decimal::from_str("10000").unwrap(),
-                Decimal::from_str("1").unwrap(),
-            ),
-            (
-                Decimal::from_str("9999").unwrap(),
-                Decimal::from_str("2").unwrap(),
-            ),
+            OrderbookLevel {
+                price: Decimal::from_str("10000").unwrap(),
+                quantity: Decimal::from_str("1").unwrap(),
+            },
+            OrderbookLevel {
+                price: Decimal::from_str("9999").unwrap(),
+                quantity: Decimal::from_str("2").unwrap(),
+            },
         ],
         asks: vec![
-            (
-                Decimal::from_str("10001").unwrap(),
-                Decimal::from_str("1.5").unwrap(),
-            ),
-            (
-                Decimal::from_str("10002").unwrap(),
-                Decimal::from_str("2.5").unwrap(),
-            ),
+            OrderbookLevel {
+                price: Decimal::from_str("10001").unwrap(),
+                quantity: Decimal::from_str("1.5").unwrap(),
+            },
+            OrderbookLevel {
+                price: Decimal::from_str("10002").unwrap(),
+                quantity: Decimal::from_str("2.5").unwrap(),
+            },
         ],
         timestamp: Utc::now(),
-        latency: None,
     }
 }
 
@@ -125,7 +123,7 @@ async fn test_compute_liquidity_all() -> Result<()> {
         orderbook: orderbook.clone(),
     };
 
-    let exchanges: Vec<Box<dyn IPerps>> = vec![Box::new(mock_binance), Box::new(mock_lighter)];
+    let exchanges: Vec<Box<dyn IPerps + Send + Sync>> = vec![Box::new(mock_binance), Box::new(mock_lighter)];
 
     let symbol = "BTC-USDT";
     let results = aggregator
