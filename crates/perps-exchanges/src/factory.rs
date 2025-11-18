@@ -72,11 +72,11 @@ pub async fn all_exchanges() -> Vec<(String, Box<dyn IPerps + Send + Sync>)> {
 }
 
 /// Returns a single exchange client by name.
-/// For Aster, Binance, Extended, and KuCoin, automatically enables WebSocket streaming if DATABASE_URL is set.
+/// For Aster, Binance, Extended, Pacifica, and KuCoin, WebSocket streaming is disabled by default.
 ///
-/// Environment variables (Aster, Binance, Extended, KuCoin):
+/// Environment variables (Aster, Binance, Extended, Pacifica, KuCoin):
 /// - `DATABASE_URL`: PostgreSQL connection string (required for streaming)
-/// - `ENABLE_ORDERBOOK_STREAMING`: Enable/disable streaming (default: true if DATABASE_URL is set)
+/// - `ENABLE_ORDERBOOK_STREAMING`: Set to "true" to enable streaming (default: false)
 pub async fn get_exchange(name: &str) -> anyhow::Result<Box<dyn IPerps + Send + Sync>> {
     match name.to_lowercase().as_str() {
         "aster" => {

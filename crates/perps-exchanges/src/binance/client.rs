@@ -51,15 +51,15 @@ impl BinanceClient {
     ///
     /// Automatically enables WebSocket streaming if:
     /// - DATABASE_URL environment variable is set
-    /// - ENABLE_ORDERBOOK_STREAMING is not set to "false"
+    /// - ENABLE_ORDERBOOK_STREAMING is explicitly set to "true"
     ///
     /// Falls back gracefully to REST-only mode if streaming initialization fails.
     pub async fn new() -> anyhow::Result<Self> {
         // Check if streaming should be enabled
         let should_enable_streaming = std::env::var("DATABASE_URL").is_ok()
             && std::env::var("ENABLE_ORDERBOOK_STREAMING")
-                .map(|v| v.to_lowercase() != "false")
-                .unwrap_or(true);
+                .map(|v| v.to_lowercase() == "true")
+                .unwrap_or(false);
 
         if !should_enable_streaming {
             tracing::debug!("BinanceClient: Streaming disabled, using REST-only mode");

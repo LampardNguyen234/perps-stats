@@ -34,12 +34,12 @@ impl PacificaClient {
             .build()
             .expect("Failed to build HTTP client");
 
-        // Initialize StreamManager if DATABASE_URL is set
+        // Initialize StreamManager if DATABASE_URL is set and ENABLE_ORDERBOOK_STREAMING=true
         let stream_manager = if std::env::var("DATABASE_URL").is_ok() {
             if std::env::var("ENABLE_ORDERBOOK_STREAMING")
-                .unwrap_or_else(|_| "true".to_string())
+                .unwrap_or_else(|_| "false".to_string())
                 .to_lowercase()
-                != "false"
+                == "true"
             {
                 let ws_client: Arc<dyn OrderbookStreamer> = Arc::new(PacificaWsClient::new());
                 let stream_manager =

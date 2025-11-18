@@ -51,12 +51,12 @@ impl ExtendedClient {
     }
 
     /// Create a new client with optional WebSocket streaming
-    /// Automatically enables streaming if DATABASE_URL is set
+    /// Automatically enables streaming if DATABASE_URL is set and ENABLE_ORDERBOOK_STREAMING=true
     pub async fn new() -> Result<Self> {
         let should_enable_streaming = std::env::var("DATABASE_URL").is_ok()
             && std::env::var("ENABLE_ORDERBOOK_STREAMING")
-                .map(|v| v.to_lowercase() != "false")
-                .unwrap_or(true);
+                .map(|v| v.to_lowercase() == "true")
+                .unwrap_or(false);
 
         if !should_enable_streaming {
             tracing::debug!("ExtendedClient: Streaming disabled, using REST-only mode");

@@ -52,11 +52,11 @@ pub struct AsterClient {
 
 impl AsterClient {
     pub async fn new() -> Result<Self> {
-        // Check if streaming should be enabled
+        // Check if streaming should be enabled (requires DATABASE_URL and ENABLE_ORDERBOOK_STREAMING=true)
         let should_enable_streaming = std::env::var("DATABASE_URL").is_ok()
             && std::env::var("ENABLE_ORDERBOOK_STREAMING")
-                .map(|v| v.to_lowercase() != "false")
-                .unwrap_or(true);
+                .map(|v| v.to_lowercase() == "true")
+                .unwrap_or(false);
 
         if !should_enable_streaming {
             tracing::debug!("AsterClient: Streaming disabled, using REST-only mode");
