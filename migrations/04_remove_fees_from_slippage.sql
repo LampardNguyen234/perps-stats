@@ -15,7 +15,7 @@ BEGIN;
 -- Step 1: Create a temporary table to store the corrected values
 CREATE TEMPORARY TABLE slippage_corrected AS
 SELECT
-    id,
+    s.id,
     exchange_id,
     symbol,
     ts,
