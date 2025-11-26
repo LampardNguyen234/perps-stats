@@ -228,7 +228,7 @@ impl Orderbook {
     /// // With taker fee (0.04% = 0.0004)
     /// let buy_slippage_with_fee = orderbook.get_slippage(dec!(5000), OrderSide::Buy, Some(dec!(0.0004)));
     /// ```
-    pub fn get_slippage(&self, amount: Decimal, side: OrderSide, taker_fee: Option<Decimal>) -> Option<Decimal> {
+    pub fn get_slippage(&self, amount: Decimal, side: OrderSide) -> Option<Decimal> {
         // Get mid price
         let mid_price = self.mid_price()?;
         if mid_price.is_zero() {
@@ -285,20 +285,10 @@ impl Orderbook {
         }
         let avg_price = total_cost / total_base_qty;
 
-        // Apply taker fee to execution price if provided
-        let avg_price_with_fee = if let Some(fee) = taker_fee {
-            match side {
-                OrderSide::Buy => avg_price * (Decimal::ONE + fee),  // Buy: pay fee on top
-                OrderSide::Sell => avg_price * (Decimal::ONE - fee), // Sell: receive less after fee
-            }
-        } else {
-            avg_price
-        };
-
-        // Calculate slippage in bps (now includes fee impact)
+        // Calculate slippage in bps (raw, without fees)
         let slippage = match side {
-            OrderSide::Buy => (avg_price_with_fee - mid_price) / mid_price,
-            OrderSide::Sell => (mid_price - avg_price_with_fee) / mid_price,
+            OrderSide::Buy => (avg_price - mid_price) / mid_price,
+            OrderSide::Sell => (mid_price - avg_price) / mid_price,
         };
 
         Some(slippage * Decimal::from(10000)) // Convert to bps
@@ -407,10 +397,9 @@ impl MultiResolutionOrderbook {
     /// # Arguments
     /// * `amount` - Trade size in USD notional
     /// * `side` - OrderSide::Buy or OrderSide::Sell
-    /// * `taker_fee` - Optional taker fee as decimal (e.g., 0.0004 for 0.04%)
     ///
     /// # Returns
-    /// * `Some(slippage_bps)` - Slippage in basis points from the first feasible orderbook (includes fee impact if provided)
+    /// * `Some(slippage_bps)` - Raw slippage in basis points from the first feasible orderbook (without fees)
     /// * `None` - If **no resolution** has sufficient liquidity to execute the full trade
     ///
     /// # Example
@@ -420,15 +409,12 @@ impl MultiResolutionOrderbook {
     /// // - Index 1 (coarse, wider spread): Can execute $100K trade -> slippage = 3 bps
     /// // For $10K trade: Returns Some(5) (from index 0, uses finer resolution)
     /// // For $50K trade: Returns Some(3) (falls back to index 1, index 0 cannot execute)
-    ///
-    /// // With taker fee
-    /// // For $10K trade with 0.04% fee: Returns Some(9) (5 bps slippage + 4 bps fee = 9 bps total)
     /// ```
-    pub fn get_slippage(&self, amount: Decimal, side: OrderSide, taker_fee: Option<Decimal>) -> Option<Decimal> {
+    pub fn get_slippage(&self, amount: Decimal, side: OrderSide) -> Option<Decimal> {
         // Iterate in order (finest to coarsest) and return first valid slippage
         self.orderbooks
             .iter()
-            .find_map(|book| book.get_slippage(amount, side.clone(), taker_fee))
+            .find_map(|book| book.get_slippage(amount, side.clone()))
     }
 
     /// Calculate bid notional within given bps spread, automatically selecting

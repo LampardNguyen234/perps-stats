@@ -312,7 +312,6 @@ async fn execute_single_exchange(
                 global_symbol,
                 &format,
                 &exchange,
-                None, // No database in immediate display mode
             )
             .await
             {
@@ -344,13 +343,6 @@ async fn run_periodic_fetcher_all(
         output_desc
     );
 
-    // Load exchange fees from database once (if database is available)
-    let fee_cache = match &config {
-        OutputConfig::Database { repository } => {
-            load_exchange_fees(repository, exchange_names, exclude_fees, override_fee).await
-        }
-        _ => HashMap::new(), // No database, no fees
-    };
 
     let mut snapshot_count = 0;
     let unlimited = max_snapshots == 0;
@@ -372,7 +364,6 @@ async fn run_periodic_fetcher_all(
 
         // Fetch data for each exchange-symbol combination
         for (client, exchange_name) in clients.iter().zip(exchange_names.iter()) {
-            let taker_fee = fee_cache.get(exchange_name).and_then(|f| *f);
             for symbol in symbols {
                 let parsed_symbol = client.parse_symbol(symbol);
                 match fetch_liquidity_data(
@@ -381,7 +372,6 @@ async fn run_periodic_fetcher_all(
                     &parsed_symbol,
                     symbol,
                     exchange_name,
-                    taker_fee,
                 )
                 .await
                 {
@@ -521,13 +511,6 @@ async fn run_periodic_fetcher_selected(
         output_desc
     );
 
-    // Load exchange fees from database once (if database is available)
-    let fee_cache = match &config {
-        OutputConfig::Database { repository } => {
-            load_exchange_fees(repository, exchange_names, exclude_fees, override_fee).await
-        }
-        _ => HashMap::new(), // No database, no fees
-    };
 
     let mut snapshot_count = 0;
     let unlimited = max_snapshots == 0;
@@ -549,7 +532,6 @@ async fn run_periodic_fetcher_selected(
 
         // Fetch data for each exchange-symbol combination
         for (client, exchange_name) in clients.iter().zip(exchange_names.iter()) {
-            let taker_fee = fee_cache.get(exchange_name).and_then(|f| *f);
             for symbol in symbols {
                 let parsed_symbol = client.parse_symbol(symbol);
                 match fetch_liquidity_data(
@@ -558,7 +540,6 @@ async fn run_periodic_fetcher_selected(
                     &parsed_symbol,
                     symbol,
                     exchange_name,
-                    taker_fee,
                 )
                 .await
                 {
@@ -702,16 +683,6 @@ async fn run_periodic_fetcher(
         output_desc
     );
 
-    // Load exchange fee from database once (if database is available)
-    let taker_fee = match &config {
-        OutputConfig::Database { repository } => {
-            load_exchange_fees(repository, &[exchange.to_string()], exclude_fees, override_fee)
-                .await
-                .get(exchange)
-                .and_then(|f| *f)
-        }
-        _ => None, // No database, no fee
-    };
 
     let mut data_by_symbol: HashMap<String, Vec<LiquidityData>> = HashMap::new();
     for global_symbol in symbol_map.values() {
@@ -734,7 +705,7 @@ async fn run_periodic_fetcher(
         let mut current_orderbook_snapshot = Vec::new();
         for symbol in symbols {
             let global_symbol = symbol_map.get(symbol).unwrap();
-            match fetch_liquidity_data(client, aggregator, symbol, global_symbol, exchange, taker_fee).await {
+            match fetch_liquidity_data(client, aggregator, symbol, global_symbol, exchange).await {
                 Ok(data) => {
                     tracing::debug!("✓ {} - Mid: ${:.2}, Bid(10bps): ${:.2}, Ask(10bps): ${:.2}, Slippage(10K): {:.2} bps / {:.2} bps",
                         data.liquidity.symbol,
@@ -815,78 +786,6 @@ async fn run_periodic_fetcher(
     Ok(())
 }
 
-/// Determine taker fee based on flags and database
-/// Priority: override_fee > exclude_fees > database
-fn determine_taker_fee(
-    override_fee: Option<f64>,
-    exclude_fees: bool,
-    database_fee: Option<Decimal>,
-) -> Option<Decimal> {
-    if let Some(custom_fee) = override_fee {
-        // Override has highest priority
-        Some(Decimal::try_from(custom_fee).expect("Invalid override fee value"))
-    } else if exclude_fees {
-        // Exclude flag forces None
-        None
-    } else {
-        // Use database fee
-        database_fee
-    }
-}
-
-/// Load exchange fees from database once and cache them
-/// Returns a HashMap<exchange_name, taker_fee>
-async fn load_exchange_fees(
-    repository: &dyn Repository,
-    exchange_names: &[String],
-    exclude_fees: bool,
-    override_fee: Option<f64>,
-) -> HashMap<String, Option<Decimal>> {
-    let mut fee_cache = HashMap::new();
-
-    // If override is set, use it for all exchanges
-    if let Some(custom_fee) = override_fee {
-        let fee_decimal = Decimal::try_from(custom_fee).expect("Invalid override fee value");
-        tracing::info!("Using override taker fee for all exchanges: {}", fee_decimal);
-        for exchange_name in exchange_names {
-            fee_cache.insert(exchange_name.clone(), Some(fee_decimal));
-        }
-        return fee_cache;
-    }
-
-    // If exclude_fees is set, use None for all
-    if exclude_fees {
-        tracing::info!("Excluding fees from slippage calculations (--exclude-fees)");
-        for exchange_name in exchange_names {
-            fee_cache.insert(exchange_name.clone(), None);
-        }
-        return fee_cache;
-    }
-
-    // Otherwise load from database
-    for exchange_name in exchange_names {
-        match repository.get_exchange_fees(exchange_name).await {
-            Ok(Some((_, taker_fee))) => {
-                tracing::debug!("Loaded taker fee for {}: {}", exchange_name, taker_fee);
-                fee_cache.insert(exchange_name.clone(), Some(taker_fee));
-            }
-            Ok(None) => {
-                tracing::debug!("No taker fee configured for {}", exchange_name);
-                fee_cache.insert(exchange_name.clone(), None);
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "Failed to load taker fee for {}: {}. Using None.",
-                    exchange_name,
-                    e
-                );
-                fee_cache.insert(exchange_name.clone(), None);
-            }
-        }
-    }
-    fee_cache
-}
-
 /// Fetch liquidity data and slippage for a single symbol (without displaying)
 async fn fetch_liquidity_data(
     client: &dyn IPerps,
@@ -894,7 +793,6 @@ async fn fetch_liquidity_data(
     symbol: &str,
     global_symbol: &str,
     exchange: &str,
-    taker_fee: Option<Decimal>,
 ) -> Result<LiquidityData> {
     // Fetch orderbook once and calculate both liquidity depth and slippage
     let multi_orderbook = client.get_orderbook(symbol, 1000).await?;
@@ -903,7 +801,7 @@ async fn fetch_liquidity_data(
     let liquidity = aggregator
         .calculate_liquidity_depth(&multi_orderbook, exchange, global_symbol)
         .await?;
-    let slippage = aggregator.calculate_all_slippages(&multi_orderbook, taker_fee);
+    let slippage = aggregator.calculate_all_slippages(&multi_orderbook);
 
     Ok(LiquidityData {
         liquidity,
@@ -1450,7 +1348,6 @@ async fn fetch_and_display_liquidity_data(
     global_symbol: &str,
     format: &str,
     exchange: &str,
-    taker_fee: Option<Decimal>,
 ) -> Result<()> {
     // Fetch orderbook once and calculate both liquidity depth and slippage
     let multi_orderbook = client.get_orderbook(symbol, 1000).await?;
@@ -1459,7 +1356,7 @@ async fn fetch_and_display_liquidity_data(
     let liquidity = aggregator
         .calculate_liquidity_depth(&multi_orderbook, exchange, global_symbol)
         .await?;
-    let slippage = aggregator.calculate_all_slippages(&multi_orderbook, taker_fee);
+    let slippage = aggregator.calculate_all_slippages(&multi_orderbook);
 
     let data = LiquidityData {
         liquidity,

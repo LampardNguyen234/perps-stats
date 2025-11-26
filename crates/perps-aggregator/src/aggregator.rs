@@ -67,30 +67,27 @@ pub trait IAggregator: Send + Sync {
         exchange: &str,
     ) -> anyhow::Result<FundingRateStats>;
 
-    /// Calculate slippage for a specific trade amount.
+    /// Calculate slippage for a specific trade amount (raw, without fees).
     /// Returns slippage metrics for both buy and sell sides.
     ///
     /// # Arguments
     /// * `orderbook` - The orderbook to calculate slippage from
     /// * `trade_amount` - Trade size in USD notional
-    /// * `taker_fee` - Optional taker fee as decimal (e.g., 0.0004 for 0.04%)
     fn calculate_slippage_for_amount(
         &self,
         orderbook: &Orderbook,
         trade_amount: Decimal,
-        taker_fee: Option<Decimal>,
     ) -> Slippage;
 
     /// Calculate slippage for all standard trade amounts (1K, 10K, 50K, 100K, 500K, 5M, 10M USD).
-    /// Returns a vector of slippage metrics for each trade amount.
+    /// Returns a vector of slippage metrics for each trade amount (raw, without fees).
     ///
     /// Accepts `MultiResolutionOrderbook` and automatically selects the best resolution
     /// for each trade size (small trades use fine resolution, large trades use coarse).
     ///
     /// # Arguments
     /// * `orderbook` - Multi-resolution orderbook
-    /// * `taker_fee` - Optional taker fee as decimal (e.g., 0.0004 for 0.04%)
-    fn calculate_all_slippages(&self, orderbook: &MultiResolutionOrderbook, taker_fee: Option<Decimal>) -> Vec<Slippage>;
+    fn calculate_all_slippages(&self, orderbook: &MultiResolutionOrderbook) -> Vec<Slippage>;
 }
 
 /// Default implementation of the IAggregator trait
@@ -359,7 +356,6 @@ impl IAggregator for Aggregator {
         &self,
         orderbook: &Orderbook,
         trade_amount: Decimal,
-        taker_fee: Option<Decimal>,
     ) -> Slippage {
         // Use the new mid_price() method
         let mid_price = match orderbook.mid_price() {
@@ -374,9 +370,9 @@ impl IAggregator for Aggregator {
             }
         };
 
-        // Use the new get_slippage() method from Orderbook for buy side (with fee)
+        // Use the new get_slippage() method from Orderbook for buy side (raw slippage, no fees)
         let (buy_slippage_bps, buy_avg_price, buy_total_cost, buy_feasible) =
-            if let Some(slippage_bps) = orderbook.get_slippage(trade_amount, OrderSide::Buy, taker_fee) {
+            if let Some(slippage_bps) = orderbook.get_slippage(trade_amount, OrderSide::Buy) {
                 // Calculate avg price and total cost for additional metrics
                 let (avg_price, total_cost, _) =
                     calculate_execution_price(&orderbook.asks, trade_amount);
@@ -387,9 +383,9 @@ impl IAggregator for Aggregator {
 
         let buy_slippage_pct = buy_slippage_bps.map(|bps| bps / dec!(100)); // Convert bps to percentage
 
-        // Use the new get_slippage() method from Orderbook for sell side (with fee)
+        // Use the new get_slippage() method from Orderbook for sell side (raw slippage, no fees)
         let (sell_slippage_bps, sell_avg_price, sell_total_cost, sell_feasible) =
-            if let Some(slippage_bps) = orderbook.get_slippage(trade_amount, OrderSide::Sell, taker_fee) {
+            if let Some(slippage_bps) = orderbook.get_slippage(trade_amount, OrderSide::Sell) {
                 // Calculate avg price and total cost for additional metrics
                 let (avg_price, total_cost, _) =
                     calculate_execution_price(&orderbook.bids, trade_amount);
@@ -418,16 +414,16 @@ impl IAggregator for Aggregator {
         }
     }
 
-    fn calculate_all_slippages(&self, multi_orderbook: &MultiResolutionOrderbook, taker_fee: Option<Decimal>) -> Vec<Slippage> {
+    fn calculate_all_slippages(&self, multi_orderbook: &MultiResolutionOrderbook) -> Vec<Slippage> {
         let finest = multi_orderbook.best_for_tight_spreads();
         let mid_price = finest.and_then(|book| book.mid_price());
 
         TRADE_AMOUNTS
             .iter()
             .map(|&amount| {
-                // Use MultiResolutionOrderbook's intelligent get_slippage method (with fee)
-                let buy_slippage_bps = multi_orderbook.get_slippage(amount, OrderSide::Buy, taker_fee);
-                let sell_slippage_bps = multi_orderbook.get_slippage(amount, OrderSide::Sell, taker_fee);
+                // Use MultiResolutionOrderbook's intelligent get_slippage method (raw slippage, no fees)
+                let buy_slippage_bps = multi_orderbook.get_slippage(amount, OrderSide::Buy);
+                let sell_slippage_bps = multi_orderbook.get_slippage(amount, OrderSide::Sell);
 
                 let buy_slippage_pct = buy_slippage_bps.map(|bps| bps / dec!(100));
                 let sell_slippage_pct = sell_slippage_bps.map(|bps| bps / dec!(100));
@@ -768,7 +764,7 @@ mod tests {
             ],
         };
 
-        let slippage = aggregator.calculate_slippage_for_amount(&orderbook, dec!(10000), None);
+        let slippage = aggregator.calculate_slippage_for_amount(&orderbook, dec!(10000));
 
         assert_eq!(slippage.symbol, "BTC");
         assert_eq!(slippage.trade_amount, dec!(10000));
@@ -823,7 +819,7 @@ mod tests {
             ],
         };
 
-        let slippage = aggregator.calculate_slippage_for_amount(&orderbook, dec!(100000), None);
+        let slippage = aggregator.calculate_slippage_for_amount(&orderbook, dec!(100000));
 
         assert_eq!(slippage.symbol, "BTC");
         assert_eq!(slippage.trade_amount, dec!(100000));
@@ -882,7 +878,7 @@ mod tests {
             ],
         };
 
-        let slippage = aggregator.calculate_slippage_for_amount(&orderbook, dec!(10000), None);
+        let slippage = aggregator.calculate_slippage_for_amount(&orderbook, dec!(10000));
 
         assert_eq!(slippage.symbol, "BTC");
         assert_eq!(slippage.trade_amount, dec!(10000));
@@ -923,7 +919,7 @@ mod tests {
             asks: vec![],
         };
 
-        let slippage = aggregator.calculate_slippage_for_amount(&orderbook, dec!(10000), None);
+        let slippage = aggregator.calculate_slippage_for_amount(&orderbook, dec!(10000));
 
         // Should return infeasible slippage
         assert_eq!(slippage.mid_price, Decimal::ZERO);
@@ -957,7 +953,7 @@ mod tests {
         };
 
         let multi_orderbook = MultiResolutionOrderbook::from_single(orderbook);
-        let slippages = aggregator.calculate_all_slippages(&multi_orderbook, None);
+        let slippages = aggregator.calculate_all_slippages(&multi_orderbook);
 
         // Should return 7 slippage entries (1K, 10K, 50K, 100K, 500K, 5M, 10M)
         assert_eq!(slippages.len(), 7);
@@ -1004,7 +1000,7 @@ mod tests {
         };
 
         let multi_orderbook = MultiResolutionOrderbook::from_single(orderbook);
-        let slippages = aggregator.calculate_all_slippages(&multi_orderbook, None);
+        let slippages = aggregator.calculate_all_slippages(&multi_orderbook);
 
         assert_eq!(slippages.len(), 7);
 
@@ -1088,101 +1084,4 @@ mod tests {
         assert!(total_cost.is_none());
     }
 
-    #[test]
-    fn test_calculate_slippage_with_taker_fee() {
-        let aggregator = Aggregator::new();
-        let now = Utc::now();
-
-        // Create orderbook with mid price = 100,050
-        let orderbook = Orderbook {
-            symbol: "BTC".to_string(),
-            timestamp: now,
-            bids: vec![
-                OrderbookLevel {
-                    price: dec!(100000),
-                    quantity: dec!(0.1),
-                }, // $10,000
-            ],
-            asks: vec![
-                OrderbookLevel {
-                    price: dec!(100100),
-                    quantity: dec!(0.1),
-                }, // $10,010
-            ],
-        };
-
-        // Calculate without fee
-        let slippage_no_fee = aggregator.calculate_slippage_for_amount(&orderbook, dec!(10000), None);
-
-        // Calculate with 0.04% (4 bps) taker fee
-        let taker_fee = dec!(0.0004); // 0.04% = 4 bps
-        let slippage_with_fee = aggregator.calculate_slippage_for_amount(&orderbook, dec!(10000), Some(taker_fee));
-
-        // Both should be feasible
-        assert!(slippage_no_fee.buy_feasible);
-        assert!(slippage_with_fee.buy_feasible);
-
-        // Slippage with fee should be higher than without fee
-        let no_fee_bps = slippage_no_fee.buy_slippage_bps.unwrap();
-        let with_fee_bps = slippage_with_fee.buy_slippage_bps.unwrap();
-
-        // Fee adds approximately 4 bps to the buy slippage
-        assert!(with_fee_bps > no_fee_bps);
-        assert!((with_fee_bps - no_fee_bps - dec!(4)).abs() < dec!(0.5)); // Should be close to 4 bps difference
-
-        // Sell side: fee reduces the effective price
-        let sell_no_fee_bps = slippage_no_fee.sell_slippage_bps.unwrap();
-        let sell_with_fee_bps = slippage_with_fee.sell_slippage_bps.unwrap();
-
-        // Fee adds to sell slippage as well (getting less after fee)
-        assert!(sell_with_fee_bps > sell_no_fee_bps);
-        assert!((sell_with_fee_bps - sell_no_fee_bps - dec!(4)).abs() < dec!(0.5));
-    }
-
-    #[test]
-    fn test_calculate_all_slippages_with_taker_fee() {
-        let aggregator = Aggregator::new();
-        let now = Utc::now();
-
-        // Create orderbook with sufficient liquidity for all amounts
-        let orderbook = Orderbook {
-            symbol: "BTC".to_string(),
-            timestamp: now,
-            bids: vec![
-                OrderbookLevel {
-                    price: dec!(100000),
-                    quantity: dec!(150),
-                }, // $15,000,000
-            ],
-            asks: vec![
-                OrderbookLevel {
-                    price: dec!(100100),
-                    quantity: dec!(150),
-                }, // $15,015,000
-            ],
-        };
-
-        let multi_orderbook = MultiResolutionOrderbook::from_single(orderbook);
-
-        // Calculate without fee
-        let slippages_no_fee = aggregator.calculate_all_slippages(&multi_orderbook, None);
-
-        // Calculate with 0.05% (5 bps) taker fee
-        let taker_fee = dec!(0.0005);
-        let slippages_with_fee = aggregator.calculate_all_slippages(&multi_orderbook, Some(taker_fee));
-
-        // Should have same number of entries
-        assert_eq!(slippages_no_fee.len(), slippages_with_fee.len());
-
-        // For each trade amount, slippage with fee should be higher
-        for (no_fee, with_fee) in slippages_no_fee.iter().zip(slippages_with_fee.iter()) {
-            assert_eq!(no_fee.trade_amount, with_fee.trade_amount);
-
-            if let (Some(no_fee_bps), Some(with_fee_bps)) = (no_fee.buy_slippage_bps, with_fee.buy_slippage_bps) {
-                // Fee should add approximately 5 bps
-                assert!(with_fee_bps > no_fee_bps);
-                assert!((with_fee_bps - no_fee_bps - dec!(5)).abs() < dec!(0.5));
-            }
-        }
-    }
 }
