@@ -773,9 +773,9 @@ impl Repository for PostgresRepository {
                     exchange_id, symbol, mid_price,
                     bid_1bps, bid_2_5bps, bid_5bps, bid_10bps, bid_20bps,
                     ask_1bps, ask_2_5bps, ask_5bps, ask_10bps, ask_20bps,
-                    ts
+                    max_ask_bps, max_bid_bps, ts
                 )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
                 ON CONFLICT DO NOTHING
                 "#,
             )
@@ -792,6 +792,8 @@ impl Repository for PostgresRepository {
             .bind(stat.ask_5bps)
             .bind(stat.ask_10bps)
             .bind(stat.ask_20bps)
+            .bind(stat.max_ask_bps)
+            .bind(stat.max_bid_bps)
             .bind(stat.timestamp)
             .execute(&mut *tx)
             .await?;
@@ -1337,8 +1339,8 @@ impl Repository for PostgresRepository {
                 ask_10bps: row.get("ask_10bps"),
                 ask_20bps: row.get("ask_20bps"),
                 timestamp: row.get("ts"),
-                max_bid_bps: row.try_get("max_bid_bps").ok(),
-                max_ask_bps: row.try_get("max_ask_bps").ok(),
+                max_bid_bps: row.get("max_bid_bps"),
+                max_ask_bps: row.get("max_ask_bps"),
             });
         }
 
@@ -1383,8 +1385,8 @@ impl Repository for PostgresRepository {
             ask_10bps: r.get("ask_10bps"),
             ask_20bps: r.get("ask_20bps"),
             timestamp: r.get("ts"),
-            max_bid_bps: r.try_get("max_bid_bps").ok(),
-            max_ask_bps: r.try_get("max_ask_bps").ok(),
+            max_bid_bps: r.get("max_bid_bps"),
+            max_ask_bps: r.get("max_ask_bps"),
         }))
     }
 
