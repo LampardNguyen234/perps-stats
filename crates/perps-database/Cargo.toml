@@ -8,7 +8,7 @@ edition = "2021"
 perps-core = { path = "../perps-core" }
 
 # Database
-sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "postgres", "chrono", "rust_decimal"] }
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "chrono", "rust_decimal", "migrate"], default-features = false }
 
 # Async trait support
 async-trait = "0.1"

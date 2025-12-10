@@ -6,7 +6,6 @@ use perps_core::{IPerps, LiquidityDepthStats, MultiResolutionOrderbook, Orderboo
 use perps_database::Repository;
 use perps_exchanges::{all_exchanges, get_exchange};
 use prettytable::{format, Cell, Row, Table};
-use rust_decimal::Decimal;
 use rust_xlsxwriter::{Format, Workbook};
 use serde_json;
 use std::collections::HashMap;
@@ -331,8 +330,8 @@ async fn run_periodic_fetcher_all(
     interval_secs: u64,
     max_snapshots: usize,
     config: OutputConfig,
-    exclude_fees: bool,
-    override_fee: Option<f64>,
+    _exclude_fees: bool,
+    _override_fee: Option<f64>,
 ) -> Result<()> {
     let output_desc = format_output_description(&config);
 
@@ -497,8 +496,8 @@ async fn run_periodic_fetcher_selected(
     interval_secs: u64,
     max_snapshots: usize,
     config: OutputConfig,
-    exclude_fees: bool,
-    override_fee: Option<f64>,
+    _exclude_fees: bool,
+    _override_fee: Option<f64>,
 ) -> Result<()> {
     let output_desc = format_output_description(&config);
 
@@ -665,8 +664,8 @@ async fn run_periodic_fetcher(
     interval_secs: u64,
     max_snapshots: usize,
     config: OutputConfig,
-    exclude_fees: bool,
-    override_fee: Option<f64>,
+    _exclude_fees: bool,
+    _override_fee: Option<f64>,
 ) -> Result<()> {
     let output_desc = format_output_description(&config);
 
@@ -1370,7 +1369,7 @@ async fn fetch_and_display_liquidity_data(
     Ok(())
 }
 
-fn display_table(stats: &LiquidityDepthStats) -> Result<()> {
+fn _display_table(stats: &LiquidityDepthStats) -> Result<()> {
     let mut table = Table::new();
     table.set_format(*format::consts::FORMAT_NO_LINESEP_WITH_TITLE);
 
@@ -1487,7 +1486,7 @@ fn display_aggregated_table(stats: &[LiquidityDepthStats]) -> Result<()> {
     Ok(())
 }
 
-fn display_json(stats: &LiquidityDepthStats) -> Result<()> {
+fn _display_json(stats: &LiquidityDepthStats) -> Result<()> {
     println!("{}", serde_json::to_string_pretty(stats)?);
     Ok(())
 }

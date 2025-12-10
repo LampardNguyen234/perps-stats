@@ -54,7 +54,7 @@ csv = "1.3"
 rust_xlsxwriter = "0.79"
 
 # Database
-sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "postgres"] }
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "migrate"], default-features = false }
 
 # Workspace crates
 perps-core = { path = "crates/perps-core" }

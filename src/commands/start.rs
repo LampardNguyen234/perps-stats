@@ -7,7 +7,6 @@ use perps_core::streaming::StreamEvent;
 use perps_core::types::{FundingRate, Kline, Orderbook, Ticker, Trade};
 use perps_database::{PostgresRepository, Repository};
 use perps_exchanges::factory;
-use rust_decimal::Decimal;
 use sqlx::PgPool;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -1021,8 +1020,8 @@ async fn spawn_liquidity_report_task(
     report_interval: u64,
     repository: Arc<Mutex<PostgresRepository>>,
     shutdown: Arc<AtomicBool>,
-    exclude_fees: bool,
-    override_fee: Option<f64>,
+    _exclude_fees: bool,
+    _override_fee: Option<f64>,
 ) -> Result<tokio::task::JoinHandle<Result<()>>> {
     Ok(tokio::spawn(async move {
         tracing::info!(
