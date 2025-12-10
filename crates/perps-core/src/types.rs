@@ -195,6 +195,72 @@ impl Orderbook {
         (bid_notional, ask_notional)
     }
 
+    /// Calculate the maximum basis points spread on the ask side (how far the deepest ask extends).
+    /// Returns the spread in bps between mid-price and the worst (highest) ask price.
+    /// Returns None if orderbook is empty or missing either side.
+    ///
+    /// # Examples
+    /// ```
+    /// use perps_core::{Orderbook, OrderbookLevel};
+    /// use rust_decimal_macros::dec;
+    /// use chrono::Utc;
+    ///
+    /// let orderbook = Orderbook {
+    ///     symbol: "BTC".to_string(),
+    ///     timestamp: Utc::now(),
+    ///     bids: vec![OrderbookLevel { price: dec!(100000), quantity: dec!(0.1) }],
+    ///     asks: vec![
+    ///         OrderbookLevel { price: dec!(100100), quantity: dec!(0.1) }, // 5 bps from mid
+    ///         OrderbookLevel { price: dec!(100500), quantity: dec!(0.1) }, // 25 bps from mid
+    ///     ],
+    /// };
+    ///
+    /// assert_eq!(orderbook.max_ask_bps(), Some(dec!(25))); // Deepest ask is 25 bps away
+    /// ```
+    pub fn max_ask_bps(&self) -> Option<Decimal> {
+        let mid_price = self.mid_price()?;
+        if mid_price.is_zero() {
+            return None;
+        }
+
+        let max_ask_price = self.asks.last()?.price;
+        let spread = (max_ask_price - mid_price) / mid_price;
+        Some(spread * Decimal::from(10000)) // Convert to bps
+    }
+
+    /// Calculate the maximum basis points spread on the bid side (how far the deepest bid extends).
+    /// Returns the spread in bps between mid-price and the worst (lowest) bid price.
+    /// Returns None if orderbook is empty or missing either side.
+    ///
+    /// # Examples
+    /// ```
+    /// use perps_core::{Orderbook, OrderbookLevel};
+    /// use rust_decimal_macros::dec;
+    /// use chrono::Utc;
+    ///
+    /// let orderbook = Orderbook {
+    ///     symbol: "BTC".to_string(),
+    ///     timestamp: Utc::now(),
+    ///     bids: vec![
+    ///         OrderbookLevel { price: dec!(100000), quantity: dec!(0.1) }, // 5 bps from mid
+    ///         OrderbookLevel { price: dec!(99500), quantity: dec!(0.1) },  // 25 bps from mid
+    ///     ],
+    ///     asks: vec![OrderbookLevel { price: dec!(100100), quantity: dec!(0.1) }],
+    /// };
+    ///
+    /// assert_eq!(orderbook.max_bid_bps(), Some(dec!(25))); // Deepest bid is 25 bps away
+    /// ```
+    pub fn max_bid_bps(&self) -> Option<Decimal> {
+        let mid_price = self.mid_price()?;
+        if mid_price.is_zero() {
+            return None;
+        }
+
+        let min_bid_price = self.bids.last()?.price;
+        let spread = (mid_price - min_bid_price) / mid_price;
+        Some(spread * Decimal::from(10000)) // Convert to bps
+    }
+
     /// Calculate slippage in basis points for a given trade amount and side.
     ///
     /// # Arguments
@@ -456,6 +522,50 @@ impl MultiResolutionOrderbook {
             .max()
             .unwrap_or(Decimal::ZERO)
     }
+
+    /// Calculate the maximum basis points spread on the ask side across all resolutions.
+    /// Returns the maximum spread from the orderbook with the deepest ask liquidity.
+    ///
+    /// This is useful for understanding the total liquidity depth available - how far
+    /// from mid-price the orderbook extends on the ask side.
+    ///
+    /// # Returns
+    /// * `Some(max_bps)` - Maximum ask spread across all resolutions
+    /// * `None` - If all orderbooks are empty or missing ask side
+    ///
+    /// # Examples
+    /// ```
+    /// // If resolution 0 has asks up to +10 bps and resolution 1 has asks up to +50 bps,
+    /// // this returns Some(50) - the maximum depth available
+    /// ```
+    pub fn max_ask_bps(&self) -> Option<Decimal> {
+        self.orderbooks
+            .iter()
+            .filter_map(|book| book.max_ask_bps())
+            .max()
+    }
+
+    /// Calculate the maximum basis points spread on the bid side across all resolutions.
+    /// Returns the maximum spread from the orderbook with the deepest bid liquidity.
+    ///
+    /// This is useful for understanding the total liquidity depth available - how far
+    /// from mid-price the orderbook extends on the bid side.
+    ///
+    /// # Returns
+    /// * `Some(max_bps)` - Maximum bid spread across all resolutions
+    /// * `None` - If all orderbooks are empty or missing bid side
+    ///
+    /// # Examples
+    /// ```
+    /// // If resolution 0 has bids down to -10 bps and resolution 1 has bids down to -50 bps,
+    /// // this returns Some(50) - the maximum depth available
+    /// ```
+    pub fn max_bid_bps(&self) -> Option<Decimal> {
+        self.orderbooks
+            .iter()
+            .filter_map(|book| book.max_bid_bps())
+            .max()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -540,6 +650,10 @@ pub struct LiquidityDepthStats {
     pub ask_5bps: Decimal,
     pub ask_10bps: Decimal,
     pub ask_20bps: Decimal,
+
+    // Maximum orderbook depth (how far liquidity extends)
+    pub max_bid_bps: Option<Decimal>,
+    pub max_ask_bps: Option<Decimal>,
 }
 
 /// Slippage calculation for a specific trade amount.
@@ -889,6 +1003,110 @@ mod tests {
         assert!(sell_bps > dec!(100)); // > 100 bps = > 1%
     }
 
+    #[test]
+    fn test_max_ask_bps() {
+        let orderbook = Orderbook {
+            symbol: "BTC".to_string(),
+            timestamp: Utc::now(),
+            bids: vec![OrderbookLevel {
+                price: dec!(100000),
+                quantity: dec!(0.1),
+            }],
+            asks: vec![
+                OrderbookLevel {
+                    price: dec!(100100),
+                    quantity: dec!(0.1),
+                }, // 5 bps from mid (mid = 100050)
+                OrderbookLevel {
+                    price: dec!(100500),
+                    quantity: dec!(0.1),
+                }, // ~225 bps from mid
+                OrderbookLevel {
+                    price: dec!(101000),
+                    quantity: dec!(0.1),
+                }, // ~475 bps from mid
+            ],
+        };
+
+        let max_ask = orderbook.max_ask_bps().unwrap();
+        // Should be close to 475 bps (last ask is furthest from mid)
+        assert!(max_ask > dec!(470) && max_ask < dec!(480));
+    }
+
+    #[test]
+    fn test_max_bid_bps() {
+        let orderbook = Orderbook {
+            symbol: "BTC".to_string(),
+            timestamp: Utc::now(),
+            bids: vec![
+                OrderbookLevel {
+                    price: dec!(100000),
+                    quantity: dec!(0.1),
+                }, // 5 bps from mid (mid = 100050)
+                OrderbookLevel {
+                    price: dec!(99500),
+                    quantity: dec!(0.1),
+                }, // ~275 bps from mid
+                OrderbookLevel {
+                    price: dec!(99000),
+                    quantity: dec!(0.1),
+                }, // ~525 bps from mid
+            ],
+            asks: vec![OrderbookLevel {
+                price: dec!(100100),
+                quantity: dec!(0.1),
+            }],
+        };
+
+        let max_bid = orderbook.max_bid_bps().unwrap();
+        // Should be close to 525 bps (last bid is furthest from mid)
+        assert!(max_bid > dec!(520) && max_bid < dec!(530));
+    }
+
+    #[test]
+    fn test_max_bps_empty_orderbook() {
+        let empty_orderbook = Orderbook {
+            symbol: "BTC".to_string(),
+            timestamp: Utc::now(),
+            bids: vec![],
+            asks: vec![],
+        };
+
+        assert!(empty_orderbook.max_ask_bps().is_none());
+        assert!(empty_orderbook.max_bid_bps().is_none());
+    }
+
+    #[test]
+    fn test_max_bps_one_sided() {
+        // Only asks, no bids
+        let asks_only = Orderbook {
+            symbol: "BTC".to_string(),
+            timestamp: Utc::now(),
+            bids: vec![],
+            asks: vec![OrderbookLevel {
+                price: dec!(100100),
+                quantity: dec!(0.1),
+            }],
+        };
+
+        assert!(asks_only.max_ask_bps().is_none()); // No mid price
+        assert!(asks_only.max_bid_bps().is_none());
+
+        // Only bids, no asks
+        let bids_only = Orderbook {
+            symbol: "BTC".to_string(),
+            timestamp: Utc::now(),
+            bids: vec![OrderbookLevel {
+                price: dec!(100000),
+                quantity: dec!(0.1),
+            }],
+            asks: vec![],
+        };
+
+        assert!(bids_only.max_ask_bps().is_none());
+        assert!(bids_only.max_bid_bps().is_none()); // No mid price
+    }
+
     // MultiResolutionOrderbook tests
     #[test]
     fn test_multi_resolution_from_single() {
@@ -1231,6 +1449,85 @@ mod tests {
     #[should_panic(expected = "MultiResolutionOrderbook must contain at least one orderbook")]
     fn test_multi_resolution_from_multiple_empty_panic() {
         MultiResolutionOrderbook::from_multiple("BTC".to_string(), Utc::now(), vec![]);
+    }
+
+    #[test]
+    fn test_multi_resolution_max_bps() {
+        // Fine orderbook with limited depth (±10 bps)
+        let fine = Orderbook {
+            symbol: "BTC".to_string(),
+            timestamp: Utc::now(),
+            bids: vec![
+                OrderbookLevel {
+                    price: dec!(100000),
+                    quantity: dec!(0.1),
+                }, // ~5 bps from mid
+                OrderbookLevel {
+                    price: dec!(99950),
+                    quantity: dec!(0.1),
+                }, // ~55 bps from mid
+            ],
+            asks: vec![
+                OrderbookLevel {
+                    price: dec!(100100),
+                    quantity: dec!(0.1),
+                }, // ~5 bps from mid
+                OrderbookLevel {
+                    price: dec!(100150),
+                    quantity: dec!(0.1),
+                }, // ~55 bps from mid
+            ],
+        };
+
+        // Coarse orderbook with deep liquidity (±500 bps)
+        let coarse = Orderbook {
+            symbol: "BTC".to_string(),
+            timestamp: Utc::now(),
+            bids: vec![
+                OrderbookLevel {
+                    price: dec!(100000),
+                    quantity: dec!(1.0),
+                },
+                OrderbookLevel {
+                    price: dec!(99000),
+                    quantity: dec!(1.0),
+                }, // ~525 bps from mid
+                OrderbookLevel {
+                    price: dec!(95000),
+                    quantity: dec!(1.0),
+                }, // ~2625 bps from mid (deepest)
+            ],
+            asks: vec![
+                OrderbookLevel {
+                    price: dec!(100100),
+                    quantity: dec!(1.0),
+                },
+                OrderbookLevel {
+                    price: dec!(101000),
+                    quantity: dec!(1.0),
+                }, // ~475 bps from mid
+                OrderbookLevel {
+                    price: dec!(105000),
+                    quantity: dec!(1.0),
+                }, // ~2475 bps from mid (deepest)
+            ],
+        };
+
+        let multi = MultiResolutionOrderbook::from_multiple(
+            "BTC".to_string(),
+            Utc::now(),
+            vec![fine, coarse],
+        );
+
+        // Should return the maximum depth across all resolutions
+        let max_ask = multi.max_ask_bps().unwrap();
+        let max_bid = multi.max_bid_bps().unwrap();
+
+        // Coarse orderbook has deeper liquidity
+        assert!(max_ask > dec!(2400)); // Should be ~2475 bps from coarse
+        assert!(max_bid > dec!(2600)); // Should be ~2625 bps from coarse
+        assert!(max_ask < dec!(2500));
+        assert!(max_bid < dec!(2700));
     }
 
     #[test]

@@ -6,7 +6,6 @@ use perps_core::{IPerps, LiquidityDepthStats, MultiResolutionOrderbook, Orderboo
 use perps_database::Repository;
 use perps_exchanges::{all_exchanges, get_exchange};
 use prettytable::{format, Cell, Row, Table};
-use rust_decimal::Decimal;
 use rust_xlsxwriter::{Format, Workbook};
 use serde_json;
 use std::collections::HashMap;
@@ -331,8 +330,8 @@ async fn run_periodic_fetcher_all(
     interval_secs: u64,
     max_snapshots: usize,
     config: OutputConfig,
-    exclude_fees: bool,
-    override_fee: Option<f64>,
+    _exclude_fees: bool,
+    _override_fee: Option<f64>,
 ) -> Result<()> {
     let output_desc = format_output_description(&config);
 
@@ -342,7 +341,6 @@ async fn run_periodic_fetcher_all(
         if max_snapshots == 0 { "unlimited".to_string() } else { max_snapshots.to_string() },
         output_desc
     );
-
 
     let mut snapshot_count = 0;
     let unlimited = max_snapshots == 0;
@@ -498,8 +496,8 @@ async fn run_periodic_fetcher_selected(
     interval_secs: u64,
     max_snapshots: usize,
     config: OutputConfig,
-    exclude_fees: bool,
-    override_fee: Option<f64>,
+    _exclude_fees: bool,
+    _override_fee: Option<f64>,
 ) -> Result<()> {
     let output_desc = format_output_description(&config);
 
@@ -510,7 +508,6 @@ async fn run_periodic_fetcher_selected(
         if max_snapshots == 0 { "unlimited".to_string() } else { max_snapshots.to_string() },
         output_desc
     );
-
 
     let mut snapshot_count = 0;
     let unlimited = max_snapshots == 0;
@@ -667,8 +664,8 @@ async fn run_periodic_fetcher(
     interval_secs: u64,
     max_snapshots: usize,
     config: OutputConfig,
-    exclude_fees: bool,
-    override_fee: Option<f64>,
+    _exclude_fees: bool,
+    _override_fee: Option<f64>,
 ) -> Result<()> {
     let output_desc = format_output_description(&config);
 
@@ -682,7 +679,6 @@ async fn run_periodic_fetcher(
         },
         output_desc
     );
-
 
     let mut data_by_symbol: HashMap<String, Vec<LiquidityData>> = HashMap::new();
     for global_symbol in symbol_map.values() {
@@ -1373,22 +1369,37 @@ async fn fetch_and_display_liquidity_data(
     Ok(())
 }
 
-fn display_table(stats: &LiquidityDepthStats) -> Result<()> {
+fn _display_table(stats: &LiquidityDepthStats) -> Result<()> {
     let mut table = Table::new();
     table.set_format(*format::consts::FORMAT_NO_LINESEP_WITH_TITLE);
 
-    table.set_titles(Row::new(vec![Cell::new(&format!(
-        "Liquidity Depth: {}/{} (Mid Price: {})",
-        stats.exchange.to_uppercase(),
-        stats.symbol,
-        stats.mid_price.round_dp(4)
-    ))
-    .with_hspan(3)]));
+    let header_text = if let (Some(max_bid), Some(max_ask)) = (stats.max_bid_bps, stats.max_ask_bps) {
+        format!(
+            "Liquidity Depth: {}/{}\n(Mid Price: {}, Max Ask: {:.2} bps, Max Bid: {:.2} bps)",
+            stats.exchange.to_uppercase(),
+            stats.symbol,
+            stats.mid_price.round_dp(4),
+            max_ask,
+            max_bid
+        )
+    } else {
+        format!(
+            "Liquidity Depth: {}/{} (Mid Price: {})",
+            stats.exchange.to_uppercase(),
+            stats.symbol,
+            stats.mid_price.round_dp(4)
+        )
+    };
+
+    table.set_titles(Row::new(vec![Cell::new(&header_text)
+        .with_hspan(3)
+        .with_style(prettytable::Attr::Bold)
+        .style_spec("c")]));
 
     table.add_row(Row::new(vec![
         Cell::new("Spread (bps)").with_style(prettytable::Attr::Bold),
-        Cell::new("Cumulative Bid Notional").with_style(prettytable::Attr::Bold),
-        Cell::new("Cumulative Ask Notional").with_style(prettytable::Attr::Bold),
+        Cell::new("Bid Notional").with_style(prettytable::Attr::Bold),
+        Cell::new("Ask Notional").with_style(prettytable::Attr::Bold),
     ]));
 
     let bps_labels = ["1 bps", "2.5 bps", "5 bps", "10 bps", "20 bps"];
@@ -1490,7 +1501,7 @@ fn display_aggregated_table(stats: &[LiquidityDepthStats]) -> Result<()> {
     Ok(())
 }
 
-fn display_json(stats: &LiquidityDepthStats) -> Result<()> {
+fn _display_json(stats: &LiquidityDepthStats) -> Result<()> {
     println!("{}", serde_json::to_string_pretty(stats)?);
     Ok(())
 }
@@ -1502,18 +1513,33 @@ fn display_table_combined(data: &LiquidityData) -> Result<()> {
     let mut table = Table::new();
     table.set_format(*format::consts::FORMAT_NO_LINESEP_WITH_TITLE);
 
-    table.set_titles(Row::new(vec![Cell::new(&format!(
-        "Liquidity Depth: {}/{} (Mid Price: {})",
-        stats.exchange.to_uppercase(),
-        stats.symbol,
-        stats.mid_price.round_dp(4)
-    ))
-    .with_hspan(3)]));
+    let header_text = if let (Some(max_bid), Some(max_ask)) = (stats.max_bid_bps, stats.max_ask_bps) {
+        format!(
+            "Liquidity Depth: {}/{}\n(Mid Price: {}, Max Ask: {:.2} bps, Max Bid: {:.2} bps)",
+            stats.exchange.to_uppercase(),
+            stats.symbol,
+            stats.mid_price.round_dp(4),
+            max_ask,
+            max_bid
+        )
+    } else {
+        format!(
+            "Liquidity Depth: {}/{} (Mid Price: {})",
+            stats.exchange.to_uppercase(),
+            stats.symbol,
+            stats.mid_price.round_dp(4)
+        )
+    };
+
+    table.set_titles(Row::new(vec![Cell::new(&header_text)
+        .with_hspan(3)
+        .with_style(prettytable::Attr::Bold)
+        .style_spec("c")]));
 
     table.add_row(Row::new(vec![
         Cell::new("Spread (bps)").with_style(prettytable::Attr::Bold),
-        Cell::new("Cumulative Bid Notional").with_style(prettytable::Attr::Bold),
-        Cell::new("Cumulative Ask Notional").with_style(prettytable::Attr::Bold),
+        Cell::new("Bid Notional").with_style(prettytable::Attr::Bold),
+        Cell::new("Ask Notional").with_style(prettytable::Attr::Bold),
     ]));
 
     let bps_labels = ["1 bps", "2.5 bps", "5 bps", "10 bps", "20 bps"];
@@ -1554,7 +1580,8 @@ fn display_table_combined(data: &LiquidityData) -> Result<()> {
         stats.symbol,
         stats.mid_price.round_dp(4)
     ))
-    .with_hspan(3)]));
+    .with_hspan(3).with_style(prettytable::Attr::Bold)
+        .style_spec("c")]));
 
     slip_table.add_row(Row::new(vec![
         Cell::new("Trade Amount").with_style(prettytable::Attr::Bold),

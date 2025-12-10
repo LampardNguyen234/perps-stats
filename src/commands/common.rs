@@ -157,7 +157,7 @@ pub fn format_output_description(config: &OutputConfig) -> String {
 /// * `symbols` - List of symbols to fetch
 /// * `fetch_fn` - Async function that fetches data for a symbol
 /// * `on_data` - Callback invoked for each fetched data point
-pub async fn run_periodic_fetcher<T, F, Fut, C>(
+pub async fn _run_periodic_fetcher<T, F, Fut, C>(
     interval_seconds: u64,
     max_snapshots: usize,
     symbols: Vec<String>,
@@ -227,7 +227,7 @@ where
 /// * `global_symbol` - Global symbol format (e.g., "BTC")
 /// * `exchange` - Exchange name (e.g., "binance")
 /// * `depth` - Orderbook depth to fetch (e.g., 500, 1000)
-pub async fn fetch_and_calculate_liquidity(
+pub async fn _fetch_and_calculate_liquidity(
     client: &dyn IPerps,
     aggregator: &dyn IAggregator,
     symbol: &str,
@@ -262,7 +262,7 @@ pub async fn fetch_and_calculate_liquidity(
 /// * `output_dir` - Directory to write CSV files
 /// * `header_fn` - Function that returns CSV header row
 /// * `row_fn` - Function that converts data item to CSV row
-pub fn write_to_csv_generic<T, H, R>(
+pub fn _write_to_csv_generic<T, H, R>(
     data: &HashMap<String, Vec<T>>,
     output_dir: &Path,
     header_fn: H,
@@ -317,7 +317,7 @@ where
 /// * `output_path` - Path to Excel workbook
 /// * `header_fn` - Function that returns Excel header row
 /// * `row_fn` - Function that converts data item to Excel row
-pub fn write_to_excel_generic<T, H, R>(
+pub fn _write_to_excel_generic<T, H, R>(
     data: &HashMap<String, Vec<T>>,
     output_path: &Path,
     header_fn: H,

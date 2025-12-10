@@ -194,6 +194,15 @@ impl RateLimiter {
         Self::new(vec![RateLimit::per_second(20), RateLimit::per_minute(1200)])
     }
 
+    /// Create preset rate limiter for Nano
+    /// Conservative rate limit based on Nano API documentation:
+    /// - /orderbook: 2400/min (40 req/sec)
+    /// - /assets: 1200/min (20 req/sec)
+    /// - Using conservative 20 requests per second for all endpoints
+    pub fn nado() -> Self {
+        Self::new(vec![RateLimit::per_second(20), RateLimit::per_minute(1200)])
+    }
+
     /// Create a disabled rate limiter (no limits)
     /// Useful for testing or when rate limiting is not needed
     pub fn disabled() -> Self {

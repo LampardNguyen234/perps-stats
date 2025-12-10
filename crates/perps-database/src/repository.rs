@@ -1337,6 +1337,8 @@ impl Repository for PostgresRepository {
                 ask_10bps: row.get("ask_10bps"),
                 ask_20bps: row.get("ask_20bps"),
                 timestamp: row.get("ts"),
+                max_bid_bps: row.try_get("max_bid_bps").ok(),
+                max_ask_bps: row.try_get("max_ask_bps").ok(),
             });
         }
 
@@ -1381,6 +1383,8 @@ impl Repository for PostgresRepository {
             ask_10bps: r.get("ask_10bps"),
             ask_20bps: r.get("ask_20bps"),
             timestamp: r.get("ts"),
+            max_bid_bps: r.try_get("max_bid_bps").ok(),
+            max_ask_bps: r.try_get("max_ask_bps").ok(),
         }))
     }
 

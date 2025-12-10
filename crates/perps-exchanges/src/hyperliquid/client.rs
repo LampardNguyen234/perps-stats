@@ -353,20 +353,17 @@ impl IPerps for HyperliquidClient {
     async fn get_orderbook(&self, symbol: &str, _depth: u32) -> Result<MultiResolutionOrderbook> {
         // Fetch all 3 resolutions in parallel for optimal performance
         let (fine_result, medium_result, coarse_result) = match symbol {
-            "BTC" =>  tokio::join!(
-            self.fetch_orderbook_at_resolution(symbol, 0),
-            self.fetch_orderbook_at_resolution(symbol, 5),
-            self.fetch_orderbook_at_resolution(symbol, 4),
+            "BTC" => tokio::join!(
+                self.fetch_orderbook_at_resolution(symbol, 0),
+                self.fetch_orderbook_at_resolution(symbol, 5),
+                self.fetch_orderbook_at_resolution(symbol, 4),
             ),
             _ => tokio::join!(
-            self.fetch_orderbook_at_resolution(symbol, 5),
-            self.fetch_orderbook_at_resolution(symbol, 4),
-            self.fetch_orderbook_at_resolution(symbol, 2),
+                self.fetch_orderbook_at_resolution(symbol, 5),
+                self.fetch_orderbook_at_resolution(symbol, 4),
+                self.fetch_orderbook_at_resolution(symbol, 2),
             ),
         };
-
-
-
 
         // Log results with enhanced debugging information
         match &fine_result {
@@ -383,7 +380,7 @@ impl IPerps for HyperliquidClient {
                     best_ask.map(|(p, _)| p.to_string()).unwrap_or_else(|| "N/A".to_string()),
                     best_ask.map(|(_, q)| q.to_string()).unwrap_or_else(|| "N/A".to_string()),
                 );
-            },
+            }
             Err(e) => tracing::warn!("✗ Fine orderbook fetch failed for {}: {}", symbol, e),
         }
 
@@ -401,7 +398,7 @@ impl IPerps for HyperliquidClient {
                     best_ask.map(|(p, _)| p.to_string()).unwrap_or_else(|| "N/A".to_string()),
                     best_ask.map(|(_, q)| q.to_string()).unwrap_or_else(|| "N/A".to_string()),
                 );
-            },
+            }
             Err(e) => tracing::warn!("✗ Medium orderbook fetch failed for {}: {}", symbol, e),
         }
 
@@ -419,7 +416,7 @@ impl IPerps for HyperliquidClient {
                     best_ask.map(|(p, _)| p.to_string()).unwrap_or_else(|| "N/A".to_string()),
                     best_ask.map(|(_, q)| q.to_string()).unwrap_or_else(|| "N/A".to_string()),
                 );
-            },
+            }
             Err(e) => tracing::warn!("✗ Coarse orderbook fetch failed for {}: {}", symbol, e),
         }
 
@@ -438,10 +435,7 @@ impl IPerps for HyperliquidClient {
 
         // Ensure at least one resolution succeeded
         if orderbooks.is_empty() {
-            return Err(anyhow!(
-                "All orderbook resolutions failed for {}",
-                symbol
-            ));
+            return Err(anyhow!("All orderbook resolutions failed for {}", symbol));
         }
 
         let timestamp = Utc::now();

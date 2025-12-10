@@ -7,7 +7,6 @@ use perps_core::streaming::StreamEvent;
 use perps_core::types::{FundingRate, Kline, Orderbook, Ticker, Trade};
 use perps_database::{PostgresRepository, Repository};
 use perps_exchanges::factory;
-use rust_decimal::Decimal;
 use sqlx::PgPool;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -1021,8 +1020,8 @@ async fn spawn_liquidity_report_task(
     report_interval: u64,
     repository: Arc<Mutex<PostgresRepository>>,
     shutdown: Arc<AtomicBool>,
-    exclude_fees: bool,
-    override_fee: Option<f64>,
+    _exclude_fees: bool,
+    _override_fee: Option<f64>,
 ) -> Result<tokio::task::JoinHandle<Result<()>>> {
     Ok(tokio::spawn(async move {
         tracing::info!(
@@ -1047,7 +1046,6 @@ async fn spawn_liquidity_report_task(
                 }
             }
         }
-
 
         loop {
             // Use tokio::select! to check shutdown signal while waiting for next tick
@@ -1172,23 +1170,30 @@ async fn spawn_liquidity_report_task(
                             if let Some(finest_book) = multi_orderbook.best_for_tight_spreads() {
                                 let repo = repository.lock().await;
                                 match repo
-                                    .store_orderbooks_with_exchange(exchange, &[finest_book.clone()])
+                                    .store_orderbooks_with_exchange(
+                                        exchange,
+                                        &[finest_book.clone()],
+                                    )
                                     .await
                                 {
-                                Ok(_) => {
-                                    tracing::debug!("Stored orderbook for {}/{}", exchange, symbol);
+                                    Ok(_) => {
+                                        tracing::debug!(
+                                            "Stored orderbook for {}/{}",
+                                            exchange,
+                                            symbol
+                                        );
+                                    }
+                                    Err(e) => {
+                                        tracing::error!(
+                                            "Failed to store orderbook for {}/{}: {}",
+                                            exchange,
+                                            symbol,
+                                            e
+                                        );
+                                    }
                                 }
-                                Err(e) => {
-                                    tracing::error!(
-                                        "Failed to store orderbook for {}/{}: {}",
-                                        exchange,
-                                        symbol,
-                                        e
-                                    );
-                                }
+                                drop(repo);
                             }
-                            drop(repo);
-                        }
                         }
                         Err(e) => {
                             tracing::error!(
@@ -1363,6 +1368,7 @@ pub async fn execute(args: StartArgs) -> Result<()> {
         "bybit",
         "kucoin",
         "lighter",
+        "nado",
         "pacifica",
         "paradex",
     ];

@@ -23,7 +23,10 @@ pub async fn migrate(database_url: Option<String>) -> Result<()> {
         anyhow::bail!("Migrations directory not found: migrations/");
     }
 
-    sqlx::migrate!("./migrations").run(&pool).await?;
+    sqlx::migrate::Migrator::new(std::path::Path::new("./migrations"))
+        .await?
+        .run(&pool)
+        .await?;
     tracing::info!("✓ Migrations completed successfully");
 
     Ok(())

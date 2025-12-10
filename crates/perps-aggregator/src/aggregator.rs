@@ -187,13 +187,19 @@ impl IAggregator for Aggregator {
             .map(|&bps| book.ask_notional(bps))
             .collect();
 
+        // Calculate maximum orderbook depth (how far liquidity extends)
+        let max_bid_bps = book.max_bid_bps();
+        let max_ask_bps = book.max_ask_bps();
+
         let duration = start.elapsed();
         tracing::debug!(
-            "Calculated liquidity for {} on {} in {:.2?} ({} resolutions)",
+            "Calculated liquidity for {} on {} in {:.2?} ({} resolutions, max depth: bid={:?}bps, ask={:?}bps)",
             global_symbol,
             exchange,
             duration,
-            book.resolution_count()
+            book.resolution_count(),
+            max_bid_bps,
+            max_ask_bps
         );
 
         Ok(LiquidityDepthStats {
@@ -211,6 +217,8 @@ impl IAggregator for Aggregator {
             ask_5bps: ask_notionals[2],
             ask_10bps: ask_notionals[3],
             ask_20bps: ask_notionals[4],
+            max_bid_bps,
+            max_ask_bps,
         })
     }
 

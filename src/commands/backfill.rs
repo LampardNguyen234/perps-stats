@@ -243,11 +243,11 @@ async fn discover_earliest_kline(
         .await
     {
         Ok(klines) if !klines.is_empty() => {
-            api_calls += 1;
+            let _ = api_calls + 1;
             tracing::debug!("Recent data available, proceeding with historical search");
         }
         Ok(_) => {
-            api_calls += 1;
+            let _ = api_calls + 1;
             anyhow::bail!(
                 "No recent data available for symbol {} ({}). Symbol may not be actively traded.",
                 symbol,
@@ -255,7 +255,7 @@ async fn discover_earliest_kline(
             );
         }
         Err(e) => {
-            api_calls += 1;
+            let _ = api_calls + 1;
             anyhow::bail!(
                 "Failed to fetch recent klines for {} ({}): {}",
                 symbol,
@@ -424,6 +424,7 @@ pub async fn execute(args: BackfillArgs) -> Result<()> {
         "bybit",
         "kucoin",
         "lighter",
+        "nado",
         "pacifica",
         "paradex",
     ];
@@ -909,7 +910,7 @@ async fn backfill_klines(
                 .await
             {
                 Ok(klines) => {
-                    let count = klines.len();
+                    let _count = klines.len();
                     let timestamps: HashSet<DateTime<Utc>> =
                         klines.iter().map(|k| k.open_time).collect();
                     timestamps

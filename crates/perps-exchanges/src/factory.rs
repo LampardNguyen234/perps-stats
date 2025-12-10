@@ -5,6 +5,7 @@ use crate::extended::ExtendedClient;
 use crate::hyperliquid::HyperliquidClient;
 use crate::kucoin::KucoinClient;
 use crate::lighter::LighterClient;
+use crate::nado::NadoClient;
 use crate::pacifica::PacificaClient;
 use crate::paradex::ParadexClient;
 use perps_core::traits::IPerps;
@@ -25,6 +26,10 @@ pub async fn all_exchanges() -> Vec<(String, Box<dyn IPerps + Send + Sync>)> {
         (
             "lighter".to_string(),
             Box::new(LighterClient::new()) as Box<dyn IPerps + Send + Sync>,
+        ),
+        (
+            "nado".to_string(),
+            Box::new(NadoClient::new()) as Box<dyn IPerps + Send + Sync>,
         ),
         (
             "pacifica".to_string(),
@@ -98,8 +103,9 @@ pub async fn get_exchange(name: &str) -> anyhow::Result<Box<dyn IPerps + Send + 
             Ok(Box::new(client))
         }
         "lighter" => Ok(Box::new(LighterClient::new())),
+        "nado" => Ok(Box::new(NadoClient::new())),
         "pacifica" => Ok(Box::new(PacificaClient::new())),
         "paradex" => Ok(Box::new(ParadexClient::new())),
-        _ => anyhow::bail!("Unsupported exchange: {}. Currently supported: aster, binance, bybit, extended, hyperliquid, kucoin, lighter, pacifica, paradex", name),
+        _ => anyhow::bail!("Unsupported exchange: {}. Currently supported: aster, binance, bybit, extended, hyperliquid, kucoin, lighter, nado, pacifica, paradex", name),
     }
 }
