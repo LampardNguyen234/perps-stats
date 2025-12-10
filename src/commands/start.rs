@@ -1048,7 +1048,6 @@ async fn spawn_liquidity_report_task(
             }
         }
 
-
         loop {
             // Use tokio::select! to check shutdown signal while waiting for next tick
             tokio::select! {
@@ -1172,23 +1171,30 @@ async fn spawn_liquidity_report_task(
                             if let Some(finest_book) = multi_orderbook.best_for_tight_spreads() {
                                 let repo = repository.lock().await;
                                 match repo
-                                    .store_orderbooks_with_exchange(exchange, &[finest_book.clone()])
+                                    .store_orderbooks_with_exchange(
+                                        exchange,
+                                        &[finest_book.clone()],
+                                    )
                                     .await
                                 {
-                                Ok(_) => {
-                                    tracing::debug!("Stored orderbook for {}/{}", exchange, symbol);
+                                    Ok(_) => {
+                                        tracing::debug!(
+                                            "Stored orderbook for {}/{}",
+                                            exchange,
+                                            symbol
+                                        );
+                                    }
+                                    Err(e) => {
+                                        tracing::error!(
+                                            "Failed to store orderbook for {}/{}: {}",
+                                            exchange,
+                                            symbol,
+                                            e
+                                        );
+                                    }
                                 }
-                                Err(e) => {
-                                    tracing::error!(
-                                        "Failed to store orderbook for {}/{}: {}",
-                                        exchange,
-                                        symbol,
-                                        e
-                                    );
-                                }
+                                drop(repo);
                             }
-                            drop(repo);
-                        }
                         }
                         Err(e) => {
                             tracing::error!(

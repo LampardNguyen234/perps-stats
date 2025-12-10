@@ -1,16 +1,15 @@
+use super::conversions::*;
+use super::error::BinanceError;
+use super::ticker_calculator::{calculate_ticker_from_klines, parse_timeframe};
+use crate::cache::SymbolsCache;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use perps_core::*;
 use perps_core::{execute_with_retry, RetryConfig};
 use rust_decimal::Decimal;
 use std::sync::Arc;
-use tracing::{debug, warn};
 use tracing::log::trace;
-use super::conversions::*;
-use super::error::BinanceError;
-use super::ticker_calculator::{calculate_ticker_from_klines, parse_timeframe};
-use crate::cache::SymbolsCache;
-
+use tracing::warn;
 
 /// Binance Futures client implementing the IPerps trait
 pub struct BinanceClient {
@@ -745,7 +744,11 @@ impl IPerps for BinanceClient {
         Ok(tickers)
     }
 
-    async fn get_orderbook(&self, symbol: &str, depth: u32) -> anyhow::Result<MultiResolutionOrderbook> {
+    async fn get_orderbook(
+        &self,
+        symbol: &str,
+        depth: u32,
+    ) -> anyhow::Result<MultiResolutionOrderbook> {
         // Check if StreamManager is available
         if let Some(ref manager) = self.stream_manager {
             let binance_symbol = denormalize_symbol(symbol);

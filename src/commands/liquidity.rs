@@ -343,7 +343,6 @@ async fn run_periodic_fetcher_all(
         output_desc
     );
 
-
     let mut snapshot_count = 0;
     let unlimited = max_snapshots == 0;
 
@@ -510,7 +509,6 @@ async fn run_periodic_fetcher_selected(
         if max_snapshots == 0 { "unlimited".to_string() } else { max_snapshots.to_string() },
         output_desc
     );
-
 
     let mut snapshot_count = 0;
     let unlimited = max_snapshots == 0;
@@ -682,7 +680,6 @@ async fn run_periodic_fetcher(
         },
         output_desc
     );
-
 
     let mut data_by_symbol: HashMap<String, Vec<LiquidityData>> = HashMap::new();
     for global_symbol in symbol_map.values() {
