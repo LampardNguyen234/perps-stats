@@ -1369,6 +1369,7 @@ pub async fn execute(args: StartArgs) -> Result<()> {
         "bybit",
         "kucoin",
         "lighter",
+        "nado",
         "pacifica",
         "paradex",
     ];

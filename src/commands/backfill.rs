@@ -424,6 +424,7 @@ pub async fn execute(args: BackfillArgs) -> Result<()> {
         "bybit",
         "kucoin",
         "lighter",
+        "nado",
         "pacifica",
         "paradex",
     ];
