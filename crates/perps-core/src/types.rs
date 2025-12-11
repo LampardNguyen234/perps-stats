@@ -1,6 +1,14 @@
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer};
+
+/// Custom serializer for DateTime<Utc> to UNIX timestamp in seconds
+fn serialize_timestamp_as_unix<S>(dt: &DateTime<Utc>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    serializer.serialize_i64(dt.timestamp())
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -40,6 +48,7 @@ pub struct Ticker {
     pub price_change_pct: Decimal,
     pub high_price_24h: Decimal,
     pub low_price_24h: Decimal,
+    #[serde(serialize_with = "serialize_timestamp_as_unix")]
     pub timestamp: DateTime<Utc>,
 }
 
@@ -84,6 +93,7 @@ pub struct Orderbook {
     pub symbol: String,
     pub bids: Vec<OrderbookLevel>,
     pub asks: Vec<OrderbookLevel>,
+    #[serde(serialize_with = "serialize_timestamp_as_unix")]
     pub timestamp: DateTime<Utc>,
 }
 
@@ -386,6 +396,7 @@ impl Orderbook {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MultiResolutionOrderbook {
     pub symbol: String,
+    #[serde(serialize_with = "serialize_timestamp_as_unix")]
     pub timestamp: DateTime<Utc>,
     /// Orderbooks ordered from finest to coarsest resolution.
     /// Index 0 = finest, last index = coarsest.
@@ -573,7 +584,9 @@ pub struct FundingRate {
     pub symbol: String,
     pub funding_rate: Decimal,
     pub predicted_rate: Decimal,
+    #[serde(serialize_with = "serialize_timestamp_as_unix")]
     pub funding_time: DateTime<Utc>,
+    #[serde(serialize_with = "serialize_timestamp_as_unix")]
     pub next_funding_time: DateTime<Utc>,
     pub funding_interval: i32, // in hours
     pub funding_rate_cap_floor: Decimal,
@@ -584,6 +597,7 @@ pub struct OpenInterest {
     pub symbol: String,
     pub open_interest: Decimal,
     pub open_value: Decimal,
+    #[serde(serialize_with = "serialize_timestamp_as_unix")]
     pub timestamp: DateTime<Utc>,
 }
 
@@ -591,7 +605,9 @@ pub struct OpenInterest {
 pub struct Kline {
     pub symbol: String,
     pub interval: String,
+    #[serde(serialize_with = "serialize_timestamp_as_unix")]
     pub open_time: DateTime<Utc>,
+    #[serde(serialize_with = "serialize_timestamp_as_unix")]
     pub close_time: DateTime<Utc>,
     pub open: Decimal,
     pub high: Decimal,
@@ -608,6 +624,7 @@ pub struct Trade {
     pub price: Decimal,
     pub quantity: Decimal,
     pub side: OrderSide,
+    #[serde(serialize_with = "serialize_timestamp_as_unix")]
     pub timestamp: DateTime<Utc>,
 }
 
@@ -625,6 +642,7 @@ pub struct MarketStats {
     pub price_change_pct: Decimal,
     pub high_price_24h: Decimal,
     pub low_price_24h: Decimal,
+    #[serde(serialize_with = "serialize_timestamp_as_unix")]
     pub timestamp: DateTime<Utc>,
 }
 
@@ -632,6 +650,7 @@ pub struct MarketStats {
 /// thresholds (in basis points) for both bid and ask sides.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct LiquidityDepthStats {
+    #[serde(serialize_with = "serialize_timestamp_as_unix")]
     pub timestamp: DateTime<Utc>,
     pub exchange: String,
     pub symbol: String,
@@ -664,6 +683,7 @@ pub struct Slippage {
     pub symbol: String,
 
     /// Timestamp of calculation
+    #[serde(serialize_with = "serialize_timestamp_as_unix")]
     pub timestamp: DateTime<Utc>,
 
     /// Mid price (average of best bid and best ask)

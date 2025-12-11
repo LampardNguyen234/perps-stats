@@ -1295,7 +1295,8 @@ impl Repository for PostgresRepository {
             format!(
                 r#"
                 SELECT mid_price, bid_1bps, bid_2_5bps, bid_5bps, bid_10bps, bid_20bps,
-                       ask_1bps, ask_2_5bps, ask_5bps, ask_10bps, ask_20bps, ts
+                       ask_1bps, ask_2_5bps, ask_5bps, ask_10bps, ask_20bps, ts,
+                       max_bid_bps, max_ask_bps
                 FROM liquidity_depth
                 WHERE exchange_id = $1 AND symbol = $2 AND ts >= $3 AND ts <= $4
                 ORDER BY ts DESC
@@ -1306,7 +1307,8 @@ impl Repository for PostgresRepository {
         } else {
             r#"
             SELECT mid_price, bid_1bps, bid_2_5bps, bid_5bps, bid_10bps, bid_20bps,
-                   ask_1bps, ask_2_5bps, ask_5bps, ask_10bps, ask_20bps, ts
+                   ask_1bps, ask_2_5bps, ask_5bps, ask_10bps, ask_20bps, ts,
+                   max_bid_bps, max_ask_bps
             FROM liquidity_depth
             WHERE exchange_id = $1 AND symbol = $2 AND ts >= $3 AND ts <= $4
             ORDER BY ts DESC
@@ -1358,7 +1360,8 @@ impl Repository for PostgresRepository {
         let row = sqlx::query(
             r#"
             SELECT mid_price, bid_1bps, bid_2_5bps, bid_5bps, bid_10bps, bid_20bps,
-                   ask_1bps, ask_2_5bps, ask_5bps, ask_10bps, ask_20bps, ts
+                   ask_1bps, ask_2_5bps, ask_5bps, ask_10bps, ask_20bps, ts,
+                   max_bid_bps, max_ask_bps
             FROM liquidity_depth
             WHERE exchange_id = $1 AND symbol = $2
             ORDER BY ts DESC
