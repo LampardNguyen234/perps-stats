@@ -56,6 +56,12 @@ rust_xlsxwriter = "0.79"
 # Database
 sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "migrate"], default-features = false }
 
+# Web server (for REST API)
+axum = "0.7"
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors", "trace", "timeout", "fs"] }
+hyper = { version = "1.0", features = ["full"] }
+
 # Workspace crates
 perps-core = { path = "crates/perps-core" }
 perps-exchanges = { path = "crates/perps-exchanges" }

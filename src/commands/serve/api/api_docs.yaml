@@ -1,0 +1,1542 @@
+openapi: 3.0.4
+info:
+  title: Perps Stats REST API
+  description: |
+    REST API server for retrieving perpetual futures market data from multiple cryptocurrency exchanges.
+
+    This API provides access to:
+    - Real-time and historical ticker data
+    - Orderbook snapshots
+    - Trade history
+    - Funding rates
+    - OHLCV candlestick data (klines)
+    - Liquidity depth statistics
+    - Exchange metadata and fee information
+
+    **Data Sources**: Binance, Bybit, Hyperliquid, KuCoin, Paradex, Extended, Lighter, Aster, Pacifica, Nado
+
+    **Database**: PostgreSQL with TimescaleDB for time-series optimization
+
+    **Authentication**: None (intended for internal/private use or behind auth proxy)
+  version: 0.1.0
+  contact:
+    name: Perps Stats API
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:8080/api/v1
+    description: Local development server
+  - url: http://127.0.0.1:8080/api/v1
+    description: Local development (IP)
+
+tags:
+  - name: Health
+    description: Server health and monitoring
+  - name: Exchanges
+    description: Exchange metadata and fee information
+  - name: Tickers
+    description: Ticker data (price, volume, 24h stats)
+  - name: Liquidity
+    description: Liquidity depth statistics at various spread levels
+  - name: Orderbooks
+    description: Orderbook snapshots (bids/asks)
+  - name: Trades
+    description: Trade history
+  - name: Funding Rates
+    description: Perpetual futures funding rates
+  - name: Klines
+    description: OHLCV candlestick data
+  - name: Slippage
+    description: Slippage calculations for various trade sizes
+
+paths:
+  /health:
+    get:
+      summary: Health check
+      description: Check if the API server and database are operational
+      operationId: healthCheck
+      tags:
+        - Health
+      responses:
+        '200':
+          description: Server is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+              examples:
+                healthy:
+                  value:
+                    status: ok
+                    database: healthy
+                    timestamp: '2025-12-10T13:26:16.864618Z'
+                    version: '0.1.0'
+                degraded:
+                  value:
+                    status: degraded
+                    database: unhealthy
+                    timestamp: '2025-12-10T13:26:16.864618Z'
+                    version: '0.1.0'
+
+  /stats:
+    get:
+      summary: Database statistics
+      description: Get aggregated statistics about data in the database
+      operationId: getDatabaseStats
+      tags:
+        - Health
+      responses:
+        '200':
+          description: Database statistics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DatabaseStats'
+              example:
+                total_tickers: 15420
+                total_liquidity_depth: 8934
+                total_orderbooks: 12456
+                total_trades: 98234
+                total_klines: 45123
+                total_funding_rates: 2341
+                oldest_data: '2024-12-01T00:00:00Z'
+                newest_data: '2025-12-10T13:26:16Z'
+
+  /exchanges:
+    get:
+      summary: List all exchanges
+      description: Get metadata for all supported exchanges including maker/taker fees
+      operationId: listExchanges
+      tags:
+        - Exchanges
+      responses:
+        '200':
+          description: List of exchanges
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ExchangeInfo'
+              example:
+                - id: 1
+                  name: binance
+                  maker_fee: 0.0
+                  taker_fee: 0.000084
+                - id: 2
+                  name: bybit
+                  maker_fee: 0.0
+                  taker_fee: 0.0003
+                - id: 10
+                  name: nado
+                  maker_fee: -0.00008
+                  taker_fee: 0.00015
+
+  /symbols:
+    get:
+      summary: List all symbols
+      description: Get a list of all unique symbols available in the tickers table, sorted alphabetically
+      operationId: listSymbols
+      tags:
+        - Symbols
+      responses:
+        '200':
+          description: List of available symbols
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SymbolsResponse'
+              example:
+                data:
+                  symbols:
+                    - BTC
+                    - ETH
+                    - SOL
+                    - HYPE
+                    - DOGE
+                  count: 5
+                timestamp: '2025-12-11T01:00:00Z'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /tickers:
+    get:
+      summary: Get latest tickers
+      description: |
+        Get the most recent ticker data for a symbol. Symbol parameter is required.
+        - With exchange: returns ticker for that specific exchange/symbol combination (single result)
+        - Without exchange: returns latest ticker from each exchange for the symbol (multiple results)
+      operationId: getLatestTickers
+      tags:
+        - Tickers
+      parameters:
+        - $ref: '#/components/parameters/ExchangeParam'
+        - $ref: '#/components/parameters/SymbolParam'
+      responses:
+        '200':
+          description: Latest ticker data
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/DataResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/TickerWithExchange'
+              examples:
+                specificTicker:
+                  summary: Specific exchange and symbol
+                  value:
+                    data:
+                      - exchange: binance
+                        symbol: BTC
+                        last_price: '98234.50'
+                        mark_price: '98235.00'
+                        index_price: '98233.00'
+                        best_bid_price: '98230.00'
+                        best_bid_qty: '1.5'
+                        best_ask_price: '98235.00'
+                        best_ask_qty: '2.3'
+                        volume_24h: '1234567.89'
+                        turnover_24h: '121234567.89'
+                        open_interest: '45678.90'
+                        open_interest_notional: '4487654321.00'
+                        price_change_24h: '750.50'
+                        price_change_pct: '0.0077'
+                        high_price_24h: '99000.00'
+                        low_price_24h: '97500.00'
+                        timestamp: '2025-12-10T13:30:00Z'
+                    timestamp: '2025-12-10T13:30:05Z'
+                multipleExchanges:
+                  summary: Symbol across all exchanges
+                  value:
+                    data:
+                      - exchange: binance
+                        symbol: BTC
+                        last_price: '98234.50'
+                        mark_price: '98235.00'
+                        timestamp: '2025-12-10T13:30:00Z'
+                      - exchange: bybit
+                        symbol: BTC
+                        last_price: '98240.00'
+                        mark_price: '98241.00'
+                        timestamp: '2025-12-10T13:30:01Z'
+                    timestamp: '2025-12-10T13:30:05Z'
+                noData:
+                  summary: No data available
+                  value:
+                    data: []
+                    timestamp: '2025-12-10T13:30:05Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /tickers/history:
+    get:
+      summary: Get ticker history
+      description: |
+        Get historical ticker data within a time range for a symbol. Symbol parameter is required.
+        - With exchange: returns tickers for that specific exchange/symbol combination
+        - Without exchange: returns tickers for that symbol across all exchanges
+      operationId: getTickerHistory
+      tags:
+        - Tickers
+      parameters:
+        - $ref: '#/components/parameters/ExchangeParam'
+        - $ref: '#/components/parameters/SymbolParam'
+        - $ref: '#/components/parameters/StartTimeParam'
+        - $ref: '#/components/parameters/EndTimeParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - $ref: '#/components/parameters/OffsetParam'
+      responses:
+        '200':
+          description: Historical ticker data
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/TickerWithExchange'
+              example:
+                pagination:
+                  total: null
+                  limit: 100
+                  offset: 0
+                  count: 50
+                data:
+                  - exchange: binance
+                    symbol: BTC
+                    last_price: '98234.50'
+                    mark_price: '98235.00'
+                    timestamp: '2025-12-10T13:30:00Z'
+                  - exchange: binance
+                    symbol: BTC
+                    last_price: '98200.00'
+                    mark_price: '98201.00'
+                    timestamp: '2025-12-10T13:29:00Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /liquidity:
+    get:
+      summary: Get latest liquidity depth
+      description: |
+        Get the most recent liquidity depth statistics for a symbol. Symbol parameter is required.
+        - With exchange: returns liquidity for that specific exchange/symbol combination (single result)
+        - Without exchange: returns latest liquidity from each exchange for the symbol (multiple results)
+      operationId: getLatestLiquidity
+      tags:
+        - Liquidity
+      parameters:
+        - $ref: '#/components/parameters/ExchangeParam'
+        - $ref: '#/components/parameters/SymbolParam'
+      responses:
+        '200':
+          description: Latest liquidity depth data
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/DataResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/LiquidityDepth'
+              example:
+                data:
+                  - exchange: binance
+                    symbol: BTC
+                    bid_1bps: '50000.00'
+                    bid_2_5bps: '120000.00'
+                    bid_5bps: '250000.00'
+                    bid_10bps: '500000.00'
+                    bid_20bps: '1000000.00'
+                    ask_1bps: '48000.00'
+                    ask_2_5bps: '115000.00'
+                    ask_5bps: '240000.00'
+                    ask_10bps: '480000.00'
+                    ask_20bps: '950000.00'
+                    timestamp: '2025-12-10T13:30:00Z'
+                timestamp: '2025-12-10T13:30:05Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /liquidity/history:
+    get:
+      summary: Get liquidity depth history
+      description: |
+        Get historical liquidity depth data within a time range for a symbol. Symbol parameter is required.
+        - With exchange: returns liquidity for that specific exchange/symbol combination
+        - Without exchange: returns liquidity for that symbol across all exchanges
+      operationId: getLiquidityHistory
+      tags:
+        - Liquidity
+      parameters:
+        - $ref: '#/components/parameters/ExchangeParam'
+        - $ref: '#/components/parameters/SymbolParam'
+        - $ref: '#/components/parameters/StartTimeParam'
+        - $ref: '#/components/parameters/EndTimeParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - $ref: '#/components/parameters/OffsetParam'
+      responses:
+        '200':
+          description: Historical liquidity depth data
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/LiquidityDepth'
+
+  /orderbooks:
+    get:
+      summary: Get latest orderbook
+      description: |
+        Get the most recent orderbook snapshot for a symbol. Symbol parameter is required.
+        - With exchange: returns orderbook for that specific exchange/symbol combination (single result)
+        - Without exchange: returns latest orderbook from each exchange for the symbol (multiple results)
+      operationId: getLatestOrderbook
+      tags:
+        - Orderbooks
+      parameters:
+        - $ref: '#/components/parameters/ExchangeParam'
+        - $ref: '#/components/parameters/SymbolParam'
+      responses:
+        '200':
+          description: Latest orderbook data
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/DataResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/OrderbookWithExchange'
+              example:
+                data:
+                  - exchange: binance
+                    symbol: BTC
+                    bids:
+                      - ['98230.00', '1.5']
+                      - ['98225.00', '2.3']
+                      - ['98220.00', '0.8']
+                    asks:
+                      - ['98235.00', '1.2']
+                      - ['98240.00', '3.1']
+                      - ['98245.00', '0.5']
+                    timestamp: '2025-12-10T13:30:00Z'
+                timestamp: '2025-12-10T13:30:05Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /orderbooks/history:
+    get:
+      summary: Get orderbook history
+      description: |
+        Get historical orderbook snapshots within a time range for a symbol. Symbol parameter is required.
+        - With exchange: returns orderbooks for that specific exchange/symbol combination
+        - Without exchange: returns orderbooks for that symbol across all exchanges
+      operationId: getOrderbookHistory
+      tags:
+        - Orderbooks
+      parameters:
+        - $ref: '#/components/parameters/ExchangeParam'
+        - $ref: '#/components/parameters/SymbolParam'
+        - $ref: '#/components/parameters/StartTimeParam'
+        - $ref: '#/components/parameters/EndTimeParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - $ref: '#/components/parameters/OffsetParam'
+      responses:
+        '200':
+          description: Historical orderbook data
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/OrderbookWithExchange'
+
+  /trades:
+    get:
+      summary: Get recent trades
+      description: Get recent trade history for a specific exchange and symbol
+      operationId: getTrades
+      tags:
+        - Trades
+      parameters:
+        - $ref: '#/components/parameters/ExchangeParam'
+        - $ref: '#/components/parameters/SymbolParam'
+        - $ref: '#/components/parameters/StartTimeParam'
+        - $ref: '#/components/parameters/EndTimeParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - $ref: '#/components/parameters/OffsetParam'
+      responses:
+        '200':
+          description: Recent trades
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Trade'
+              example:
+                pagination:
+                  total: null
+                  limit: 100
+                  offset: 0
+                  count: 25
+                data:
+                  - id: 98234
+                    exchange_id: 1
+                    market_id: 567
+                    symbol: BTC
+                    trade_id: 'binance_12345678'
+                    price: '98234.50'
+                    quantity: '0.5'
+                    side: buy
+                    timestamp: '2025-12-10T13:30:00Z'
+                  - id: 98233
+                    exchange_id: 1
+                    market_id: 567
+                    symbol: BTC
+                    trade_id: 'binance_12345677'
+                    price: '98230.00'
+                    quantity: '1.2'
+                    side: sell
+                    timestamp: '2025-12-10T13:29:58Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /funding-rates:
+    get:
+      summary: Get latest funding rate
+      description: Get the most recent funding rate for a specific exchange and symbol
+      operationId: getLatestFundingRate
+      tags:
+        - Funding Rates
+      parameters:
+        - $ref: '#/components/parameters/ExchangeParam'
+        - $ref: '#/components/parameters/SymbolParam'
+      responses:
+        '200':
+          description: Latest funding rate data
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/DataResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/FundingRate'
+              example:
+                data:
+                  id: 2341
+                  exchange_id: 1
+                  market_id: 567
+                  symbol: BTC
+                  funding_rate: '0.0001'
+                  next_funding_time: '2025-12-10T16:00:00Z'
+                  timestamp: '2025-12-10T13:30:00Z'
+                timestamp: '2025-12-10T13:30:05Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /funding-rates/history:
+    get:
+      summary: Get funding rate history
+      description: Get historical funding rates within a time range
+      operationId: getFundingRateHistory
+      tags:
+        - Funding Rates
+      parameters:
+        - $ref: '#/components/parameters/ExchangeParam'
+        - $ref: '#/components/parameters/SymbolParam'
+        - $ref: '#/components/parameters/StartTimeParam'
+        - $ref: '#/components/parameters/EndTimeParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - $ref: '#/components/parameters/OffsetParam'
+      responses:
+        '200':
+          description: Historical funding rate data
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/FundingRate'
+
+  /klines:
+    get:
+      summary: Get klines (candlestick data)
+      description: Get OHLCV candlestick data for a specific exchange, symbol, and interval
+      operationId: getKlines
+      tags:
+        - Klines
+      parameters:
+        - $ref: '#/components/parameters/ExchangeParam'
+        - $ref: '#/components/parameters/SymbolParam'
+        - name: interval
+          in: query
+          required: true
+          description: Candlestick interval (e.g., 1m, 5m, 15m, 1h, 4h, 1d)
+          schema:
+            type: string
+            enum: [1m, 3m, 5m, 15m, 30m, 1h, 2h, 4h, 6h, 8h, 12h, 1d, 3d, 1w, 1M]
+            example: 1h
+        - $ref: '#/components/parameters/StartTimeParam'
+        - $ref: '#/components/parameters/EndTimeParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - $ref: '#/components/parameters/OffsetParam'
+      responses:
+        '200':
+          description: Kline data
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Kline'
+              example:
+                pagination:
+                  total: null
+                  limit: 100
+                  offset: 0
+                  count: 24
+                data:
+                  - id: 45123
+                    exchange_id: 1
+                    market_id: 567
+                    symbol: BTC
+                    interval: 1h
+                    open_time: '2025-12-10T13:00:00Z'
+                    close_time: '2025-12-10T13:59:59Z'
+                    open: '98000.00'
+                    high: '98500.00'
+                    low: '97800.00'
+                    close: '98234.50'
+                    volume: '123.45'
+                    trades_count: 1523
+                  - id: 45122
+                    exchange_id: 1
+                    market_id: 567
+                    symbol: BTC
+                    interval: 1h
+                    open_time: '2025-12-10T12:00:00Z'
+                    close_time: '2025-12-10T12:59:59Z'
+                    open: '97800.00'
+                    high: '98200.00'
+                    low: '97700.00'
+                    close: '98000.00'
+                    volume: '145.67'
+                    trades_count: 1789
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /slippage:
+    get:
+      tags: [Slippage]
+      summary: Get latest slippage calculations
+      description: |
+        Get the most recent slippage calculations for a symbol and trade amount.
+        Symbol and amount are required parameters.
+        - With exchange: returns slippage for that specific exchange/symbol/amount combination
+        - Without exchange: returns latest slippage from each exchange for the symbol/amount
+      parameters:
+        - $ref: '#/components/parameters/ExchangeParam'
+        - $ref: '#/components/parameters/SymbolParam'
+        - name: amount
+          in: query
+          required: true
+          schema:
+            type: string
+            pattern: '^[0-9]+(\.[0-9]+)?$'
+          description: Trade amount in USD (required)
+          example: "10000"
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SlippageWithExchange'
+                  timestamp:
+                    type: integer
+                    format: int64
+                    description: Response timestamp (Unix seconds)
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /slippage/history:
+    get:
+      tags: [Slippage]
+      summary: Get slippage history
+      description: |
+        Get historical slippage calculations within a time range for a symbol and trade amount.
+        Symbol and amount are required parameters.
+        - With exchange: returns slippage for that specific exchange/symbol/amount combination
+        - Without exchange: returns slippage for that symbol/amount across all exchanges
+      parameters:
+        - $ref: '#/components/parameters/ExchangeParam'
+        - $ref: '#/components/parameters/SymbolParam'
+        - name: amount
+          in: query
+          required: true
+          schema:
+            type: string
+            pattern: '^[0-9]+(\.[0-9]+)?$'
+          description: Trade amount in USD (required)
+          example: "10000"
+        - $ref: '#/components/parameters/StartTimeParam'
+        - $ref: '#/components/parameters/EndTimeParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - $ref: '#/components/parameters/OffsetParam'
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedSlippageResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+components:
+  parameters:
+    ExchangeParam:
+      name: exchange
+      in: query
+      required: false
+      description: |
+        Exchange name (e.g., binance, bybit, hyperliquid). Optional filter.
+        - If provided: returns data for that specific exchange
+        - If not provided: returns data from all exchanges for the specified symbol
+      schema:
+        type: string
+        maxLength: 50
+        pattern: '^[a-zA-Z0-9_]+$'
+        enum: [binance, bybit, hyperliquid, kucoin, paradex, extended, lighter, aster, pacifica, nado]
+        example: binance
+
+    SymbolParam:
+      name: symbol
+      in: query
+      required: true
+      description: |
+        Symbol (required, e.g., BTC, ETH, SOL). Case-insensitive (btc, BTC, bTc all work).
+        - If exchange also provided: returns data for that specific exchange/symbol combination
+        - If exchange not provided: returns data for this symbol across all exchanges
+      schema:
+        type: string
+        maxLength: 20
+        pattern: '^[a-zA-Z0-9]+$'
+        example: BTC
+
+    StartTimeParam:
+      name: start
+      in: query
+      required: false
+      description: Start time - Unix timestamp in seconds. Defaults to 24 hours ago if not specified.
+      schema:
+        type: integer
+        format: int64
+        example: 1733788800
+
+    EndTimeParam:
+      name: end
+      in: query
+      required: false
+      description: End time - Unix timestamp in seconds. Defaults to current time if not specified.
+      schema:
+        type: integer
+        format: int64
+        example: 1733875200
+
+    LimitParam:
+      name: limit
+      in: query
+      required: false
+      description: Maximum number of records to return (1-500, default 100)
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 500
+        default: 100
+        example: 100
+
+    OffsetParam:
+      name: offset
+      in: query
+      required: false
+      description: Number of records to skip (for pagination, default 0)
+      schema:
+        type: integer
+        minimum: 0
+        default: 0
+        example: 0
+
+  schemas:
+    HealthResponse:
+      type: object
+      required:
+        - status
+        - database
+        - timestamp
+        - version
+      properties:
+        status:
+          type: string
+          description: Overall server status
+          enum: [ok, degraded]
+          example: ok
+        database:
+          type: string
+          description: Database connection status
+          enum: [healthy, unhealthy]
+          example: healthy
+        timestamp:
+          type: string
+          format: date-time
+          description: Current server time
+          example: '2025-12-10T13:26:16.864618Z'
+        version:
+          type: string
+          description: API version
+          example: '0.1.0'
+
+    DatabaseStats:
+      type: object
+      required:
+        - total_tickers
+        - total_liquidity_depth
+        - total_orderbooks
+        - total_trades
+        - total_klines
+        - total_funding_rates
+      properties:
+        total_tickers:
+          type: integer
+          description: Total number of ticker records
+          example: 15420
+        total_liquidity_depth:
+          type: integer
+          description: Total number of liquidity depth records
+          example: 8934
+        total_orderbooks:
+          type: integer
+          description: Total number of orderbook snapshots
+          example: 12456
+        total_trades:
+          type: integer
+          description: Total number of trade records
+          example: 98234
+        total_klines:
+          type: integer
+          description: Total number of kline records
+          example: 45123
+        total_funding_rates:
+          type: integer
+          description: Total number of funding rate records
+          example: 2341
+        oldest_data:
+          type: integer
+          format: int64
+          nullable: true
+          description: Timestamp of the oldest data record (Unix seconds)
+          example: 1733788800
+        newest_data:
+          type: integer
+          format: int64
+          nullable: true
+          description: Timestamp of the newest data record (Unix seconds)
+          example: 1765431600
+
+    ExchangeInfo:
+      type: object
+      required:
+        - id
+        - name
+        - maker_fee
+        - taker_fee
+      properties:
+        id:
+          type: integer
+          description: Unique exchange ID
+          example: 1
+        name:
+          type: string
+          description: Exchange name
+          example: binance
+        maker_fee:
+          type: number
+          format: double
+          description: Maker fee (negative = rebate)
+          example: 0.0
+        taker_fee:
+          type: number
+          format: double
+          description: Taker fee
+          example: 0.000084
+
+    SymbolsResponse:
+      type: object
+      required:
+        - data
+        - timestamp
+      properties:
+        data:
+          type: object
+          required:
+            - symbols
+            - count
+          properties:
+            symbols:
+              type: array
+              items:
+                type: string
+              description: List of unique symbols, sorted alphabetically
+              example: ["BTC", "ETH", "SOL"]
+            count:
+              type: integer
+              description: Total number of symbols
+              example: 3
+        timestamp:
+          type: integer
+          format: int64
+          description: Response timestamp (Unix seconds)
+          example: 1765431600
+
+    Ticker:
+      type: object
+      required:
+        - id
+        - exchange_id
+        - market_id
+        - symbol
+        - timestamp
+      properties:
+        id:
+          type: integer
+          description: Unique ticker record ID
+          example: 12345
+        exchange_id:
+          type: integer
+          description: Exchange ID
+          example: 1
+        market_id:
+          type: integer
+          description: Market ID
+          example: 567
+        symbol:
+          type: string
+          description: Symbol
+          example: BTC
+        last_price:
+          type: string
+          description: Last traded price (string to preserve precision)
+          example: '98234.50'
+        bid_price:
+          type: string
+          nullable: true
+          description: Best bid price
+          example: '98230.00'
+        ask_price:
+          type: string
+          nullable: true
+          description: Best ask price
+          example: '98235.00'
+        volume_24h:
+          type: string
+          nullable: true
+          description: 24-hour trading volume
+          example: '1234567.89'
+        high_24h:
+          type: string
+          nullable: true
+          description: 24-hour high price
+          example: '99000.00'
+        low_24h:
+          type: string
+          nullable: true
+          description: 24-hour low price
+          example: '97500.00'
+        price_change_24h:
+          type: string
+          nullable: true
+          description: 24-hour price change (absolute)
+          example: '750.50'
+        price_change_percent_24h:
+          type: string
+          nullable: true
+          description: 24-hour price change (percentage)
+          example: '0.77'
+        timestamp:
+          type: string
+          format: date-time
+          description: Data timestamp
+          example: '2025-12-10T13:30:00Z'
+
+    TickerWithExchange:
+      type: object
+      required:
+        - exchange
+        - symbol
+        - last_price
+        - mark_price
+        - index_price
+        - best_bid_price
+        - best_ask_price
+        - timestamp
+      properties:
+        exchange:
+          type: string
+          description: Exchange name
+          example: binance
+        symbol:
+          type: string
+          description: Symbol
+          example: BTC
+        last_price:
+          type: string
+          description: Last traded price (string to preserve precision)
+          example: '98234.50'
+        mark_price:
+          type: string
+          description: Mark price
+          example: '98235.00'
+        index_price:
+          type: string
+          description: Index price
+          example: '98233.00'
+        best_bid_price:
+          type: string
+          description: Best bid price
+          example: '98230.00'
+        best_bid_qty:
+          type: string
+          description: Best bid quantity
+          example: '1.5'
+        best_ask_price:
+          type: string
+          description: Best ask price
+          example: '98235.00'
+        best_ask_qty:
+          type: string
+          description: Best ask quantity
+          example: '2.3'
+        volume_24h:
+          type: string
+          description: 24-hour trading volume
+          example: '1234567.89'
+        turnover_24h:
+          type: string
+          description: 24-hour turnover
+          example: '121234567.89'
+        open_interest:
+          type: string
+          description: Open interest in contracts
+          example: '45678.90'
+        open_interest_notional:
+          type: string
+          description: Open interest notional value
+          example: '4487654321.00'
+        price_change_24h:
+          type: string
+          description: 24-hour price change (absolute)
+          example: '750.50'
+        price_change_pct:
+          type: string
+          description: 24-hour price change (percentage as decimal)
+          example: '0.0077'
+        high_price_24h:
+          type: string
+          description: 24-hour high price
+          example: '99000.00'
+        low_price_24h:
+          type: string
+          description: 24-hour low price
+          example: '97500.00'
+        timestamp:
+          type: string
+          format: date-time
+          description: Data timestamp
+          example: '2025-12-10T13:30:00Z'
+
+    LiquidityDepth:
+      type: object
+      required:
+        - id
+        - exchange_id
+        - market_id
+        - symbol
+        - timestamp
+      properties:
+        id:
+          type: integer
+          description: Unique liquidity depth record ID
+          example: 8934
+        exchange_id:
+          type: integer
+          description: Exchange ID
+          example: 1
+        market_id:
+          type: integer
+          description: Market ID
+          example: 567
+        symbol:
+          type: string
+          description: Symbol
+          example: BTC
+        bid_1bps:
+          type: string
+          nullable: true
+          description: Cumulative bid liquidity at 1 basis point spread
+          example: '50000.00'
+        bid_2_5bps:
+          type: string
+          nullable: true
+          description: Cumulative bid liquidity at 2.5 basis points spread
+          example: '120000.00'
+        bid_5bps:
+          type: string
+          nullable: true
+          description: Cumulative bid liquidity at 5 basis points spread
+          example: '250000.00'
+        bid_10bps:
+          type: string
+          nullable: true
+          description: Cumulative bid liquidity at 10 basis points spread
+          example: '500000.00'
+        bid_20bps:
+          type: string
+          nullable: true
+          description: Cumulative bid liquidity at 20 basis points spread
+          example: '1000000.00'
+        ask_1bps:
+          type: string
+          nullable: true
+          description: Cumulative ask liquidity at 1 basis point spread
+          example: '48000.00'
+        ask_2_5bps:
+          type: string
+          nullable: true
+          description: Cumulative ask liquidity at 2.5 basis points spread
+          example: '115000.00'
+        ask_5bps:
+          type: string
+          nullable: true
+          description: Cumulative ask liquidity at 5 basis points spread
+          example: '240000.00'
+        ask_10bps:
+          type: string
+          nullable: true
+          description: Cumulative ask liquidity at 10 basis points spread
+          example: '480000.00'
+        ask_20bps:
+          type: string
+          nullable: true
+          description: Cumulative ask liquidity at 20 basis points spread
+          example: '950000.00'
+        timestamp:
+          type: string
+          format: date-time
+          description: Data timestamp
+          example: '2025-12-10T13:30:00Z'
+
+    Orderbook:
+      type: object
+      required:
+        - id
+        - exchange_id
+        - market_id
+        - symbol
+        - bids
+        - asks
+        - timestamp
+      properties:
+        id:
+          type: integer
+          description: Unique orderbook record ID
+          example: 12456
+        exchange_id:
+          type: integer
+          description: Exchange ID
+          example: 1
+        market_id:
+          type: integer
+          description: Market ID
+          example: 567
+        symbol:
+          type: string
+          description: Symbol
+          example: BTC
+        bids:
+          type: array
+          description: Bid orders (buy side) as [price, quantity] pairs
+          items:
+            type: array
+            minItems: 2
+            maxItems: 2
+            items:
+              type: string
+          example:
+            - ['98230.00', '1.5']
+            - ['98225.00', '2.3']
+            - ['98220.00', '0.8']
+        asks:
+          type: array
+          description: Ask orders (sell side) as [price, quantity] pairs
+          items:
+            type: array
+            minItems: 2
+            maxItems: 2
+            items:
+              type: string
+          example:
+            - ['98235.00', '1.2']
+            - ['98240.00', '3.1']
+            - ['98245.00', '0.5']
+        timestamp:
+          type: string
+          format: date-time
+          description: Data timestamp
+          example: '2025-12-10T13:30:00Z'
+
+    OrderbookWithExchange:
+      type: object
+      required:
+        - exchange
+        - symbol
+        - bids
+        - asks
+        - timestamp
+      properties:
+        exchange:
+          type: string
+          description: Exchange name
+          example: binance
+        symbol:
+          type: string
+          description: Symbol
+          example: BTC
+        bids:
+          type: array
+          description: Bid orders (buy side) as [price, quantity] pairs
+          items:
+            type: array
+            minItems: 2
+            maxItems: 2
+            items:
+              type: string
+          example:
+            - ['98230.00', '1.5']
+            - ['98225.00', '2.3']
+            - ['98220.00', '0.8']
+        asks:
+          type: array
+          description: Ask orders (sell side) as [price, quantity] pairs
+          items:
+            type: array
+            minItems: 2
+            maxItems: 2
+            items:
+              type: string
+          example:
+            - ['98235.00', '1.2']
+            - ['98240.00', '3.1']
+            - ['98245.00', '0.5']
+        timestamp:
+          type: string
+          format: date-time
+          description: Data timestamp
+          example: '2025-12-10T13:30:00Z'
+
+    Trade:
+      type: object
+      required:
+        - id
+        - exchange_id
+        - market_id
+        - symbol
+        - trade_id
+        - price
+        - quantity
+        - side
+        - timestamp
+      properties:
+        id:
+          type: integer
+          description: Unique trade record ID
+          example: 98234
+        exchange_id:
+          type: integer
+          description: Exchange ID
+          example: 1
+        market_id:
+          type: integer
+          description: Market ID
+          example: 567
+        symbol:
+          type: string
+          description: Symbol
+          example: BTC
+        trade_id:
+          type: string
+          description: Exchange-specific trade ID
+          example: 'binance_12345678'
+        price:
+          type: string
+          description: Trade price
+          example: '98234.50'
+        quantity:
+          type: string
+          description: Trade quantity
+          example: '0.5'
+        side:
+          type: string
+          description: Trade side
+          enum: [buy, sell]
+          example: buy
+        timestamp:
+          type: string
+          format: date-time
+          description: Trade timestamp
+          example: '2025-12-10T13:30:00Z'
+
+    FundingRate:
+      type: object
+      required:
+        - id
+        - exchange_id
+        - market_id
+        - symbol
+        - funding_rate
+        - timestamp
+      properties:
+        id:
+          type: integer
+          description: Unique funding rate record ID
+          example: 2341
+        exchange_id:
+          type: integer
+          description: Exchange ID
+          example: 1
+        market_id:
+          type: integer
+          description: Market ID
+          example: 567
+        symbol:
+          type: string
+          description: Symbol
+          example: BTC
+        funding_rate:
+          type: string
+          description: Funding rate (8-hour rate typically)
+          example: '0.0001'
+        next_funding_time:
+          type: string
+          format: date-time
+          nullable: true
+          description: Next funding time
+          example: '2025-12-10T16:00:00Z'
+        timestamp:
+          type: string
+          format: date-time
+          description: Data timestamp
+          example: '2025-12-10T13:30:00Z'
+
+    Kline:
+      type: object
+      required:
+        - id
+        - exchange_id
+        - market_id
+        - symbol
+        - interval
+        - open_time
+        - close_time
+        - open
+        - high
+        - low
+        - close
+        - volume
+      properties:
+        id:
+          type: integer
+          description: Unique kline record ID
+          example: 45123
+        exchange_id:
+          type: integer
+          description: Exchange ID
+          example: 1
+        market_id:
+          type: integer
+          description: Market ID
+          example: 567
+        symbol:
+          type: string
+          description: Symbol
+          example: BTC
+        interval:
+          type: string
+          description: Candlestick interval
+          example: 1h
+        open_time:
+          type: string
+          format: date-time
+          description: Candle open time
+          example: '2025-12-10T13:00:00Z'
+        close_time:
+          type: string
+          format: date-time
+          description: Candle close time
+          example: '2025-12-10T13:59:59Z'
+        open:
+          type: string
+          description: Open price
+          example: '98000.00'
+        high:
+          type: string
+          description: High price
+          example: '98500.00'
+        low:
+          type: string
+          description: Low price
+          example: '97800.00'
+        close:
+          type: string
+          description: Close price
+          example: '98234.50'
+        volume:
+          type: string
+          description: Trading volume
+          example: '123.45'
+        trades_count:
+          type: integer
+          nullable: true
+          description: Number of trades in this candle
+          example: 1523
+
+    DataResponse:
+      type: object
+      required:
+        - data
+        - timestamp
+      properties:
+        data:
+          description: Response data (can be null if no data available)
+          nullable: true
+        timestamp:
+          type: string
+          format: date-time
+          description: Response timestamp
+          example: '2025-12-10T13:30:05Z'
+
+    PaginatedResponse:
+      type: object
+      required:
+        - data
+        - pagination
+      properties:
+        data:
+          type: array
+          description: Array of data records
+          items: {}
+        pagination:
+          $ref: '#/components/schemas/PaginationMeta'
+
+    PaginationMeta:
+      type: object
+      required:
+        - limit
+        - offset
+        - count
+      properties:
+        total:
+          type: integer
+          nullable: true
+          description: Total number of records (null if not computed)
+          example: null
+        limit:
+          type: integer
+          description: Maximum records per page
+          example: 100
+        offset:
+          type: integer
+          description: Number of records skipped
+          example: 0
+        count:
+          type: integer
+          description: Number of records returned in this response
+          example: 50
+
+    ErrorResponse:
+      type: object
+      required:
+        - error
+        - message
+      properties:
+        error:
+          type: string
+          description: Error type
+          enum: [BadRequest, NotFound, Database, NotImplemented, Internal]
+          example: BadRequest
+        message:
+          type: string
+          description: Human-readable error message
+          example: symbol parameter is required
+        details:
+          type: string
+          nullable: true
+          description: Additional error details (only in development mode)
+          example: null
+
+  responses:
+    BadRequest:
+      description: Bad Request - Missing or invalid parameters
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            missingBothParams:
+              summary: Missing both exchange and symbol
+              value:
+                error: BadRequest
+                message: At least one of 'exchange' or 'symbol' parameter must be provided
+                details: null
+            invalidParam:
+              summary: Invalid parameter value
+              value:
+                error: BadRequest
+                message: Invalid exchange name
+                details: null
+
+    NotFound:
+      description: Not Found - Resource does not exist
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: NotFound
+            message: Resource not found
+            details: null
+
+    InternalError:
+      description: Internal Server Error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: Internal
+            message: An internal error occurred
+            details: null
+
+  securitySchemes: {}

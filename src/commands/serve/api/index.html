@@ -1,0 +1,1091 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Perps Stats API Documentation</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --bg-primary: #ffffff;
+            --bg-secondary: #f8f9fa;
+            --bg-dark: #1a1d23;
+            --bg-code: #2d3139;
+            --text-primary: #1a1d23;
+            --text-secondary: #6b7280;
+            --text-muted: #9ca3af;
+            --border-color: #e5e7eb;
+            --accent-primary: #6366f1;
+            --accent-hover: #4f46e5;
+            --success: #10b981;
+            --warning: #f59e0b;
+            --error: #ef4444;
+            --sidebar-width: 260px;
+            --tryit-width: 420px;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            line-height: 1.6;
+            color: var(--text-primary);
+            background: var(--bg-secondary);
+            overflow-x: hidden;
+        }
+
+        /* Layout Structure */
+        .layout {
+            display: flex;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        /* Sidebar */
+        .sidebar {
+            width: var(--sidebar-width);
+            background: var(--bg-primary);
+            border-right: 1px solid var(--border-color);
+            display: flex;
+            flex-direction: column;
+            overflow-y: auto;
+        }
+
+        .sidebar-header {
+            padding: 24px 20px;
+            border-bottom: 1px solid var(--border-color);
+            background: var(--bg-primary);
+            position: sticky;
+            top: 0;
+            z-index: 10;
+        }
+
+        .sidebar-title {
+            font-size: 18px;
+            font-weight: 700;
+            color: var(--text-primary);
+            margin-bottom: 4px;
+        }
+
+        .sidebar-subtitle {
+            font-size: 12px;
+            color: var(--text-muted);
+        }
+
+        .sidebar-nav {
+            padding: 12px 0;
+        }
+
+        .nav-section {
+            margin-bottom: 8px;
+        }
+
+        .nav-section-title {
+            padding: 8px 20px;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            color: var(--text-muted);
+            letter-spacing: 0.5px;
+        }
+
+        .nav-item {
+            padding: 8px 20px;
+            font-size: 14px;
+            color: var(--text-secondary);
+            cursor: pointer;
+            transition: all 0.15s ease;
+            border-left: 2px solid transparent;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .nav-item:hover {
+            background: var(--bg-secondary);
+            color: var(--text-primary);
+        }
+
+        .nav-item.active {
+            background: #f0f3ff;
+            color: var(--accent-primary);
+            border-left-color: var(--accent-primary);
+            font-weight: 500;
+        }
+
+        .method-badge-sm {
+            font-size: 9px;
+            font-weight: 700;
+            padding: 2px 6px;
+            border-radius: 3px;
+            background: #dbeafe;
+            color: #1e40af;
+        }
+
+        /* Main Content */
+        .main-content {
+            flex: 1;
+            display: flex;
+            overflow: hidden;
+        }
+
+        .content-panel {
+            flex: 1;
+            overflow-y: auto;
+            background: var(--bg-primary);
+        }
+
+        .content-inner {
+            max-width: 780px;
+            padding: 40px 48px;
+        }
+
+        .endpoint-header {
+            margin-bottom: 32px;
+            padding-bottom: 24px;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .endpoint-title {
+            font-size: 28px;
+            font-weight: 700;
+            color: var(--text-primary);
+            margin-bottom: 12px;
+        }
+
+        .endpoint-meta {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 16px;
+        }
+
+        .method-badge {
+            font-size: 11px;
+            font-weight: 700;
+            padding: 4px 10px;
+            border-radius: 4px;
+            background: #dbeafe;
+            color: #1e40af;
+            letter-spacing: 0.5px;
+        }
+
+        .endpoint-path {
+            font-family: 'SF Mono', 'Monaco', 'Consolas', monospace;
+            font-size: 14px;
+            color: var(--text-secondary);
+            background: var(--bg-secondary);
+            padding: 6px 12px;
+            border-radius: 6px;
+        }
+
+        .endpoint-description {
+            color: var(--text-secondary);
+            font-size: 15px;
+            line-height: 1.7;
+        }
+
+        /* Parameters Section */
+        .params-section {
+            margin: 32px 0;
+        }
+
+        .section-title {
+            font-size: 18px;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 16px;
+        }
+
+        .param-item {
+            padding: 16px;
+            background: var(--bg-secondary);
+            border-radius: 8px;
+            margin-bottom: 12px;
+            border: 1px solid var(--border-color);
+        }
+
+        .param-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 8px;
+        }
+
+        .param-name {
+            font-family: 'SF Mono', 'Monaco', 'Consolas', monospace;
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .param-required {
+            font-size: 10px;
+            padding: 2px 6px;
+            border-radius: 3px;
+            background: #fee2e2;
+            color: #dc2626;
+            font-weight: 600;
+        }
+
+        .param-type {
+            font-size: 11px;
+            color: var(--text-muted);
+            font-family: 'SF Mono', 'Monaco', 'Consolas', monospace;
+        }
+
+        .param-description {
+            font-size: 13px;
+            color: var(--text-secondary);
+            line-height: 1.6;
+        }
+
+        /* Try It Panel */
+        .tryit-panel {
+            width: var(--tryit-width);
+            background: var(--bg-dark);
+            border-left: 1px solid #2d3139;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .tryit-header {
+            padding: 20px 24px;
+            border-bottom: 1px solid #2d3139;
+            background: #1a1d23;
+        }
+
+        .tryit-title {
+            font-size: 14px;
+            font-weight: 600;
+            color: #f9fafb;
+            margin-bottom: 4px;
+        }
+
+        .tryit-subtitle {
+            font-size: 12px;
+            color: #9ca3af;
+        }
+
+        .tryit-content {
+            flex: 1;
+            overflow-y: auto;
+            padding: 24px;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-label {
+            display: block;
+            font-size: 12px;
+            font-weight: 600;
+            color: #d1d5db;
+            margin-bottom: 8px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .form-input,
+        .form-select {
+            width: 100%;
+            padding: 10px 12px;
+            background: #2d3139;
+            border: 1px solid #3f444e;
+            border-radius: 6px;
+            color: #f9fafb;
+            font-size: 13px;
+            font-family: 'SF Mono', 'Monaco', 'Consolas', monospace;
+            transition: all 0.15s ease;
+        }
+
+        .form-input:focus,
+        .form-select:focus {
+            outline: none;
+            border-color: var(--accent-primary);
+            background: #363a44;
+        }
+
+        .form-input::placeholder {
+            color: #6b7280;
+        }
+
+        .try-button {
+            width: 100%;
+            padding: 12px 20px;
+            background: var(--accent-primary);
+            color: white;
+            border: none;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            margin-top: 8px;
+        }
+
+        .try-button:hover:not(:disabled) {
+            background: var(--accent-hover);
+            transform: translateY(-1px);
+        }
+
+        .try-button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .loading-spinner {
+            display: inline-block;
+            width: 14px;
+            height: 14px;
+            border: 2px solid rgba(255,255,255,.3);
+            border-radius: 50%;
+            border-top-color: #fff;
+            animation: spin 0.8s linear infinite;
+            margin-left: 8px;
+            vertical-align: middle;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* Response Section */
+        .response-section {
+            margin-top: 24px;
+            display: none;
+        }
+
+        .response-section.show {
+            display: block;
+        }
+
+        .response-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+        }
+
+        .response-label {
+            font-size: 12px;
+            font-weight: 600;
+            color: #d1d5db;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .status-badge {
+            font-size: 11px;
+            font-weight: 700;
+            padding: 4px 8px;
+            border-radius: 4px;
+        }
+
+        .status-200 {
+            background: rgba(16, 185, 129, 0.15);
+            color: #10b981;
+        }
+
+        .status-400 {
+            background: rgba(245, 158, 11, 0.15);
+            color: #f59e0b;
+        }
+
+        .status-500 {
+            background: rgba(239, 68, 68, 0.15);
+            color: #ef4444;
+        }
+
+        .response-time {
+            font-size: 11px;
+            color: #9ca3af;
+            margin-left: 8px;
+        }
+
+        .response-body {
+            background: #2d3139;
+            border: 1px solid #3f444e;
+            border-radius: 6px;
+            padding: 16px;
+            overflow-x: auto;
+            max-height: 400px;
+        }
+
+        .response-body pre {
+            margin: 0;
+            font-family: 'SF Mono', 'Monaco', 'Consolas', monospace;
+            font-size: 12px;
+            line-height: 1.6;
+            color: #e5e7eb;
+        }
+
+        .copy-button {
+            background: #3f444e;
+            color: #d1d5db;
+            border: none;
+            padding: 4px 10px;
+            border-radius: 4px;
+            font-size: 11px;
+            cursor: pointer;
+            transition: all 0.15s ease;
+        }
+
+        .copy-button:hover {
+            background: #4b5563;
+            color: #f9fafb;
+        }
+
+        .request-url-section {
+            margin-top: 20px;
+            padding-top: 20px;
+            border-top: 1px solid #2d3139;
+            display: none;
+        }
+
+        .request-url-section.show {
+            display: block;
+        }
+
+        .request-url {
+            background: #2d3139;
+            border: 1px solid #3f444e;
+            border-radius: 6px;
+            padding: 12px;
+            font-family: 'SF Mono', 'Monaco', 'Consolas', monospace;
+            font-size: 11px;
+            color: #9ca3af;
+            word-break: break-all;
+            line-height: 1.6;
+        }
+
+        /* Hidden content sections */
+        .content-section {
+            display: none;
+        }
+
+        .content-section.active {
+            display: block;
+        }
+
+        /* Info box */
+        .info-box {
+            background: #f0f9ff;
+            border-left: 3px solid #0ea5e9;
+            padding: 16px;
+            margin: 24px 0;
+            border-radius: 4px;
+        }
+
+        .info-box-title {
+            font-size: 13px;
+            font-weight: 600;
+            color: #075985;
+            margin-bottom: 6px;
+        }
+
+        .info-box-text {
+            font-size: 13px;
+            color: #0c4a6e;
+            line-height: 1.6;
+        }
+
+        /* Responsive */
+        @media (max-width: 1280px) {
+            .tryit-panel {
+                display: none;
+            }
+        }
+
+        @media (max-width: 768px) {
+            .sidebar {
+                width: 100%;
+                border-right: none;
+                border-bottom: 1px solid var(--border-color);
+            }
+
+            .layout {
+                flex-direction: column;
+            }
+
+            .content-inner {
+                padding: 24px 20px;
+            }
+        }
+
+        /* Scrollbar styling */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #d1d5db;
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: #9ca3af;
+        }
+
+        .sidebar::-webkit-scrollbar-thumb,
+        .tryit-panel::-webkit-scrollbar-thumb {
+            background: #4b5563;
+        }
+
+        .sidebar::-webkit-scrollbar-thumb:hover,
+        .tryit-panel::-webkit-scrollbar-thumb:hover {
+            background: #6b7280;
+        }
+    </style>
+</head>
+<body>
+    <div class="layout">
+        <!-- Sidebar Navigation -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <div class="sidebar-title">Perps Stats API</div>
+                <div class="sidebar-subtitle">v0.1.0</div>
+            </div>
+            <nav class="sidebar-nav" id="sidebarNav"></nav>
+        </aside>
+
+        <!-- Main Content Area -->
+        <main class="main-content">
+            <div class="content-panel">
+                <div class="content-inner" id="contentContainer"></div>
+            </div>
+
+            <!-- Try It Panel -->
+            <aside class="tryit-panel">
+                <div class="tryit-header">
+                    <div class="tryit-title">Try It Out</div>
+                    <div class="tryit-subtitle">Test the API endpoint</div>
+                </div>
+                <div class="tryit-content" id="tryitContent">
+                    <div style="text-align: center; color: #9ca3af; padding: 40px 0;">
+                        Select an endpoint to test
+                    </div>
+                </div>
+            </aside>
+        </main>
+    </div>
+
+    <script>
+        // API Configuration
+        const API_BASE_URL = window.location.origin + '/api/v1';
+
+        // API Endpoints Configuration
+        const endpoints = [
+            {
+                id: 'health',
+                category: 'Health & Monitoring',
+                title: 'Health Check',
+                method: 'GET',
+                path: '/health',
+                description: 'Check if the API server and database are operational. Returns server status, database connection health, current timestamp, and API version.',
+                parameters: []
+            },
+            {
+                id: 'stats',
+                category: 'Health & Monitoring',
+                title: 'Database Statistics',
+                method: 'GET',
+                path: '/stats',
+                description: 'Get aggregated statistics about data in the database including total record counts for each data type and timestamp ranges.',
+                parameters: []
+            },
+            {
+                id: 'exchanges',
+                category: 'Exchanges',
+                title: 'List Exchanges',
+                method: 'GET',
+                path: '/exchanges',
+                description: 'Retrieve metadata for all supported cryptocurrency exchanges including their maker and taker fee structures.',
+                parameters: []
+            },
+            {
+                id: 'symbols',
+                category: 'Symbols',
+                title: 'List Symbols',
+                method: 'GET',
+                path: '/symbols',
+                description: 'Get a list of all unique symbols available in the database, sorted alphabetically.',
+                parameters: []
+            },
+            {
+                id: 'tickers',
+                category: 'Market Data',
+                title: 'Latest Ticker',
+                method: 'GET',
+                path: '/tickers',
+                description: 'Get the most recent ticker data for a symbol. Symbol is required. With exchange: returns ticker for that specific exchange/symbol combination (single result). Without exchange: returns latest ticker from each exchange for the symbol (multiple results).',
+                parameters: [
+                    { name: 'exchange', type: 'select', required: false, description: 'Exchange name (optional filter)', options: ['binance', 'bybit', 'hyperliquid', 'kucoin', 'paradex', 'extended', 'lighter', 'aster', 'pacifica', 'nado'] },
+                    { name: 'symbol', type: 'text', required: true, description: 'Trading symbol (required)', placeholder: 'BTC' }
+                ]
+            },
+            {
+                id: 'tickers-history',
+                category: 'Market Data',
+                title: 'Ticker History',
+                method: 'GET',
+                path: '/tickers/history',
+                description: 'Get historical ticker data within a time range for a symbol. Symbol is required. With exchange: returns tickers for that specific exchange/symbol combination. Without exchange: returns tickers for that symbol across all exchanges.',
+                parameters: [
+                    { name: 'exchange', type: 'select', required: false, description: 'Exchange name (optional filter)', options: ['binance', 'bybit', 'hyperliquid', 'kucoin', 'paradex', 'extended', 'lighter', 'aster', 'pacifica', 'nado'] },
+                    { name: 'symbol', type: 'text', required: true, description: 'Trading symbol (required)', placeholder: 'BTC' },
+                    { name: 'start', type: 'datetime-local', required: false, description: 'Start time - Unix timestamp in seconds (defaults to 24 hours ago)' },
+                    { name: 'end', type: 'datetime-local', required: false, description: 'End time - Unix timestamp in seconds (defaults to now)' },
+                    { name: 'limit', type: 'number', required: false, description: 'Maximum records to return (1-500)', placeholder: '100', min: 1, max: 1000 },
+                    { name: 'offset', type: 'number', required: false, description: 'Number of records to skip', placeholder: '0', min: 0 }
+                ]
+            },
+            {
+                id: 'liquidity',
+                category: 'Liquidity',
+                title: 'Latest Liquidity Depth',
+                method: 'GET',
+                path: '/liquidity',
+                description: 'Get the most recent liquidity depth statistics for a symbol. Symbol is required. With exchange: returns liquidity for that specific exchange/symbol combination (single result). Without exchange: returns latest liquidity from each exchange for the symbol (multiple results).',
+                parameters: [
+                    { name: 'exchange', type: 'select', required: false, description: 'Exchange name (optional filter)', options: ['binance', 'bybit', 'hyperliquid', 'kucoin', 'paradex', 'extended', 'lighter', 'aster', 'pacifica', 'nado'] },
+                    { name: 'symbol', type: 'text', required: true, description: 'Trading symbol (required)', placeholder: 'BTC' }
+                ]
+            },
+            {
+                id: 'liquidity-history',
+                category: 'Liquidity',
+                title: 'Liquidity Depth History',
+                method: 'GET',
+                path: '/liquidity/history',
+                description: 'Get historical liquidity depth data within a time range for a symbol. Symbol is required. With exchange: returns liquidity for that specific exchange/symbol combination. Without exchange: returns liquidity for that symbol across all exchanges.',
+                parameters: [
+                    { name: 'exchange', type: 'select', required: false, description: 'Exchange name (optional filter)', options: ['binance', 'bybit', 'hyperliquid', 'kucoin', 'paradex', 'extended', 'lighter', 'aster', 'pacifica', 'nado'] },
+                    { name: 'symbol', type: 'text', required: true, description: 'Trading symbol (required)', placeholder: 'BTC' },
+                    { name: 'start', type: 'datetime-local', required: false, description: 'Start time - Unix timestamp in seconds' },
+                    { name: 'end', type: 'datetime-local', required: false, description: 'End time - Unix timestamp in seconds' },
+                    { name: 'limit', type: 'number', required: false, description: 'Maximum records', placeholder: '100', min: 1, max: 1000 },
+                    { name: 'offset', type: 'number', required: false, description: 'Records to skip', placeholder: '0', min: 0 }
+                ]
+            },
+            {
+                id: 'orderbooks',
+                category: 'Orderbooks',
+                title: 'Latest Orderbook',
+                method: 'GET',
+                path: '/orderbooks',
+                description: 'Get the most recent orderbook snapshot for a symbol. Symbol is required. With exchange: returns orderbook for that specific exchange/symbol combination (single result). Without exchange: returns latest orderbook from each exchange for the symbol (multiple results).',
+                parameters: [
+                    { name: 'exchange', type: 'select', required: false, description: 'Exchange name (optional filter)', options: ['binance', 'bybit', 'hyperliquid', 'kucoin', 'paradex', 'extended', 'lighter', 'aster', 'pacifica', 'nado'] },
+                    { name: 'symbol', type: 'text', required: true, description: 'Trading symbol (required)', placeholder: 'BTC' }
+                ]
+            },
+            {
+                id: 'orderbooks-history',
+                category: 'Orderbooks',
+                title: 'Orderbook History',
+                method: 'GET',
+                path: '/orderbooks/history',
+                description: 'Get historical orderbook snapshots within a time range for a symbol. Symbol is required. With exchange: returns orderbooks for that specific exchange/symbol combination. Without exchange: returns orderbooks for that symbol across all exchanges.',
+                parameters: [
+                    { name: 'exchange', type: 'select', required: false, description: 'Exchange name (optional filter)', options: ['binance', 'bybit', 'hyperliquid', 'kucoin', 'paradex', 'extended', 'lighter', 'aster', 'pacifica', 'nado'] },
+                    { name: 'symbol', type: 'text', required: true, description: 'Trading symbol (required)', placeholder: 'BTC' },
+                    { name: 'start', type: 'datetime-local', required: false, description: 'Start time - Unix timestamp in seconds' },
+                    { name: 'end', type: 'datetime-local', required: false, description: 'End time - Unix timestamp in seconds' },
+                    { name: 'limit', type: 'number', required: false, description: 'Maximum records', placeholder: '100', min: 1, max: 500 },
+                    { name: 'offset', type: 'number', required: false, description: 'Records to skip', placeholder: '0', min: 0 }
+                ]
+            },
+            {
+                id: 'slippage',
+                category: 'Slippage',
+                title: 'Latest Slippage',
+                method: 'GET',
+                path: '/slippage',
+                description: 'Get the most recent slippage calculations for a symbol and trade amount. Symbol and amount are required. With exchange: returns slippage for that specific exchange/symbol/amount combination. Without exchange: returns latest slippage from each exchange for the symbol/amount.',
+                parameters: [
+                    { name: 'exchange', type: 'select', required: false, description: 'Exchange name (optional filter)', options: ['binance', 'bybit', 'hyperliquid', 'kucoin', 'paradex', 'extended', 'lighter', 'aster', 'pacifica', 'nado'] },
+                    { name: 'symbol', type: 'text', required: true, description: 'Trading symbol (required)', placeholder: 'BTC' },
+                    { name: 'amount', type: 'text', required: true, description: 'Trade amount in USD (required)', placeholder: '10000' }
+                ]
+            },
+            {
+                id: 'slippage-history',
+                category: 'Slippage',
+                title: 'Slippage History',
+                method: 'GET',
+                path: '/slippage/history',
+                description: 'Get historical slippage calculations within a time range for a symbol and trade amount. Symbol and amount are required. With exchange: returns slippage for that specific exchange/symbol/amount combination. Without exchange: returns slippage for that symbol/amount across all exchanges.',
+                parameters: [
+                    { name: 'exchange', type: 'select', required: false, description: 'Exchange name (optional filter)', options: ['binance', 'bybit', 'hyperliquid', 'kucoin', 'paradex', 'extended', 'lighter', 'aster', 'pacifica', 'nado'] },
+                    { name: 'symbol', type: 'text', required: true, description: 'Trading symbol (required)', placeholder: 'BTC' },
+                    { name: 'amount', type: 'text', required: true, description: 'Trade amount in USD (required)', placeholder: '10000' },
+                    { name: 'start', type: 'datetime-local', required: false, description: 'Start time - Unix timestamp in seconds' },
+                    { name: 'end', type: 'datetime-local', required: false, description: 'End time - Unix timestamp in seconds' },
+                    { name: 'limit', type: 'number', required: false, description: 'Maximum records', placeholder: '100', min: 1, max: 500 },
+                    { name: 'offset', type: 'number', required: false, description: 'Records to skip', placeholder: '0', min: 0 }
+                ]
+            },
+            // DISABLED: No data available yet for funding rates and klines, trades
+            // {
+            //     id: 'trades',
+            //     category: 'Trades',
+            //     title: 'Recent Trades',
+            //     method: 'GET',
+            //     path: '/trades',
+            //     description: 'Get recent trade history for a specific exchange and symbol.',
+            //     parameters: [
+            //         { name: 'exchange', type: 'select', required: true, description: 'Exchange name', options: ['binance', 'bybit', 'hyperliquid', 'kucoin', 'paradex', 'extended', 'lighter', 'aster', 'pacifica', 'nado'] },
+            //         { name: 'symbol', type: 'text', required: true, description: 'Trading symbol', placeholder: 'BTC' },
+            //         { name: 'start', type: 'datetime-local', required: false, description: 'Start time' },
+            //         { name: 'end', type: 'datetime-local', required: false, description: 'End time' },
+            //         { name: 'limit', type: 'number', required: false, description: 'Maximum records', placeholder: '100', min: 1, max: 1000 },
+            //         { name: 'offset', type: 'number', required: false, description: 'Records to skip', placeholder: '0', min: 0 }
+            //     ]
+            // }
+            // {
+            //     id: 'funding-rates',
+            //     category: 'Funding Rates',
+            //     title: 'Latest Funding Rate',
+            //     method: 'GET',
+            //     path: '/funding-rates',
+            //     description: 'Get the most recent funding rate for perpetual futures contracts.',
+            //     parameters: [
+            //         { name: 'exchange', type: 'select', required: true, description: 'Exchange name', options: ['binance', 'bybit', 'hyperliquid', 'kucoin', 'paradex', 'extended', 'lighter', 'aster', 'pacifica', 'nado'] },
+            //         { name: 'symbol', type: 'text', required: true, description: 'Trading symbol', placeholder: 'BTC' }
+            //     ]
+            // },
+            // {
+            //     id: 'funding-rates-history',
+            //     category: 'Funding Rates',
+            //     title: 'Funding Rate History',
+            //     method: 'GET',
+            //     path: '/funding-rates/history',
+            //     description: 'Retrieve historical funding rates within a time range.',
+            //     parameters: [
+            //         { name: 'exchange', type: 'select', required: true, description: 'Exchange name', options: ['binance', 'bybit', 'hyperliquid', 'kucoin', 'paradex', 'extended', 'lighter', 'aster', 'pacifica', 'nado'] },
+            //         { name: 'symbol', type: 'text', required: true, description: 'Trading symbol', placeholder: 'BTC' },
+            //         { name: 'start', type: 'datetime-local', required: false, description: 'Start time' },
+            //         { name: 'end', type: 'datetime-local', required: false, description: 'End time' },
+            //         { name: 'limit', type: 'number', required: false, description: 'Maximum records', placeholder: '100', min: 1, max: 1000 },
+            //         { name: 'offset', type: 'number', required: false, description: 'Records to skip', placeholder: '0', min: 0 }
+            //     ]
+            // },
+            // {
+            //     id: 'klines',
+            //     category: 'Klines (OHLCV)',
+            //     title: 'Candlestick Data',
+            //     method: 'GET',
+            //     path: '/klines',
+            //     description: 'Get OHLCV (Open, High, Low, Close, Volume) candlestick data for charting.',
+            //     parameters: [
+            //         { name: 'exchange', type: 'select', required: true, description: 'Exchange name', options: ['binance', 'bybit', 'hyperliquid', 'kucoin', 'paradex', 'extended', 'lighter', 'aster', 'pacifica', 'nado'] },
+            //         { name: 'symbol', type: 'text', required: true, description: 'Trading symbol', placeholder: 'BTC' },
+            //         { name: 'interval', type: 'select', required: true, description: 'Candlestick interval', options: ['1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '6h', '8h', '12h', '1d', '3d', '1w', '1M'] },
+            //         { name: 'start', type: 'datetime-local', required: false, description: 'Start time' },
+            //         { name: 'end', type: 'datetime-local', required: false, description: 'End time' },
+            //         { name: 'limit', type: 'number', required: false, description: 'Maximum records', placeholder: '100', min: 1, max: 1000 },
+            //         { name: 'offset', type: 'number', required: false, description: 'Records to skip', placeholder: '0', min: 0 }
+            //     ]
+            // }
+        ];
+
+        // Group endpoints by category
+        const categories = [...new Set(endpoints.map(e => e.category))];
+
+        // Initialize
+        function init() {
+            renderSidebar();
+            showEndpoint(endpoints[0].id);
+        }
+
+        // Render sidebar navigation
+        function renderSidebar() {
+            const nav = document.getElementById('sidebarNav');
+
+            categories.forEach(category => {
+                const section = document.createElement('div');
+                section.className = 'nav-section';
+
+                const title = document.createElement('div');
+                title.className = 'nav-section-title';
+                title.textContent = category;
+                section.appendChild(title);
+
+                const categoryEndpoints = endpoints.filter(e => e.category === category);
+                categoryEndpoints.forEach(endpoint => {
+                    const item = document.createElement('div');
+                    item.className = 'nav-item';
+                    item.id = `nav-${endpoint.id}`;
+                    item.onclick = () => showEndpoint(endpoint.id);
+
+                    item.innerHTML = `
+                        <span class="method-badge-sm">GET</span>
+                        <span>${endpoint.title}</span>
+                    `;
+
+                    section.appendChild(item);
+                });
+
+                nav.appendChild(section);
+            });
+        }
+
+        // Show specific endpoint
+        function showEndpoint(endpointId) {
+            const endpoint = endpoints.find(e => e.id === endpointId);
+
+            // Update active nav item
+            document.querySelectorAll('.nav-item').forEach(item => {
+                item.classList.remove('active');
+            });
+            document.getElementById(`nav-${endpointId}`).classList.add('active');
+
+            // Render content
+            renderContent(endpoint);
+            renderTryIt(endpoint);
+        }
+
+        // Render main content
+        function renderContent(endpoint) {
+            const container = document.getElementById('contentContainer');
+
+            const paramsHtml = endpoint.parameters.length > 0 ? `
+                <div class="params-section">
+                    <h3 class="section-title">Parameters</h3>
+                    ${endpoint.parameters.map(param => `
+                        <div class="param-item">
+                            <div class="param-header">
+                                <span class="param-name">${param.name}</span>
+                                ${param.required ? '<span class="param-required">REQUIRED</span>' : ''}
+                                <span class="param-type">${param.type}</span>
+                            </div>
+                            <div class="param-description">${param.description}</div>
+                        </div>
+                    `).join('')}
+                </div>
+            ` : '';
+
+            container.innerHTML = `
+                <div class="endpoint-header">
+                    <h1 class="endpoint-title">${endpoint.title}</h1>
+                    <div class="endpoint-meta">
+                        <span class="method-badge">${endpoint.method}</span>
+                        <code class="endpoint-path">/api/v1${endpoint.path}</code>
+                    </div>
+                    <p class="endpoint-description">${endpoint.description}</p>
+                </div>
+
+                ${paramsHtml}
+
+                <div class="info-box">
+                    <div class="info-box-title">Base URL</div>
+                    <div class="info-box-text">${API_BASE_URL}</div>
+                </div>
+            `;
+        }
+
+        // Render Try It panel
+        function renderTryIt(endpoint) {
+            const container = document.getElementById('tryitContent');
+
+            if (endpoint.parameters.length === 0) {
+                container.innerHTML = `
+                    <button class="try-button" onclick="executeRequest('${endpoint.id}')">
+                        Send Request
+                    </button>
+                    <div class="request-url-section" id="request-url-${endpoint.id}"></div>
+                    <div class="response-section" id="response-${endpoint.id}"></div>
+                `;
+            } else {
+                const formHtml = endpoint.parameters.map(param => {
+                    if (param.type === 'select') {
+                        return `
+                            <div class="form-group">
+                                <label class="form-label">${param.name}${param.required ? ' *' : ''}</label>
+                                <select class="form-select" id="${param.name}" ${param.required ? 'required' : ''}>
+                                    <option value="">Select ${param.description}</option>
+                                    ${param.options.map(opt => `<option value="${opt}">${opt}</option>`).join('')}
+                                </select>
+                            </div>
+                        `;
+                    } else if (param.type === 'datetime-local') {
+                        return `
+                            <div class="form-group">
+                                <label class="form-label">${param.name}${param.required ? ' *' : ''}</label>
+                                <div style="display: flex; gap: 8px; align-items: center;">
+                                    <input
+                                        type="text"
+                                        class="form-input"
+                                        id="${param.name}"
+                                        placeholder="Unix timestamp (seconds)"
+                                        ${param.required ? 'required' : ''}
+                                        style="flex: 1;"
+                                    >
+                                    <button 
+                                        type="button" 
+                                        class="now-button" 
+                                        onclick="setCurrentTimestamp('${param.name}')"
+                                        style="background: #3b82f6; color: white; border: none; padding: 8px 12px; border-radius: 4px; font-size: 12px; cursor: pointer; white-space: nowrap;"
+                                    >
+                                        Now
+                                    </button>
+                                </div>
+                                <div style="font-size: 11px; color: #9ca3af; margin-top: 4px;">
+                                    ${param.description}
+                                </div>
+                            </div>
+                        `;
+                    } else {
+                        return `
+                            <div class="form-group">
+                                <label class="form-label">${param.name}${param.required ? ' *' : ''}</label>
+                                <input
+                                    type="${param.type}"
+                                    class="form-input"
+                                    id="${param.name}"
+                                    placeholder="${param.placeholder || ''}"
+                                    ${param.required ? 'required' : ''}
+                                    ${param.min !== undefined ? `min="${param.min}"` : ''}
+                                    ${param.max !== undefined ? `max="${param.max}"` : ''}
+                                >
+                            </div>
+                        `;
+                    }
+                }).join('');
+
+                container.innerHTML = `
+                    <form id="form-${endpoint.id}">
+                        ${formHtml}
+                        <button type="button" class="try-button" onclick="executeRequest('${endpoint.id}')">
+                            Send Request
+                        </button>
+                    </form>
+                    <div class="request-url-section" id="request-url-${endpoint.id}"></div>
+                    <div class="response-section" id="response-${endpoint.id}"></div>
+                `;
+            }
+        }
+
+        // Set current timestamp in seconds for a form field
+        function setCurrentTimestamp(fieldName) {
+            const currentTimestamp = Math.floor(Date.now() / 1000);
+            document.getElementById(fieldName).value = currentTimestamp;
+        }
+
+        // Execute API request
+        async function executeRequest(endpointId) {
+            const endpoint = endpoints.find(e => e.id === endpointId);
+            const button = event.target;
+
+            button.disabled = true;
+            button.innerHTML = 'Sending...<span class="loading-spinner"></span>';
+
+            // Build query parameters
+            const params = new URLSearchParams();
+            endpoint.parameters.forEach(param => {
+                const input = document.getElementById(param.name);
+                let value = input.value;
+
+                // No need to convert datetime-local since we're now using direct UNIX timestamps
+                if (value) {
+                    params.append(param.name, value);
+                }
+            });
+
+            const url = `${API_BASE_URL}${endpoint.path}${params.toString() ? '?' + params.toString() : ''}`;
+
+            // Show request URL
+            const urlSection = document.getElementById(`request-url-${endpointId}`);
+            urlSection.classList.add('show');
+            urlSection.innerHTML = `
+                <div class="form-label">Request URL</div>
+                <div class="request-url">${url}</div>
+            `;
+
+            // Make request
+            const startTime = performance.now();
+            try {
+                const response = await fetch(url);
+                const endTime = performance.now();
+                const responseTime = Math.round(endTime - startTime);
+                const data = await response.json();
+
+                showResponse(endpointId, response.status, data, responseTime);
+            } catch (error) {
+                const endTime = performance.now();
+                const responseTime = Math.round(endTime - startTime);
+                showResponse(endpointId, 0, { error: error.message }, responseTime);
+            } finally {
+                button.disabled = false;
+                button.innerHTML = 'Send Request';
+            }
+        }
+
+        // Show response
+        function showResponse(endpointId, status, data, responseTime) {
+            const responseSection = document.getElementById(`response-${endpointId}`);
+            responseSection.classList.add('show');
+
+            let statusClass = 'status-200';
+            if (status >= 400 && status < 500) statusClass = 'status-400';
+            else if (status >= 500 || status === 0) statusClass = 'status-500';
+
+            const statusText = status === 0 ? 'Network Error' : `${status} ${getStatusText(status)}`;
+
+            responseSection.innerHTML = `
+                <div class="response-header">
+                    <div>
+                        <span class="response-label">Response</span>
+                        <span class="response-time">${responseTime}ms</span>
+                    </div>
+                    <div>
+                        <span class="status-badge ${statusClass}">${statusText}</span>
+                        <button class="copy-button" onclick="copyResponse('${endpointId}')">Copy</button>
+                    </div>
+                </div>
+                <div class="response-body">
+                    <pre id="body-${endpointId}">${JSON.stringify(data, null, 2)}</pre>
+                </div>
+            `;
+        }
+
+        // Get status text
+        function getStatusText(status) {
+            const texts = {
+                200: 'OK',
+                400: 'Bad Request',
+                404: 'Not Found',
+                500: 'Internal Server Error'
+            };
+            return texts[status] || '';
+        }
+
+        // Copy response
+        function copyResponse(endpointId) {
+            const bodyPre = document.getElementById(`body-${endpointId}`);
+            navigator.clipboard.writeText(bodyPre.textContent).then(() => {
+                const button = event.target;
+                const originalText = button.textContent;
+                button.textContent = 'Copied!';
+                setTimeout(() => {
+                    button.textContent = originalText;
+                }, 2000);
+            });
+        }
+
+        // Initialize on load
+        document.addEventListener('DOMContentLoaded', init);
+    </script>
+</body>
+</html>
