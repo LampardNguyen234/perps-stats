@@ -1100,12 +1100,12 @@ fn write_to_csv(
                 stats.ask_10bps.to_string(),
                 stats.ask_20bps.to_string(),
                 slippages
-                    .get(0)
+                    .first()
                     .and_then(|s| s.buy_slippage_bps)
                     .map(|v| v.to_string())
                     .unwrap_or_default(),
                 slippages
-                    .get(0)
+                    .first()
                     .and_then(|s| s.sell_slippage_bps)
                     .map(|v| v.to_string())
                     .unwrap_or_default(),
@@ -1373,7 +1373,8 @@ fn _display_table(stats: &LiquidityDepthStats) -> Result<()> {
     let mut table = Table::new();
     table.set_format(*format::consts::FORMAT_NO_LINESEP_WITH_TITLE);
 
-    let header_text = if let (Some(max_bid), Some(max_ask)) = (stats.max_bid_bps, stats.max_ask_bps) {
+    let header_text = if let (Some(max_bid), Some(max_ask)) = (stats.max_bid_bps, stats.max_ask_bps)
+    {
         format!(
             "Liquidity Depth: {}/{}\n(Mid Price: {}, Max Ask: {:.2} bps, Max Bid: {:.2} bps)",
             stats.exchange.to_uppercase(),
@@ -1513,7 +1514,8 @@ fn display_table_combined(data: &LiquidityData) -> Result<()> {
     let mut table = Table::new();
     table.set_format(*format::consts::FORMAT_NO_LINESEP_WITH_TITLE);
 
-    let header_text = if let (Some(max_bid), Some(max_ask)) = (stats.max_bid_bps, stats.max_ask_bps) {
+    let header_text = if let (Some(max_bid), Some(max_ask)) = (stats.max_bid_bps, stats.max_ask_bps)
+    {
         format!(
             "Liquidity Depth: {}/{}\n(Mid Price: {}, Max Ask: {:.2} bps, Max Bid: {:.2} bps)",
             stats.exchange.to_uppercase(),
@@ -1580,8 +1582,9 @@ fn display_table_combined(data: &LiquidityData) -> Result<()> {
         stats.symbol,
         stats.mid_price.round_dp(4)
     ))
-    .with_hspan(3).with_style(prettytable::Attr::Bold)
-        .style_spec("c")]));
+    .with_hspan(3)
+    .with_style(prettytable::Attr::Bold)
+    .style_spec("c")]));
 
     slip_table.add_row(Row::new(vec![
         Cell::new("Trade Amount").with_style(prettytable::Attr::Bold),
@@ -1604,7 +1607,7 @@ fn display_table_combined(data: &LiquidityData) -> Result<()> {
             };
 
             slip_table.add_row(Row::new(vec![
-                Cell::new(*label),
+                Cell::new(label),
                 Cell::new_align(&buy_text, format::Alignment::RIGHT),
                 Cell::new_align(&sell_text, format::Alignment::RIGHT),
             ]));

@@ -117,7 +117,7 @@ impl IPerps for NadoClient {
         if symbol.contains("-PERP_USDT0") {
             return symbol.to_uppercase();
         }
-        
+
         // Convert "BTC" → "BTC-PERP_USDT0"
         // Convert "BTCUSDT" → "BTC-PERP_USDT0"
         let base = symbol
@@ -175,13 +175,16 @@ impl IPerps for NadoClient {
             .ok_or_else(|| anyhow!("Contract {} not found", ticker_id))?;
 
         // Extract best bid/ask from orderbook
-        let best_bid = orderbook.orderbooks.get(0)
-            .and_then(|ob| ob.bids.first());
-        let best_ask = orderbook.orderbooks.get(0)
-            .and_then(|ob| ob.asks.first());
+        let best_bid = orderbook.orderbooks.first().and_then(|ob| ob.bids.first());
+        let best_ask = orderbook.orderbooks.first().and_then(|ob| ob.asks.first());
 
         // Convert to perps_core::Ticker with bid/ask data
-        super::conversions::merge_ticker_contract_and_orderbook(ticker_data, contract_data, best_bid, best_ask)
+        super::conversions::merge_ticker_contract_and_orderbook(
+            ticker_data,
+            contract_data,
+            best_bid,
+            best_ask,
+        )
     }
 
     async fn get_all_tickers(&self) -> Result<Vec<Ticker>> {

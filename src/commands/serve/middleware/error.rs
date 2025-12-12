@@ -8,6 +8,7 @@ use crate::commands::serve::models::ErrorResponse;
 
 /// Custom error type for API handlers
 #[derive(Debug)]
+#[allow(dead_code)]
 pub enum AppError {
     BadRequest(String),
     NotFound(String),
@@ -23,6 +24,7 @@ impl AppError {
     }
 
     /// Create a NotFound error
+    #[allow(dead_code)]
     pub fn not_found(msg: impl Into<String>) -> Self {
         Self::NotFound(msg.into())
     }
@@ -33,6 +35,7 @@ impl AppError {
     }
 
     /// Create an Internal error
+    #[allow(dead_code)]
     pub fn internal(msg: impl Into<String>) -> Self {
         Self::Internal(msg.into())
     }
@@ -51,9 +54,7 @@ impl IntoResponse for AppError {
                     "An error occurred while querying the database".to_string(),
                 )
             }
-            AppError::NotImplemented(msg) => {
-                (StatusCode::NOT_IMPLEMENTED, "NotImplemented", msg)
-            }
+            AppError::NotImplemented(msg) => (StatusCode::NOT_IMPLEMENTED, "NotImplemented", msg),
             AppError::Internal(msg) => {
                 tracing::error!("Internal error: {}", msg);
                 (

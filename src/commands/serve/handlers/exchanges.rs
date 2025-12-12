@@ -8,10 +8,14 @@ use crate::commands::serve::{middleware::AppError, models::ExchangeInfo, state::
 pub async fn list_exchanges(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<ExchangeInfo>>, AppError> {
-    let exchanges: Vec<(i32, String, Option<rust_decimal::Decimal>, Option<rust_decimal::Decimal>)> =
-        sqlx::query_as("SELECT id, name, maker_fee, taker_fee FROM exchanges ORDER BY name")
-            .fetch_all(&state.pool)
-            .await?;
+    let exchanges: Vec<(
+        i32,
+        String,
+        Option<rust_decimal::Decimal>,
+        Option<rust_decimal::Decimal>,
+    )> = sqlx::query_as("SELECT id, name, maker_fee, taker_fee FROM exchanges ORDER BY name")
+        .fetch_all(&state.pool)
+        .await?;
 
     let exchange_info: Vec<ExchangeInfo> = exchanges
         .into_iter()

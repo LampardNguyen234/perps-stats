@@ -80,9 +80,7 @@ async fn main() -> Result<()> {
                 exchange,
                 maker,
                 taker,
-            } => {
-                commands::db::update_fees(database_url, &exchange, maker, taker).await?
-            }
+            } => commands::db::update_fees(database_url, &exchange, maker, taker).await?,
         },
         Commands::Market {
             exchange,

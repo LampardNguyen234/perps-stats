@@ -1,4 +1,7 @@
-use axum::{extract::{Query, State}, Json};
+use axum::{
+    extract::{Query, State},
+    Json,
+};
 use chrono::Utc;
 
 use crate::commands::serve::{
@@ -11,6 +14,7 @@ use perps_database::Repository;
 
 /// GET /api/v1/funding-rates
 /// Get latest funding rate for a specific exchange/symbol
+#[allow(dead_code)]
 pub async fn get_latest_funding_rates(
     State(state): State<AppState>,
     Query(query): Query<TimeRangeQuery>,
@@ -34,6 +38,7 @@ pub async fn get_latest_funding_rates(
 
 /// GET /api/v1/funding-rates/history
 /// Get historical funding rate data within a time range
+#[allow(dead_code)]
 pub async fn get_funding_rate_history(
     State(state): State<AppState>,
     Query(query): Query<TimeRangeQuery>,

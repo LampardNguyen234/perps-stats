@@ -1,7 +1,10 @@
 use async_trait::async_trait;
 use chrono::Utc;
 use futures::future::join_all;
-use perps_core::{FundingRate, IPerps, LiquidityDepthStats, MultiResolutionOrderbook, OrderSide, Orderbook, Slippage, Trade};
+use perps_core::{
+    FundingRate, IPerps, LiquidityDepthStats, MultiResolutionOrderbook, OrderSide, Orderbook,
+    Slippage, Trade,
+};
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use std::time::Instant;
@@ -437,29 +440,31 @@ impl IAggregator for Aggregator {
                 let sell_slippage_pct = sell_slippage_bps.map(|bps| bps / dec!(100));
 
                 // For detailed metrics, use finest resolution orderbook if available
-                let (buy_avg_price, buy_total_cost) = if let (Some(_book), Some(mid)) = (finest, mid_price) {
-                    if let Some(slippage_bps) = buy_slippage_bps {
-                        let avg_price = mid * (Decimal::ONE + slippage_bps / dec!(10000));
-                        let total_cost = Some(amount);
-                        (Some(avg_price), total_cost)
+                let (buy_avg_price, buy_total_cost) =
+                    if let (Some(_book), Some(mid)) = (finest, mid_price) {
+                        if let Some(slippage_bps) = buy_slippage_bps {
+                            let avg_price = mid * (Decimal::ONE + slippage_bps / dec!(10000));
+                            let total_cost = Some(amount);
+                            (Some(avg_price), total_cost)
+                        } else {
+                            (None, None)
+                        }
                     } else {
                         (None, None)
-                    }
-                } else {
-                    (None, None)
-                };
+                    };
 
-                let (sell_avg_price, sell_total_cost) = if let (Some(_book), Some(mid)) = (finest, mid_price) {
-                    if let Some(slippage_bps) = sell_slippage_bps {
-                        let avg_price = mid * (Decimal::ONE - slippage_bps / dec!(10000));
-                        let total_cost = Some(amount);
-                        (Some(avg_price), total_cost)
+                let (sell_avg_price, sell_total_cost) =
+                    if let (Some(_book), Some(mid)) = (finest, mid_price) {
+                        if let Some(slippage_bps) = sell_slippage_bps {
+                            let avg_price = mid * (Decimal::ONE - slippage_bps / dec!(10000));
+                            let total_cost = Some(amount);
+                            (Some(avg_price), total_cost)
+                        } else {
+                            (None, None)
+                        }
                     } else {
                         (None, None)
-                    }
-                } else {
-                    (None, None)
-                };
+                    };
 
                 Slippage {
                     symbol: multi_orderbook.symbol.clone(),
@@ -1091,5 +1096,4 @@ mod tests {
         assert!(avg_price.is_none());
         assert!(total_cost.is_none());
     }
-
 }

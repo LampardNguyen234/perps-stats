@@ -100,7 +100,11 @@ impl HyperliquidClient {
     }
 
     /// Helper method to fetch orderbook at a specific resolution (nSigFigs)
-    async fn fetch_orderbook_at_resolution(&self, symbol: &str, n_sig_figs: u32) -> Result<Orderbook> {
+    async fn fetch_orderbook_at_resolution(
+        &self,
+        symbol: &str,
+        n_sig_figs: u32,
+    ) -> Result<Orderbook> {
         let mut body = serde_json::json!({
             "type": "l2Book",
             "coin": symbol,

@@ -76,7 +76,7 @@ impl HyperliquidWsClient {
     /// Convert Hyperliquid L2 book to our Orderbook type
     fn convert_orderbook(&self, ws_book: &HyperliquidWsBook) -> Result<Orderbook> {
         // levels[0] = bids, levels[1] = asks
-        let bids: Vec<OrderbookLevel> = if ws_book.levels.len() > 0 {
+        let bids: Vec<OrderbookLevel> = if !ws_book.levels.is_empty() {
             ws_book.levels[0]
                 .iter()
                 .map(|level| {

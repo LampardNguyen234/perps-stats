@@ -287,11 +287,11 @@ where
         let mut wtr = csv::Writer::from_path(&csv_path)?;
 
         // Write header
-        wtr.write_record(&header_fn())?;
+        wtr.write_record(header_fn())?;
 
         // Write rows (data already in descending order)
         for item in items {
-            wtr.write_record(&row_fn(item))?;
+            wtr.write_record(row_fn(item))?;
         }
 
         wtr.flush()?;

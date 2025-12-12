@@ -11,7 +11,10 @@ where
 }
 
 /// Custom serializer for Option<DateTime<Utc>> to UNIX timestamp in seconds
-fn serialize_optional_timestamp_as_unix<S>(dt: &Option<DateTime<Utc>>, serializer: S) -> Result<S::Ok, S::Error>
+fn serialize_optional_timestamp_as_unix<S>(
+    dt: &Option<DateTime<Utc>>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
 {
@@ -90,6 +93,7 @@ pub struct ExchangeInfo {
 
 /// Wrapper for optional data that serializes None as empty object {}
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct OptionalData<T>(pub Option<T>);
 
 impl<T: Serialize> Serialize for OptionalData<T> {

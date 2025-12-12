@@ -1,7 +1,7 @@
 use crate::orderbook_manager::{OrderbookManager, OrderbookManagerConfig};
 use crate::streaming::{DepthUpdate, OrderbookStreamer};
 use crate::types::Orderbook;
-use anyhow::{Result};
+use anyhow::Result;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -216,7 +216,9 @@ impl StreamManager {
                     symbol,
                     bid_size,
                     ask_size,
-                    chrono::Utc::now().signed_duration_since(cached_orderbook.timestamp).to_string()
+                    chrono::Utc::now()
+                        .signed_duration_since(cached_orderbook.timestamp)
+                        .to_string()
                 );
             }
         }
@@ -473,14 +475,17 @@ impl StreamManager {
         exchange: &str,
     ) -> Result<()> {
         if depth_update.is_snapshot {
-            match orderbook_manager.apply_snapshot(
-                &depth_update.symbol,
-                depth_update.bids.clone(),
-                depth_update.asks.clone(),
-                depth_update.final_update_id,
-            ).await {
+            match orderbook_manager
+                .apply_snapshot(
+                    &depth_update.symbol,
+                    depth_update.bids.clone(),
+                    depth_update.asks.clone(),
+                    depth_update.final_update_id,
+                )
+                .await
+            {
                 Ok(replayed_count) => {
-                        info!(
+                    info!(
                         "[{}] Snapshot applied for {} (lastUpdateId={}, replayed {} buffered events)",
                         exchange,
                         depth_update.symbol,
@@ -521,24 +526,24 @@ impl StreamManager {
                 Ok(()) => {
                     // Update processed successfully (buffered or applied)
                     debug!(
-                    "{}: Processed update for {} (seq: {}-{}, pu: {})",
-                    exchange,
-                    depth_update.symbol,
-                    depth_update.first_update_id,
-                    depth_update.final_update_id,
-                    depth_update.previous_id
-                );
+                        "{}: Processed update for {} (seq: {}-{}, pu: {})",
+                        exchange,
+                        depth_update.symbol,
+                        depth_update.first_update_id,
+                        depth_update.final_update_id,
+                        depth_update.previous_id
+                    );
                 }
                 Err(e) => {
                     // Gap detected or other error - OrderbookManager will handle reconnection
                     warn!(
-                    "{}: Failed to apply update for {} (seq: {}-{}): {}",
-                    exchange,
-                    depth_update.symbol,
-                    depth_update.first_update_id,
-                    depth_update.final_update_id,
-                    e
-                );
+                        "{}: Failed to apply update for {} (seq: {}-{}): {}",
+                        exchange,
+                        depth_update.symbol,
+                        depth_update.first_update_id,
+                        depth_update.final_update_id,
+                        e
+                    );
 
                     let mut stats_write = stats.write().await;
                     stats_write.errors += 1;

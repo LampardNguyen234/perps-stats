@@ -929,7 +929,7 @@ async fn backfill_klines(
         let mut current_ts = actual_start_date;
         while current_ts < end_date {
             expected_timestamps.push(current_ts);
-            current_ts = current_ts + Duration::milliseconds(interval_ms);
+            current_ts += Duration::milliseconds(interval_ms);
         }
 
         // Identify missing timestamps (gaps)
@@ -965,17 +965,17 @@ async fn backfill_klines(
             let mut range_start = missing_timestamps[0];
             let mut range_end = missing_timestamps[0];
 
-            for i in 1..missing_timestamps.len() {
+            for &timestamp in missing_timestamps.iter().skip(1) {
                 let expected_next = range_end + Duration::milliseconds(interval_ms);
-                if missing_timestamps[i] == expected_next {
+                if timestamp == expected_next {
                     // Consecutive, extend range
-                    range_end = missing_timestamps[i];
+                    range_end = timestamp;
                 } else {
                     // Gap detected, close current range and start new one
                     fetch_ranges
                         .push((range_start, range_end + Duration::milliseconds(interval_ms)));
-                    range_start = missing_timestamps[i];
-                    range_end = missing_timestamps[i];
+                    range_start = timestamp;
+                    range_end = timestamp;
                 }
             }
             // Close the last range

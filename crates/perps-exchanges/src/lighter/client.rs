@@ -268,7 +268,8 @@ impl IPerps for LighterClient {
             return Err(anyhow!("API error: code {}", response.code));
         }
 
-        let orderbook = conversions::to_orderbook(symbol, &response.data.bids, &response.data.asks)?;
+        let orderbook =
+            conversions::to_orderbook(symbol, &response.data.bids, &response.data.asks)?;
         Ok(MultiResolutionOrderbook::from_single(orderbook))
     }
 

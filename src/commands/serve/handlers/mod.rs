@@ -1,10 +1,10 @@
-pub mod health;
-pub mod tickers;
-pub mod liquidity;
-pub mod klines;
+pub mod exchanges;
 pub mod funding_rates;
-pub mod trades;
+pub mod health;
+pub mod klines;
+pub mod liquidity;
 pub mod orderbooks;
 pub mod slippage;
-pub mod exchanges;
 pub mod symbols;
+pub mod tickers;
+pub mod trades;

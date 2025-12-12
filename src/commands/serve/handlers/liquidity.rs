@@ -1,4 +1,7 @@
-use axum::{extract::{Query, State}, Json};
+use axum::{
+    extract::{Query, State},
+    Json,
+};
 use chrono::Utc;
 use sqlx::Row;
 
@@ -26,7 +29,13 @@ pub async fn get_latest_liquidity(
         Some(exchange) => {
             let liquidity = state
                 .repository
-                .get_liquidity_depth(exchange, &query.symbol, Utc::now() - chrono::Duration::hours(1), Utc::now(), Some(1))
+                .get_liquidity_depth(
+                    exchange,
+                    &query.symbol,
+                    Utc::now() - chrono::Duration::hours(1),
+                    Utc::now(),
+                    Some(1),
+                )
                 .await
                 .map_err(|e| AppError::database(e.to_string()))?;
 
@@ -50,29 +59,32 @@ pub async fn get_latest_liquidity(
             "#;
 
             let rows = sqlx::query(query_str)
-                .bind(&query.normalized_symbol())
+                .bind(query.normalized_symbol())
                 .fetch_all(&state.pool)
                 .await
                 .map_err(|e| AppError::database(e.to_string()))?;
 
-            let result: Vec<LiquidityDepthStats> = rows.into_iter().map(|r| LiquidityDepthStats {
-                exchange: r.get("exchange"),
-                symbol: r.get("symbol"),
-                mid_price: r.get("mid_price"),
-                bid_1bps: r.get("bid_1bps"),
-                bid_2_5bps: r.get("bid_2_5bps"),
-                bid_5bps: r.get("bid_5bps"),
-                bid_10bps: r.get("bid_10bps"),
-                bid_20bps: r.get("bid_20bps"),
-                ask_1bps: r.get("ask_1bps"),
-                ask_2_5bps: r.get("ask_2_5bps"),
-                ask_5bps: r.get("ask_5bps"),
-                ask_10bps: r.get("ask_10bps"),
-                ask_20bps: r.get("ask_20bps"),
-                timestamp: r.get("ts"),
-                max_bid_bps: r.get("max_bid_bps"),
-                max_ask_bps: r.get("max_ask_bps"),
-            }).collect();
+            let result: Vec<LiquidityDepthStats> = rows
+                .into_iter()
+                .map(|r| LiquidityDepthStats {
+                    exchange: r.get("exchange"),
+                    symbol: r.get("symbol"),
+                    mid_price: r.get("mid_price"),
+                    bid_1bps: r.get("bid_1bps"),
+                    bid_2_5bps: r.get("bid_2_5bps"),
+                    bid_5bps: r.get("bid_5bps"),
+                    bid_10bps: r.get("bid_10bps"),
+                    bid_20bps: r.get("bid_20bps"),
+                    ask_1bps: r.get("ask_1bps"),
+                    ask_2_5bps: r.get("ask_2_5bps"),
+                    ask_5bps: r.get("ask_5bps"),
+                    ask_10bps: r.get("ask_10bps"),
+                    ask_20bps: r.get("ask_20bps"),
+                    timestamp: r.get("ts"),
+                    max_bid_bps: r.get("max_bid_bps"),
+                    max_ask_bps: r.get("max_ask_bps"),
+                })
+                .collect();
 
             Ok(Json(DataResponse {
                 data: result,
@@ -109,10 +121,10 @@ pub async fn get_liquidity_history(
                 WHERE e.name = $1 AND ld.symbol = $2
                   AND ld.ts >= $3 AND ld.ts <= $4
                 "#;
-            
+
             let total: (i64,) = sqlx::query_as(count_query)
                 .bind(exchange)
-                .bind(&query.normalized_symbol())
+                .bind(query.normalized_symbol())
                 .bind(start)
                 .bind(end)
                 .fetch_one(&state.pool)
@@ -121,7 +133,13 @@ pub async fn get_liquidity_history(
 
             let liquidity_data = state
                 .repository
-                .get_liquidity_depth(exchange, &query.normalized_symbol(), start, end, Some(limit))
+                .get_liquidity_depth(
+                    exchange,
+                    &query.normalized_symbol(),
+                    start,
+                    end,
+                    Some(limit),
+                )
                 .await
                 .map_err(|e| AppError::database(e.to_string()))?;
 
@@ -137,9 +155,9 @@ pub async fn get_liquidity_history(
                 WHERE ld.symbol = $1
                   AND ld.ts >= $2 AND ld.ts <= $3
                 "#;
-            
+
             let total: (i64,) = sqlx::query_as(count_query)
-                .bind(&query.normalized_symbol())
+                .bind(query.normalized_symbol())
                 .bind(start)
                 .bind(end)
                 .fetch_one(&state.pool)
@@ -160,7 +178,7 @@ pub async fn get_liquidity_history(
                 "#;
 
             let rows = sqlx::query(query_str)
-                .bind(&query.normalized_symbol())
+                .bind(query.normalized_symbol())
                 .bind(start)
                 .bind(end)
                 .bind(limit)
@@ -169,24 +187,27 @@ pub async fn get_liquidity_history(
                 .await
                 .map_err(|e| AppError::database(e.to_string()))?;
 
-            let liquidity_data = rows.into_iter().map(|r| LiquidityDepthStats {
-                exchange: r.get("exchange"),
-                symbol: r.get("symbol"),
-                mid_price: r.get("mid_price"),
-                bid_1bps: r.get("bid_1bps"),
-                bid_2_5bps: r.get("bid_2_5bps"),
-                bid_5bps: r.get("bid_5bps"),
-                bid_10bps: r.get("bid_10bps"),
-                bid_20bps: r.get("bid_20bps"),
-                ask_1bps: r.get("ask_1bps"),
-                ask_2_5bps: r.get("ask_2_5bps"),
-                ask_5bps: r.get("ask_5bps"),
-                ask_10bps: r.get("ask_10bps"),
-                ask_20bps: r.get("ask_20bps"),
-                timestamp: r.get("ts"),
-                max_bid_bps: r.get("max_bid_bps"),
-                max_ask_bps: r.get("max_ask_bps"),
-            }).collect();
+            let liquidity_data = rows
+                .into_iter()
+                .map(|r| LiquidityDepthStats {
+                    exchange: r.get("exchange"),
+                    symbol: r.get("symbol"),
+                    mid_price: r.get("mid_price"),
+                    bid_1bps: r.get("bid_1bps"),
+                    bid_2_5bps: r.get("bid_2_5bps"),
+                    bid_5bps: r.get("bid_5bps"),
+                    bid_10bps: r.get("bid_10bps"),
+                    bid_20bps: r.get("bid_20bps"),
+                    ask_1bps: r.get("ask_1bps"),
+                    ask_2_5bps: r.get("ask_2_5bps"),
+                    ask_5bps: r.get("ask_5bps"),
+                    ask_10bps: r.get("ask_10bps"),
+                    ask_20bps: r.get("ask_20bps"),
+                    timestamp: r.get("ts"),
+                    max_bid_bps: r.get("max_bid_bps"),
+                    max_ask_bps: r.get("max_ask_bps"),
+                })
+                .collect();
 
             (total.0, liquidity_data)
         }
