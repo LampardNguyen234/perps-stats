@@ -1384,7 +1384,10 @@ async fn spawn_api_server_task(
 
         // Import serve module components
         use crate::commands::serve::routes::create_routes;
+        use crate::commands::serve::middleware;
         use std::time::Duration;
+        use std::net::SocketAddr;
+        use axum::middleware as axum_middleware;
         use tower::ServiceBuilder;
         use tower_http::{
             cors::{Any, CorsLayer},
@@ -1393,20 +1396,26 @@ async fn spawn_api_server_task(
         };
 
         // Create router with all routes
-        let app = create_routes(state);
+        let app = create_routes(state.clone());
 
-        // Add middleware layers (same as serve command)
-        let app = app.layer(
-            ServiceBuilder::new()
-                .layer(TraceLayer::new_for_http())
-                .layer(
-                    CorsLayer::new()
-                        .allow_origin(Any)
-                        .allow_methods(Any)
-                        .allow_headers(Any),
-                )
-                .layer(TimeoutLayer::new(Duration::from_secs(30))),
-        );
+        // Add rate limiting middleware first (before other middlewares)
+        let app = app
+            .layer(axum_middleware::from_fn_with_state(
+                state.rate_limiter.clone(),
+                middleware::rate_limit::rate_limit_check_state,
+            ))
+            // Add other middleware layers
+            .layer(
+                ServiceBuilder::new()
+                    .layer(TraceLayer::new_for_http())
+                    .layer(
+                        CorsLayer::new()
+                            .allow_origin(Any)
+                            .allow_methods(Any)
+                            .allow_headers(Any),
+                    )
+                    .layer(TimeoutLayer::new(Duration::from_secs(30))),
+            );
 
         // Bind to address
         let addr = format!("{}:{}", host, port);
@@ -1414,17 +1423,21 @@ async fn spawn_api_server_task(
 
         tracing::info!("API server listening on http://{}", addr);
         tracing::info!("Health check: http://{}/api/v1/health", addr);
+        tracing::info!("Rate limiting enabled: 2 req/sec per IP, 100 req/sec global");
 
-        // Serve with graceful shutdown
-        axum::serve(listener, app)
-            .with_graceful_shutdown(async move {
-                // Poll shutdown signal
-                while !shutdown.load(Ordering::Relaxed) {
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                }
-                tracing::info!("API server shutdown signal received");
-            })
-            .await?;
+        // Serve with graceful shutdown and ConnectInfo support
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .with_graceful_shutdown(async move {
+            // Poll shutdown signal
+            while !shutdown.load(Ordering::Relaxed) {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            tracing::info!("API server shutdown signal received");
+        })
+        .await?;
 
         tracing::info!("API server stopped");
         Ok(())
@@ -1590,10 +1603,17 @@ pub async fn execute(args: StartArgs) -> Result<()> {
             args.api_port
         );
 
-        // Create AppState for API server using shared database pool
+        // Create AppState for API server using shared database pool with default rate limiting
+        let rate_limiter = Arc::new(
+            crate::commands::serve::rate_limiter::memory::InMemoryBackend::new(
+                crate::commands::serve::rate_limiter::RateLimitConfig::default(),
+            ),
+        ) as Arc<dyn crate::commands::serve::rate_limiter::RateLimiterBackend>;
+
         let api_state = crate::commands::serve::state::AppState {
             pool: pool.clone(),
             repository: Arc::new(PostgresRepository::new(pool.clone())),
+            rate_limiter,
         };
 
         let api_task = spawn_api_server_task(

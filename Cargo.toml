@@ -62,6 +62,12 @@ tower = "0.4"
 tower-http = { version = "0.5", features = ["cors", "trace", "timeout", "fs"] }
 hyper = { version = "1.0", features = ["full"] }
 
+# Rate limiting
+dashmap = "6.0"
+parking_lot = "0.12"
+async-trait = "0.1"
+thiserror = "1.0"
+
 # Workspace crates
 perps-core = { path = "crates/perps-core" }
 perps-exchanges = { path = "crates/perps-exchanges" }
