@@ -1,10 +1,15 @@
-use axum::{extract::{Query, State}, Json};
+use axum::{
+    extract::{Query, State},
+    Json,
+};
 use chrono::Utc;
 use sqlx::Row;
 
 use crate::commands::serve::{
     middleware::AppError,
-    models::{DataResponse, OrderbookWithExchange, PaginatedResponse, PaginationMeta, TimeRangeQuery},
+    models::{
+        DataResponse, OrderbookWithExchange, PaginatedResponse, PaginationMeta, TimeRangeQuery,
+    },
     state::AppState,
 };
 use perps_core::Orderbook;
@@ -30,10 +35,14 @@ pub async fn get_latest_orderbooks(
                 .await
                 .map_err(|e| AppError::database(e.to_string()))?;
 
-            let result = orderbook.map(|ob| vec![OrderbookWithExchange {
-                exchange: exchange.clone(),
-                orderbook: ob,
-            }]).unwrap_or_default();
+            let result = orderbook
+                .map(|ob| {
+                    vec![OrderbookWithExchange {
+                        exchange: exchange.clone(),
+                        orderbook: ob,
+                    }]
+                })
+                .unwrap_or_default();
 
             Ok(Json(DataResponse {
                 data: result,
@@ -53,19 +62,24 @@ pub async fn get_latest_orderbooks(
             "#;
 
             let rows = sqlx::query(query_str)
-                .bind(&query.normalized_symbol())
+                .bind(query.normalized_symbol())
                 .fetch_all(&state.pool)
                 .await
                 .map_err(|e| AppError::database(e.to_string()))?;
 
-            let result: Vec<OrderbookWithExchange> = rows.into_iter().filter_map(|r| {
-                let exchange: String = r.get("exchange");
-                let raw_book: serde_json::Value = r.get("raw_book");
-                serde_json::from_value::<Orderbook>(raw_book).ok().map(|ob| OrderbookWithExchange {
-                    exchange,
-                    orderbook: ob,
+            let result: Vec<OrderbookWithExchange> = rows
+                .into_iter()
+                .filter_map(|r| {
+                    let exchange: String = r.get("exchange");
+                    let raw_book: serde_json::Value = r.get("raw_book");
+                    serde_json::from_value::<Orderbook>(raw_book)
+                        .ok()
+                        .map(|ob| OrderbookWithExchange {
+                            exchange,
+                            orderbook: ob,
+                        })
                 })
-            }).collect();
+                .collect();
 
             Ok(Json(DataResponse {
                 data: result,
@@ -95,14 +109,23 @@ pub async fn get_orderbook_history(
         Some(exchange) => {
             let orderbook_data = state
                 .repository
-                .get_orderbooks(exchange, &query.normalized_symbol(), start, end, Some(limit))
+                .get_orderbooks(
+                    exchange,
+                    &query.normalized_symbol(),
+                    start,
+                    end,
+                    Some(limit),
+                )
                 .await
                 .map_err(|e| AppError::database(e.to_string()))?;
 
-            orderbook_data.into_iter().map(|ob| OrderbookWithExchange {
-                exchange: exchange.clone(),
-                orderbook: ob,
-            }).collect()
+            orderbook_data
+                .into_iter()
+                .map(|ob| OrderbookWithExchange {
+                    exchange: exchange.clone(),
+                    orderbook: ob,
+                })
+                .collect()
         }
         // No exchange: get all exchanges for this symbol
         None => {
@@ -125,14 +148,18 @@ pub async fn get_orderbook_history(
                 .await
                 .map_err(|e| AppError::database(e.to_string()))?;
 
-            rows.into_iter().filter_map(|row| {
-                let exchange: String = row.get("exchange");
-                let raw_book: serde_json::Value = row.get("raw_book");
-                serde_json::from_value::<Orderbook>(raw_book).ok().map(|ob| OrderbookWithExchange {
-                    exchange,
-                    orderbook: ob,
+            rows.into_iter()
+                .filter_map(|row| {
+                    let exchange: String = row.get("exchange");
+                    let raw_book: serde_json::Value = row.get("raw_book");
+                    serde_json::from_value::<Orderbook>(raw_book)
+                        .ok()
+                        .map(|ob| OrderbookWithExchange {
+                            exchange,
+                            orderbook: ob,
+                        })
                 })
-            }).collect()
+                .collect()
         }
     };
 

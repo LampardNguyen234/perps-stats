@@ -2,7 +2,9 @@ use axum::{extract::State, Json};
 use chrono::Utc;
 
 use crate::commands::serve::{
-    middleware::AppError, models::responses::{HealthResponse, StatsResponse}, state::AppState,
+    middleware::AppError,
+    models::responses::{HealthResponse, StatsResponse},
+    state::AppState,
 };
 
 /// GET /api/v1/health
@@ -57,15 +59,13 @@ pub async fn database_stats(
         .await?;
 
     // Get oldest and newest timestamps from tickers table
-    let oldest: (Option<chrono::DateTime<Utc>>,) =
-        sqlx::query_as("SELECT MIN(ts) FROM tickers")
-            .fetch_one(&state.pool)
-            .await?;
+    let oldest: (Option<chrono::DateTime<Utc>>,) = sqlx::query_as("SELECT MIN(ts) FROM tickers")
+        .fetch_one(&state.pool)
+        .await?;
 
-    let newest: (Option<chrono::DateTime<Utc>>,) =
-        sqlx::query_as("SELECT MAX(ts) FROM tickers")
-            .fetch_one(&state.pool)
-            .await?;
+    let newest: (Option<chrono::DateTime<Utc>>,) = sqlx::query_as("SELECT MAX(ts) FROM tickers")
+        .fetch_one(&state.pool)
+        .await?;
 
     Ok(Json(StatsResponse {
         total_tickers: total_tickers.0,

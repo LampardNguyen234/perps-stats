@@ -14,7 +14,7 @@ This guide covers deploying the Perps Stats REST API server. For database setup,
 
 ## Prerequisites
 
-- **Rust**: 1.75 or later
+- **Rust**: 1.91 or later
 - **PostgreSQL**: Database already set up and migrated (see [Deployment Guide](deployment.md))
 - **Memory**: Minimum 2GB RAM (4GB+ recommended for production)
 
@@ -27,6 +27,8 @@ cargo --version
 ---
 
 ## Quick Start
+
+### Option 1: Standalone API Server
 
 ```bash
 # 1. Clone and build
@@ -42,6 +44,32 @@ cargo run --release -- serve --port 8080
 ```
 
 The API will be available at `http://127.0.0.1:8080/api/`
+
+### Option 2: Unified Service (API + Data Collection)
+
+For a complete all-in-one solution that both collects data and serves it via API:
+
+```bash
+# 1. Build the project
+cargo build --release
+
+# 2. Set environment variable
+export DATABASE_URL="postgresql://perps:your_password@localhost:5432/perps_stats"
+
+# 3. Start unified service with API enabled
+cargo run --release -- start \
+  --symbols-file symbols.txt \
+  --enable-api \
+  --api-port 8080 \
+  --pool-size 30
+```
+
+This single command starts:
+- Data collection tasks (tickers, liquidity depth, orderbooks)
+- REST API server on port 8080
+- Shared database connection pool
+
+The API will be immediately available at `http://0.0.0.0:8080/api/` while data is being collected in real-time.
 
 ---
 
@@ -176,7 +204,9 @@ RUST_LOG=perps_stats=debug
 
 ## Running the Server
 
-### Basic Usage
+### Standalone API Server Mode
+
+Use the `serve` command for API-only deployment (requires existing data):
 
 ```bash
 # Start with defaults (127.0.0.1:8080)
@@ -192,12 +222,63 @@ perps-stats serve --host 0.0.0.0 --port 8080
 perps-stats serve --host 192.168.1.100 --port 8888
 ```
 
-### Command Options
+**Serve Command Options:**
 
 | Option   | Short | Default     | Description             |
 |----------|-------|-------------|-------------------------|
 | `--host` | -     | `127.0.0.1` | Host address to bind to |
 | `--port` | `-p`  | `8080`      | Port to listen on       |
+
+### Unified Service Mode (Recommended)
+
+Use the `start` command with `--enable-api` for all-in-one deployment (data collection + API):
+
+```bash
+# Basic unified service
+perps-stats start \
+  --symbols-file symbols.txt \
+  --enable-api
+
+# Production configuration
+perps-stats start \
+  --symbols-file symbols.txt \
+  --enable-api \
+  --api-host 0.0.0.0 \
+  --api-port 8080 \
+  --pool-size 50 \
+  --report-interval 30 \
+  --enable-backfill
+
+# Development configuration
+perps-stats start \
+  --symbols-file symbols.txt \
+  --enable-api \
+  --api-port 3000 \
+  --pool-size 20
+```
+
+**Start Command API Options:**
+
+| Option        | Default   | Description                              |
+|---------------|-----------|------------------------------------------|
+| `--enable-api`| `false`   | Enable REST API server                   |
+| `--api-host`  | `0.0.0.0` | API server bind address                  |
+| `--api-port`  | `8080`    | API server port                          |
+| `--pool-size` | `20`      | Database connection pool size (all tasks)|
+
+**Connection Pool Sizing Guidelines:**
+
+- **Development/Testing**: 20 connections (default)
+- **Production (API only)**: 20-30 connections
+- **Production (API + Data Collection)**: 30-50 connections
+- **Formula**: `(num_exchanges × num_timeframes) + 10 for API + buffer`
+
+**Example Sizing Calculation:**
+```
+Scenario: 5 exchanges, 3 timeframes (5m, 1h, 1d), API enabled
+Calculation: (5 × 3) + 10 + 5 buffer = 30 connections
+Recommended: --pool-size 30
+```
 
 ### Verify Server is Running
 

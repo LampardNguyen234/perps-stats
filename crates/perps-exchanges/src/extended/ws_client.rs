@@ -72,14 +72,13 @@ impl ExtendedWsClient {
         // Sequence 1 = first snapshot, subsequent deltas increment from there
         // Fall back to timestamp if sequence is missing (shouldn't happen)
         let sequence = ws_orderbook.data.sequence.unwrap_or_else(|| {
-            let timestamp = ws_orderbook.data.timestamp.unwrap_or_else(|| {
+            ws_orderbook.data.timestamp.unwrap_or_else(|| {
                 use std::time::{SystemTime, UNIX_EPOCH};
                 SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap()
                     .as_millis() as i64
-            });
-            timestamp
+            })
         });
 
         Ok((symbol, is_snapshot, bids, asks, sequence as u64))
@@ -121,20 +120,27 @@ impl ExtendedWsClient {
 
         // Extended provides monotonic sequence numbers
         let sequence = ws_orderbook.data.sequence.unwrap_or_else(|| {
-            let timestamp = ws_orderbook.data.timestamp.unwrap_or_else(|| {
+            ws_orderbook.data.timestamp.unwrap_or_else(|| {
                 use std::time::{SystemTime, UNIX_EPOCH};
                 SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap()
                     .as_millis() as i64
-            });
-            timestamp
+            })
         }) as u64;
 
         // Log delta updates (not snapshots) for debugging bid-ask invariant violations
         if !is_snapshot && (!bids.is_empty() || !asks.is_empty()) {
-            let bid_summary: Vec<String> = bids.iter().take(3).map(|l| format!("{}@{}", l.price, l.quantity)).collect();
-            let ask_summary: Vec<String> = asks.iter().take(3).map(|l| format!("{}@{}", l.price, l.quantity)).collect();
+            let bid_summary: Vec<String> = bids
+                .iter()
+                .take(3)
+                .map(|l| format!("{}@{}", l.price, l.quantity))
+                .collect();
+            let ask_summary: Vec<String> = asks
+                .iter()
+                .take(3)
+                .map(|l| format!("{}@{}", l.price, l.quantity))
+                .collect();
 
             tracing::trace!(
                 "[Extended Delta] {} seq={} type={}: {} bids {:?}, {} asks {:?}",

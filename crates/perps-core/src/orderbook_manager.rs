@@ -1,9 +1,9 @@
+use crate::types::{Orderbook, OrderbookLevel};
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use crate::types::{Orderbook, OrderbookLevel};
 
 // LocalOrderbook uses parking_lot (sync, fast, CPU-bound operations)
 use parking_lot::{Mutex as ParkingMutex, RwLock as ParkingRwLock};
@@ -354,23 +354,21 @@ impl LocalOrderbook {
         }
 
         // Rule 4: Continuity validation
-        if previous_id != 0 {
-            if previous_id != data.last_update_id {
-                tracing::error!(
-                    "[WS Update] {}/{} CRITICAL: previous_id mismatch (Rule 4)! pu={}, lastUpdateId={}. Reconnection required!",
-                    data.exchange,
-                    data.symbol,
-                    previous_id,
-                    data.last_update_id
-                );
-                return Err(anyhow::anyhow!(
-                    "Previous ID mismatch for {}/{} (Rule 4): pu={}, expected={}. Sequence integrity violated.",
-                    data.exchange,
-                    data.symbol,
-                    previous_id,
-                    data.last_update_id
-                ));
-            }
+        if previous_id != 0 && previous_id != data.last_update_id {
+            tracing::error!(
+                "[WS Update] {}/{} CRITICAL: previous_id mismatch (Rule 4)! pu={}, lastUpdateId={}. Reconnection required!",
+                data.exchange,
+                data.symbol,
+                previous_id,
+                data.last_update_id
+            );
+            return Err(anyhow::anyhow!(
+                "Previous ID mismatch for {}/{} (Rule 4): pu={}, expected={}. Sequence integrity violated.",
+                data.exchange,
+                data.symbol,
+                previous_id,
+                data.last_update_id
+            ));
         }
 
         // All validation passed, apply the update
@@ -442,17 +440,17 @@ impl LocalOrderbook {
                 bid_removes += 1;
                 if final_quantity < Decimal::ZERO {
                     tracing::warn!(
-                    "[WS Update] {}/{} BID REMOVED: price={}, final_qty={}, mode={}",
-                    data.exchange,
-                    data.symbol,
-                    level.price,
-                    final_quantity,
-                    if is_incremental_delta {
-                        "incremental"
-                    } else {
-                        "full_price"
-                    }
-                );
+                        "[WS Update] {}/{} BID REMOVED: price={}, final_qty={}, mode={}",
+                        data.exchange,
+                        data.symbol,
+                        level.price,
+                        final_quantity,
+                        if is_incremental_delta {
+                            "incremental"
+                        } else {
+                            "full_price"
+                        }
+                    );
                 }
             } else {
                 let is_new = !data.bids.contains_key(&level.price);
@@ -572,13 +570,15 @@ impl LocalOrderbook {
 
         if new_best_ask < new_best_bid {
             // Log top 5 bids and asks to understand what happened
-            let top_bids: Vec<String> = data.bids
+            let top_bids: Vec<String> = data
+                .bids
                 .iter()
                 .rev()
                 .take(5)
                 .map(|(p, q)| format!("{}@{}", p, q))
                 .collect();
-            let top_asks: Vec<String> = data.asks
+            let top_asks: Vec<String> = data
+                .asks
                 .iter()
                 .take(5)
                 .map(|(p, q)| format!("{}@{}", p, q))
@@ -596,7 +596,6 @@ impl LocalOrderbook {
                 top_asks
             );
         }
-
 
         tracing::debug!(
             "[WS Update] {}/{} APPLIED: U={}, u={} | Bids: {} levels (+{} -{}) | Asks: {} levels (+{} -{}) | Best: {}@{} / {}@{}",

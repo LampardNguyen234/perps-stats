@@ -1,10 +1,13 @@
-use axum::{extract::{Query, State}, Json};
+use axum::{
+    extract::{Query, State},
+    Json,
+};
 use chrono::Utc;
 use sqlx::Row;
 
 use crate::commands::serve::{
     middleware::AppError,
-    models::{DataResponse, PaginatedResponse, PaginationMeta, TimeRangeQuery, TickerWithExchange},
+    models::{DataResponse, PaginatedResponse, PaginationMeta, TickerWithExchange, TimeRangeQuery},
     state::AppState,
 };
 use perps_core::Ticker;
@@ -30,10 +33,14 @@ pub async fn get_latest_tickers(
                 .await
                 .map_err(|e| AppError::database(e.to_string()))?;
 
-            let result = ticker.map(|t| vec![TickerWithExchange {
-                exchange: exchange.clone(),
-                ticker: t,
-            }]).unwrap_or_default();
+            let result = ticker
+                .map(|t| {
+                    vec![TickerWithExchange {
+                        exchange: exchange.clone(),
+                        ticker: t,
+                    }]
+                })
+                .unwrap_or_default();
 
             Ok(Json(DataResponse {
                 data: result,
@@ -57,33 +64,46 @@ pub async fn get_latest_tickers(
             "#;
 
             let rows = sqlx::query(query_str)
-                .bind(&query.normalized_symbol())
+                .bind(query.normalized_symbol())
                 .fetch_all(&state.pool)
                 .await
                 .map_err(|e| AppError::database(e.to_string()))?;
 
-            let result: Vec<TickerWithExchange> = rows.into_iter().map(|r| TickerWithExchange {
-                exchange: r.get("exchange_name"),
-                ticker: Ticker {
-                    symbol: r.get("symbol"),
-                    last_price: r.get("last_price"),
-                    mark_price: r.get("mark_price"),
-                    index_price: r.get("index_price"),
-                    best_bid_price: r.get("best_bid_price"),
-                    best_bid_qty: r.try_get("best_bid_qty").unwrap_or(rust_decimal::Decimal::ZERO),
-                    best_ask_price: r.get("best_ask_price"),
-                    best_ask_qty: r.try_get("best_ask_qty").unwrap_or(rust_decimal::Decimal::ZERO),
-                    volume_24h: r.get("volume_24h"),
-                    turnover_24h: r.get("turnover_24h"),
-                    open_interest: r.try_get("open_interest").unwrap_or(rust_decimal::Decimal::ZERO),
-                    open_interest_notional: r.try_get("open_interest_notional").unwrap_or(rust_decimal::Decimal::ZERO),
-                    price_change_24h: r.get("price_change_24h"),
-                    price_change_pct: r.try_get("price_change_pct").unwrap_or(rust_decimal::Decimal::ZERO),
-                    high_price_24h: r.get("high_24h"),
-                    low_price_24h: r.get("low_24h"),
-                    timestamp: r.get("ts"),
-                },
-            }).collect();
+            let result: Vec<TickerWithExchange> = rows
+                .into_iter()
+                .map(|r| TickerWithExchange {
+                    exchange: r.get("exchange_name"),
+                    ticker: Ticker {
+                        symbol: r.get("symbol"),
+                        last_price: r.get("last_price"),
+                        mark_price: r.get("mark_price"),
+                        index_price: r.get("index_price"),
+                        best_bid_price: r.get("best_bid_price"),
+                        best_bid_qty: r
+                            .try_get("best_bid_qty")
+                            .unwrap_or(rust_decimal::Decimal::ZERO),
+                        best_ask_price: r.get("best_ask_price"),
+                        best_ask_qty: r
+                            .try_get("best_ask_qty")
+                            .unwrap_or(rust_decimal::Decimal::ZERO),
+                        volume_24h: r.get("volume_24h"),
+                        turnover_24h: r.get("turnover_24h"),
+                        open_interest: r
+                            .try_get("open_interest")
+                            .unwrap_or(rust_decimal::Decimal::ZERO),
+                        open_interest_notional: r
+                            .try_get("open_interest_notional")
+                            .unwrap_or(rust_decimal::Decimal::ZERO),
+                        price_change_24h: r.get("price_change_24h"),
+                        price_change_pct: r
+                            .try_get("price_change_pct")
+                            .unwrap_or(rust_decimal::Decimal::ZERO),
+                        high_price_24h: r.get("high_24h"),
+                        low_price_24h: r.get("low_24h"),
+                        timestamp: r.get("ts"),
+                    },
+                })
+                .collect();
 
             Ok(Json(DataResponse {
                 data: result,
@@ -120,10 +140,10 @@ pub async fn get_ticker_history(
                 WHERE e.name = $1 AND t.symbol = $2
                   AND t.ts >= $3 AND t.ts <= $4
                 "#;
-            
+
             let total: (i64,) = sqlx::query_as(count_query)
                 .bind(exchange)
-                .bind(&query.normalized_symbol())
+                .bind(query.normalized_symbol())
                 .bind(start)
                 .bind(end)
                 .fetch_one(&state.pool)
@@ -132,14 +152,23 @@ pub async fn get_ticker_history(
 
             let ticker_data = state
                 .repository
-                .get_tickers(exchange, &query.normalized_symbol(), start, end, Some(limit))
+                .get_tickers(
+                    exchange,
+                    &query.normalized_symbol(),
+                    start,
+                    end,
+                    Some(limit),
+                )
                 .await
                 .map_err(|e| AppError::database(e.to_string()))?;
 
-            let tickers = ticker_data.into_iter().map(|t| TickerWithExchange {
-                exchange: exchange.clone(),
-                ticker: t,
-            }).collect();
+            let tickers = ticker_data
+                .into_iter()
+                .map(|t| TickerWithExchange {
+                    exchange: exchange.clone(),
+                    ticker: t,
+                })
+                .collect();
 
             (total.0, tickers)
         }
@@ -153,9 +182,9 @@ pub async fn get_ticker_history(
                 WHERE t.symbol = $1
                   AND t.ts >= $2 AND t.ts <= $3
                 "#;
-            
+
             let total: (i64,) = sqlx::query_as(count_query)
-                .bind(&query.normalized_symbol())
+                .bind(query.normalized_symbol())
                 .bind(start)
                 .bind(end)
                 .fetch_one(&state.pool)
@@ -179,7 +208,7 @@ pub async fn get_ticker_history(
                 "#;
 
             let rows = sqlx::query(query_str)
-                .bind(&query.normalized_symbol())
+                .bind(query.normalized_symbol())
                 .bind(start)
                 .bind(end)
                 .bind(limit)
@@ -188,28 +217,41 @@ pub async fn get_ticker_history(
                 .await
                 .map_err(|e| AppError::database(e.to_string()))?;
 
-            let tickers = rows.into_iter().map(|r| TickerWithExchange {
-                exchange: r.get("exchange_name"),
-                ticker: Ticker {
-                    symbol: r.get("symbol"),
-                    last_price: r.get("last_price"),
-                    mark_price: r.get("mark_price"),
-                    index_price: r.get("index_price"),
-                    best_bid_price: r.get("best_bid_price"),
-                    best_bid_qty: r.try_get("best_bid_qty").unwrap_or(rust_decimal::Decimal::ZERO),
-                    best_ask_price: r.get("best_ask_price"),
-                    best_ask_qty: r.try_get("best_ask_qty").unwrap_or(rust_decimal::Decimal::ZERO),
-                    volume_24h: r.get("volume_24h"),
-                    turnover_24h: r.get("turnover_24h"),
-                    open_interest: r.try_get("open_interest").unwrap_or(rust_decimal::Decimal::ZERO),
-                    open_interest_notional: r.try_get("open_interest_notional").unwrap_or(rust_decimal::Decimal::ZERO),
-                    price_change_24h: r.get("price_change_24h"),
-                    price_change_pct: r.try_get("price_change_pct").unwrap_or(rust_decimal::Decimal::ZERO),
-                    high_price_24h: r.get("high_24h"),
-                    low_price_24h: r.get("low_24h"),
-                    timestamp: r.get("ts"),
-                },
-            }).collect();
+            let tickers = rows
+                .into_iter()
+                .map(|r| TickerWithExchange {
+                    exchange: r.get("exchange_name"),
+                    ticker: Ticker {
+                        symbol: r.get("symbol"),
+                        last_price: r.get("last_price"),
+                        mark_price: r.get("mark_price"),
+                        index_price: r.get("index_price"),
+                        best_bid_price: r.get("best_bid_price"),
+                        best_bid_qty: r
+                            .try_get("best_bid_qty")
+                            .unwrap_or(rust_decimal::Decimal::ZERO),
+                        best_ask_price: r.get("best_ask_price"),
+                        best_ask_qty: r
+                            .try_get("best_ask_qty")
+                            .unwrap_or(rust_decimal::Decimal::ZERO),
+                        volume_24h: r.get("volume_24h"),
+                        turnover_24h: r.get("turnover_24h"),
+                        open_interest: r
+                            .try_get("open_interest")
+                            .unwrap_or(rust_decimal::Decimal::ZERO),
+                        open_interest_notional: r
+                            .try_get("open_interest_notional")
+                            .unwrap_or(rust_decimal::Decimal::ZERO),
+                        price_change_24h: r.get("price_change_24h"),
+                        price_change_pct: r
+                            .try_get("price_change_pct")
+                            .unwrap_or(rust_decimal::Decimal::ZERO),
+                        high_price_24h: r.get("high_24h"),
+                        low_price_24h: r.get("low_24h"),
+                        timestamp: r.get("ts"),
+                    },
+                })
+                .collect();
 
             (total.0, tickers)
         }

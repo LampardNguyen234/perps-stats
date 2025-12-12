@@ -7,7 +7,7 @@ use perps_core::streaming::StreamEvent;
 use perps_core::types::{FundingRate, Kline, Orderbook, Ticker, Trade};
 use perps_database::{PostgresRepository, Repository};
 use perps_exchanges::factory;
-use sqlx::PgPool;
+use sqlx::postgres::PgPoolOptions;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -68,6 +68,22 @@ pub struct StartArgs {
     /// Override taker fee with custom value (e.g., 0.0005 for 0.05%)
     #[arg(long)]
     pub override_fee: Option<f64>,
+
+    /// Enable REST API server alongside data collection
+    #[arg(long)]
+    pub enable_api: bool,
+
+    /// API server bind address
+    #[arg(long, default_value = "0.0.0.0")]
+    pub api_host: String,
+
+    /// API server port
+    #[arg(long, default_value = "8080")]
+    pub api_port: u16,
+
+    /// Database connection pool size (for both API and data collection)
+    #[arg(long, default_value = "20")]
+    pub pool_size: u32,
 }
 
 /// Load symbols from file (supports both line-separated and comma-separated formats)
@@ -382,7 +398,7 @@ async fn spawn_streaming_task(
                         }
                     }
 
-                    if event_count % 100 == 0 {
+                    if event_count.is_multiple_of(100) {
                         tracing::info!("Exchange {}: Processed {} events (total: {})", exchange, event_count, total_events + event_count);
                     }
                 }
@@ -1172,7 +1188,7 @@ async fn spawn_liquidity_report_task(
                                 match repo
                                     .store_orderbooks_with_exchange(
                                         exchange,
-                                        &[finest_book.clone()],
+                                        std::slice::from_ref(finest_book),
                                     )
                                     .await
                                 {
@@ -1301,7 +1317,7 @@ async fn spawn_ticker_report_task(
                             if !ticker.is_empty() {
                                 tickers_by_exchange
                                     .entry(exchange.clone())
-                                    .or_insert_with(Vec::new)
+                                    .or_default()
                                     .push(ticker);
                             } else {
                                 tracing::error!(
@@ -1352,6 +1368,65 @@ async fn spawn_ticker_report_task(
         }
 
         tracing::info!("Ticker report generation task stopped");
+        Ok(())
+    }))
+}
+
+/// Spawn API server task
+async fn spawn_api_server_task(
+    host: String,
+    port: u16,
+    state: crate::commands::serve::state::AppState,
+    shutdown: Arc<AtomicBool>,
+) -> Result<tokio::task::JoinHandle<Result<()>>> {
+    Ok(tokio::spawn(async move {
+        tracing::info!("Starting API server on {}:{}", host, port);
+
+        // Import serve module components
+        use crate::commands::serve::routes::create_routes;
+        use std::time::Duration;
+        use tower::ServiceBuilder;
+        use tower_http::{
+            cors::{Any, CorsLayer},
+            timeout::TimeoutLayer,
+            trace::TraceLayer,
+        };
+
+        // Create router with all routes
+        let app = create_routes(state);
+
+        // Add middleware layers (same as serve command)
+        let app = app.layer(
+            ServiceBuilder::new()
+                .layer(TraceLayer::new_for_http())
+                .layer(
+                    CorsLayer::new()
+                        .allow_origin(Any)
+                        .allow_methods(Any)
+                        .allow_headers(Any),
+                )
+                .layer(TimeoutLayer::new(Duration::from_secs(30))),
+        );
+
+        // Bind to address
+        let addr = format!("{}:{}", host, port);
+        let listener = tokio::net::TcpListener::bind(&addr).await?;
+
+        tracing::info!("API server listening on http://{}", addr);
+        tracing::info!("Health check: http://{}/api/v1/health", addr);
+
+        // Serve with graceful shutdown
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async move {
+                // Poll shutdown signal
+                while !shutdown.load(Ordering::Relaxed) {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+                tracing::info!("API server shutdown signal received");
+            })
+            .await?;
+
+        tracing::info!("API server stopped");
         Ok(())
     }))
 }
@@ -1434,10 +1509,17 @@ pub async fn execute(args: StartArgs) -> Result<()> {
         anyhow::bail!("No valid symbols found for any exchange");
     }
 
-    // Initialize database connection
-    tracing::info!("Connecting to database: {}", args.database_url);
-    let pool = PgPool::connect(&args.database_url).await?;
-    let repository = Arc::new(Mutex::new(PostgresRepository::new(pool)));
+    // Initialize database connection with configurable pool size
+    tracing::info!(
+        "Connecting to database: {} (pool size: {})",
+        args.database_url,
+        args.pool_size
+    );
+    let pool = PgPoolOptions::new()
+        .max_connections(args.pool_size)
+        .connect(&args.database_url)
+        .await?;
+    let repository = Arc::new(Mutex::new(PostgresRepository::new(pool.clone())));
 
     // Create shutdown signal
     let shutdown = Arc::new(AtomicBool::new(false));
@@ -1499,6 +1581,32 @@ pub async fn execute(args: StartArgs) -> Result<()> {
     )
     .await?;
     tasks.push(ticker_report_task);
+
+    // Spawn API server task if enabled
+    if args.enable_api {
+        tracing::info!(
+            "API server enabled, spawning API server task on {}:{}",
+            args.api_host,
+            args.api_port
+        );
+
+        // Create AppState for API server using shared database pool
+        let api_state = crate::commands::serve::state::AppState {
+            pool: pool.clone(),
+            repository: Arc::new(PostgresRepository::new(pool.clone())),
+        };
+
+        let api_task = spawn_api_server_task(
+            args.api_host.clone(),
+            args.api_port,
+            api_state,
+            shutdown.clone(),
+        )
+        .await?;
+        tasks.push(api_task);
+    } else {
+        tracing::info!("API server disabled (use --enable-api to enable)");
+    }
 
     tracing::info!(
         "All tasks spawned successfully. Running {} tasks total",

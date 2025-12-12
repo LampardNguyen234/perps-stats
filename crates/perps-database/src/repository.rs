@@ -222,10 +222,8 @@ pub trait Repository: Send + Sync {
     /// Get exchange fees (maker_fee, taker_fee) for a specific exchange
     /// Returns (maker_fee, taker_fee) as Option<(Decimal, Decimal)>
     /// Returns None if exchange not found or fees are NULL
-    async fn get_exchange_fees(
-        &self,
-        exchange: &str,
-    ) -> anyhow::Result<Option<(Decimal, Decimal)>>;
+    async fn get_exchange_fees(&self, exchange: &str)
+        -> anyhow::Result<Option<(Decimal, Decimal)>>;
 
     /// Update exchange fees (maker and/or taker)
     /// Only updates fields that are provided (Some)

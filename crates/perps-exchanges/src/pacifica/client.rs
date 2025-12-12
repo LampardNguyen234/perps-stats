@@ -426,7 +426,7 @@ impl IPerps for PacificaClient {
             _ => tokio::join!(
                 self_fine.fetch_orderbook_with_agg_level(&symbol_clone, 1),
                 self_coarse.fetch_orderbook_with_agg_level(&symbol_clone, 100)
-            )
+            ),
         };
 
         // Collect successful orderbooks (ordered from finest to coarsest)
@@ -449,7 +449,6 @@ impl IPerps for PacificaClient {
         } else if let Err(e) = fine_result {
             tracing::warn!("[Pacifica] Fine orderbook failed for {}: {}", symbol, e);
         }
-
 
         if let Ok((coarse_book, _)) = coarse_result {
             tracing::debug!(

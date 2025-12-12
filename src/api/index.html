@@ -735,69 +735,7 @@
                     { name: 'limit', type: 'number', required: false, description: 'Maximum records', placeholder: '100', min: 1, max: 500 },
                     { name: 'offset', type: 'number', required: false, description: 'Records to skip', placeholder: '0', min: 0 }
                 ]
-            },
-            // DISABLED: No data available yet for funding rates and klines, trades
-            // {
-            //     id: 'trades',
-            //     category: 'Trades',
-            //     title: 'Recent Trades',
-            //     method: 'GET',
-            //     path: '/trades',
-            //     description: 'Get recent trade history for a specific exchange and symbol.',
-            //     parameters: [
-            //         { name: 'exchange', type: 'select', required: true, description: 'Exchange name', options: ['binance', 'bybit', 'hyperliquid', 'kucoin', 'paradex', 'extended', 'lighter', 'aster', 'pacifica', 'nado'] },
-            //         { name: 'symbol', type: 'text', required: true, description: 'Trading symbol', placeholder: 'BTC' },
-            //         { name: 'start', type: 'datetime-local', required: false, description: 'Start time' },
-            //         { name: 'end', type: 'datetime-local', required: false, description: 'End time' },
-            //         { name: 'limit', type: 'number', required: false, description: 'Maximum records', placeholder: '100', min: 1, max: 1000 },
-            //         { name: 'offset', type: 'number', required: false, description: 'Records to skip', placeholder: '0', min: 0 }
-            //     ]
-            // }
-            // {
-            //     id: 'funding-rates',
-            //     category: 'Funding Rates',
-            //     title: 'Latest Funding Rate',
-            //     method: 'GET',
-            //     path: '/funding-rates',
-            //     description: 'Get the most recent funding rate for perpetual futures contracts.',
-            //     parameters: [
-            //         { name: 'exchange', type: 'select', required: true, description: 'Exchange name', options: ['binance', 'bybit', 'hyperliquid', 'kucoin', 'paradex', 'extended', 'lighter', 'aster', 'pacifica', 'nado'] },
-            //         { name: 'symbol', type: 'text', required: true, description: 'Trading symbol', placeholder: 'BTC' }
-            //     ]
-            // },
-            // {
-            //     id: 'funding-rates-history',
-            //     category: 'Funding Rates',
-            //     title: 'Funding Rate History',
-            //     method: 'GET',
-            //     path: '/funding-rates/history',
-            //     description: 'Retrieve historical funding rates within a time range.',
-            //     parameters: [
-            //         { name: 'exchange', type: 'select', required: true, description: 'Exchange name', options: ['binance', 'bybit', 'hyperliquid', 'kucoin', 'paradex', 'extended', 'lighter', 'aster', 'pacifica', 'nado'] },
-            //         { name: 'symbol', type: 'text', required: true, description: 'Trading symbol', placeholder: 'BTC' },
-            //         { name: 'start', type: 'datetime-local', required: false, description: 'Start time' },
-            //         { name: 'end', type: 'datetime-local', required: false, description: 'End time' },
-            //         { name: 'limit', type: 'number', required: false, description: 'Maximum records', placeholder: '100', min: 1, max: 1000 },
-            //         { name: 'offset', type: 'number', required: false, description: 'Records to skip', placeholder: '0', min: 0 }
-            //     ]
-            // },
-            // {
-            //     id: 'klines',
-            //     category: 'Klines (OHLCV)',
-            //     title: 'Candlestick Data',
-            //     method: 'GET',
-            //     path: '/klines',
-            //     description: 'Get OHLCV (Open, High, Low, Close, Volume) candlestick data for charting.',
-            //     parameters: [
-            //         { name: 'exchange', type: 'select', required: true, description: 'Exchange name', options: ['binance', 'bybit', 'hyperliquid', 'kucoin', 'paradex', 'extended', 'lighter', 'aster', 'pacifica', 'nado'] },
-            //         { name: 'symbol', type: 'text', required: true, description: 'Trading symbol', placeholder: 'BTC' },
-            //         { name: 'interval', type: 'select', required: true, description: 'Candlestick interval', options: ['1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '6h', '8h', '12h', '1d', '3d', '1w', '1M'] },
-            //         { name: 'start', type: 'datetime-local', required: false, description: 'Start time' },
-            //         { name: 'end', type: 'datetime-local', required: false, description: 'End time' },
-            //         { name: 'limit', type: 'number', required: false, description: 'Maximum records', placeholder: '100', min: 1, max: 1000 },
-            //         { name: 'offset', type: 'number', required: false, description: 'Records to skip', placeholder: '0', min: 0 }
-            //     ]
-            // }
+            }
         ];
 
         // Group endpoints by category
@@ -932,9 +870,9 @@
                                         ${param.required ? 'required' : ''}
                                         style="flex: 1;"
                                     >
-                                    <button 
-                                        type="button" 
-                                        class="now-button" 
+                                    <button
+                                        type="button"
+                                        class="now-button"
                                         onclick="setCurrentTimestamp('${param.name}')"
                                         style="background: #3b82f6; color: white; border: none; padding: 8px 12px; border-radius: 4px; font-size: 12px; cursor: pointer; white-space: nowrap;"
                                     >

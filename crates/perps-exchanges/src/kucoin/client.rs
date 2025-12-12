@@ -76,18 +76,20 @@ impl KucoinClient {
 
         // Fetch contracts using a temporary client-like structure
         let url = format!("{}/api/v1/contracts/active", BASE_URL);
-        let response = rate_limiter.execute(|| {
-            let url = url.clone();
-            let http = http.clone();
-            async move {
-                let response = http.get(&url).send().await?;
-                let wrapper: KucoinResponse<Vec<KucoinContract>> = response.json().await?;
-                if wrapper.code != "200000" {
-                    return Err(anyhow!("KuCoin API error: code {}", wrapper.code));
+        let response = rate_limiter
+            .execute(|| {
+                let url = url.clone();
+                let http = http.clone();
+                async move {
+                    let response = http.get(&url).send().await?;
+                    let wrapper: KucoinResponse<Vec<KucoinContract>> = response.json().await?;
+                    if wrapper.code != "200000" {
+                        return Err(anyhow!("KuCoin API error: code {}", wrapper.code));
+                    }
+                    Ok(wrapper.data)
                 }
-                Ok(wrapper.data)
-            }
-        }).await?;
+            })
+            .await?;
 
         // Build contract map
         let contract_map: HashMap<String, KucoinContract> = response
@@ -95,7 +97,10 @@ impl KucoinClient {
             .map(|contract| (contract.symbol.clone(), contract))
             .collect();
 
-        tracing::info!("[KuCoin] Pre-initialized contract cache with {} contracts", contract_map.len());
+        tracing::info!(
+            "[KuCoin] Pre-initialized contract cache with {} contracts",
+            contract_map.len()
+        );
         contract_cache.initialize(contract_map);
 
         // Create WebSocket client with shared and initialized contract cache
@@ -134,7 +139,10 @@ impl KucoinClient {
                     .map(|contract| (contract.symbol.clone(), contract))
                     .collect();
 
-                tracing::info!("[KuCoin] Initialized contract cache with {} contracts", contract_map.len());
+                tracing::info!(
+                    "[KuCoin] Initialized contract cache with {} contracts",
+                    contract_map.len()
+                );
                 Ok(contract_map)
             })
             .await
@@ -624,8 +632,7 @@ impl IPerps for KucoinClient {
                 Decimal::ZERO
             });
         let mut open_interest = Decimal::from_str(&contract.open_interest).unwrap_or(Decimal::ZERO);
-        open_interest =
-            open_interest * Decimal::from_f64(contract.multiplier).unwrap_or(Decimal::ZERO);
+        open_interest *= Decimal::from_f64(contract.multiplier).unwrap_or(Decimal::ZERO);
 
         Ok(Ticker {
             symbol: contract.symbol,

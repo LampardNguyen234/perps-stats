@@ -184,7 +184,7 @@ async fn export_to_csv(
         for row in &rows {
             let mut record = Vec::new();
             for col in row.columns() {
-                let value = format_cell_value(&row, col.name());
+                let value = format_cell_value(row, col.name());
                 record.push(value);
             }
             wtr.write_record(&record)?;

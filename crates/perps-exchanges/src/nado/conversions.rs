@@ -25,7 +25,7 @@ pub fn pair_to_market(pair: &Pair) -> Result<Market> {
 
 /// Merge Nado TickerData, ContractData, and best bid/ask to create a complete Ticker
 pub fn merge_ticker_contract_and_orderbook(
-    ticker: &TickerData, 
+    ticker: &TickerData,
     contract: &ContractData,
     best_bid: Option<&OrderbookLevel>,
     best_ask: Option<&OrderbookLevel>,
@@ -44,8 +44,9 @@ pub fn merge_ticker_contract_and_orderbook(
 
     // Nado API returns percentage as number (e.g., 2.32 for 2.32%)
     // Convert to decimal form (e.g., 2.32 -> 0.0232)
-    let price_change_pct =
-        Decimal::from_f64(ticker.price_change_percent_24h).unwrap_or(Decimal::ZERO) / Decimal::from(100);
+    let price_change_pct = Decimal::from_f64(ticker.price_change_percent_24h)
+        .unwrap_or(Decimal::ZERO)
+        / Decimal::from(100);
 
     // Calculate price change in absolute terms
     let price_change_24h = if last_price > Decimal::ZERO && price_change_pct != Decimal::ZERO {
@@ -109,8 +110,9 @@ pub fn merge_ticker_and_contract(ticker: &TickerData, contract: &ContractData) -
 
     // Nado API returns percentage as number (e.g., 2.32 for 2.32%)
     // Convert to decimal form (e.g., 2.32 -> 0.0232)
-    let price_change_pct =
-        Decimal::from_f64(ticker.price_change_percent_24h).unwrap_or(Decimal::ZERO) / Decimal::from(100);
+    let price_change_pct = Decimal::from_f64(ticker.price_change_percent_24h)
+        .unwrap_or(Decimal::ZERO)
+        / Decimal::from(100);
 
     // Calculate price change in absolute terms
     let price_change_24h = if last_price > Decimal::ZERO && price_change_pct != Decimal::ZERO {
@@ -246,8 +248,9 @@ pub fn contract_to_market_stats(contract: &ContractData) -> Result<MarketStats> 
 
     // Nado API returns percentage as number (e.g., 2.32 for 2.32%)
     // Convert to decimal form (e.g., 2.32 -> 0.0232)
-    let price_change_pct =
-        Decimal::from_f64(contract.price_change_percent_24h).unwrap_or(Decimal::ZERO) / Decimal::from(100);
+    let price_change_pct = Decimal::from_f64(contract.price_change_percent_24h)
+        .unwrap_or(Decimal::ZERO)
+        / Decimal::from(100);
 
     let price_change_24h = if last_price > Decimal::ZERO && price_change_pct != Decimal::ZERO {
         last_price * price_change_pct

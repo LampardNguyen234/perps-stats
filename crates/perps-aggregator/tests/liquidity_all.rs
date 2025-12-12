@@ -27,7 +27,9 @@ impl IPerps for MockExchange {
     }
 
     async fn get_orderbook(&self, _symbol: &str, _depth: u32) -> Result<MultiResolutionOrderbook> {
-        Ok(MultiResolutionOrderbook::from_single(self.orderbook.clone()))
+        Ok(MultiResolutionOrderbook::from_single(
+            self.orderbook.clone(),
+        ))
     }
 
     // Unused methods
@@ -123,7 +125,8 @@ async fn test_compute_liquidity_all() -> Result<()> {
         orderbook: orderbook.clone(),
     };
 
-    let exchanges: Vec<Box<dyn IPerps + Send + Sync>> = vec![Box::new(mock_binance), Box::new(mock_lighter)];
+    let exchanges: Vec<Box<dyn IPerps + Send + Sync>> =
+        vec![Box::new(mock_binance), Box::new(mock_lighter)];
 
     let symbol = "BTC-USDT";
     let results = aggregator

@@ -1,5 +1,5 @@
-use super::ws_types::*;
 use super::types::KucoinContract;
+use super::ws_types::*;
 use crate::cache::ContractCache;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
@@ -7,8 +7,8 @@ use chrono::{TimeZone, Utc};
 use futures::{SinkExt, StreamExt};
 use perps_core::streaming::*;
 use perps_core::types::*;
-use rust_decimal::Decimal;
 use rust_decimal::prelude::FromPrimitive;
+use rust_decimal::Decimal;
 use std::str::FromStr;
 use tokio::net::TcpStream;
 use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
@@ -137,7 +137,7 @@ impl KuCoinWsClient {
                 .unwrap_or(Decimal::ZERO),
             best_bid_qty: ws_ticker
                 .best_bid_size
-                .map(|s| Decimal::from(s))
+                .map(Decimal::from)
                 .unwrap_or(Decimal::ZERO),
             best_ask_price: ws_ticker
                 .best_ask_price
@@ -147,7 +147,7 @@ impl KuCoinWsClient {
                 .unwrap_or(Decimal::ZERO),
             best_ask_qty: ws_ticker
                 .best_ask_size
-                .map(|s| Decimal::from(s))
+                .map(Decimal::from)
                 .unwrap_or(Decimal::ZERO),
             volume_24h: Decimal::ZERO, // Not available in ticker stream
             turnover_24h: Decimal::ZERO,
@@ -625,7 +625,10 @@ impl OrderbookStreamer for KuCoinWsClient {
         let contract = match self.contract_cache.get(symbol).await {
             Some(c) => c,
             None => {
-                tracing::warn!("[KuCoin] Contract info not found for {}, quantities will not be converted", symbol);
+                tracing::warn!(
+                    "[KuCoin] Contract info not found for {}, quantities will not be converted",
+                    symbol
+                );
                 // Return error - we need contract info for proper conversion
                 return Err(anyhow!("Contract info required for symbol: {}", symbol));
             }

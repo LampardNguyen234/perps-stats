@@ -180,7 +180,7 @@ async fn fetch_table_stats(pool: &PgPool) -> Result<serde_json::Value> {
         let mut max_ts: Option<DateTime<Utc>> = None;
         let mut data_age_minutes: Option<i64> = None;
 
-        if vec![
+        if [
             "tickers",
             "orderbooks",
             "trades",
@@ -207,7 +207,7 @@ async fn fetch_table_stats(pool: &PgPool) -> Result<serde_json::Value> {
 
         // Get per-exchange breakdown for time-series tables
         let mut exchange_breakdown = json!({});
-        if vec![
+        if [
             "tickers",
             "orderbooks",
             "trades",

@@ -428,7 +428,10 @@ impl MultiResolutionOrderbook {
         timestamp: DateTime<Utc>,
         orderbooks: Vec<Orderbook>,
     ) -> Self {
-        assert!(!orderbooks.is_empty(), "MultiResolutionOrderbook must contain at least one orderbook");
+        assert!(
+            !orderbooks.is_empty(),
+            "MultiResolutionOrderbook must contain at least one orderbook"
+        );
         Self {
             symbol,
             timestamp,
@@ -1255,8 +1258,11 @@ mod tests {
             }],
         };
 
-        let multi =
-            MultiResolutionOrderbook::from_multiple("BTC".to_string(), Utc::now(), vec![fine.clone(), coarse.clone()]);
+        let multi = MultiResolutionOrderbook::from_multiple(
+            "BTC".to_string(),
+            Utc::now(),
+            vec![fine.clone(), coarse.clone()],
+        );
 
         // Small trade ($5K) - both orderbooks can handle it
         // Fine (index 0): ~5 bps
@@ -1267,11 +1273,18 @@ mod tests {
 
         // Verify it returns slippage from fine (index 0), not coarse
         let fine_slippage = fine.get_slippage(dec!(5000), OrderSide::Buy).unwrap();
-        assert_eq!(multi_slippage.unwrap(), fine_slippage, "Should prioritize fine orderbook (index 0)");
+        assert_eq!(
+            multi_slippage.unwrap(),
+            fine_slippage,
+            "Should prioritize fine orderbook (index 0)"
+        );
 
         // Verify fine slippage is much better than coarse
         let coarse_slippage = coarse.get_slippage(dec!(5000), OrderSide::Buy).unwrap();
-        assert!(fine_slippage < coarse_slippage, "Fine should have better slippage than coarse");
+        assert!(
+            fine_slippage < coarse_slippage,
+            "Fine should have better slippage than coarse"
+        );
     }
 
     #[test]
@@ -1304,8 +1317,11 @@ mod tests {
             }],
         };
 
-        let multi =
-            MultiResolutionOrderbook::from_multiple("BTC".to_string(), Utc::now(), vec![fine, coarse]);
+        let multi = MultiResolutionOrderbook::from_multiple(
+            "BTC".to_string(),
+            Utc::now(),
+            vec![fine, coarse],
+        );
 
         // Large trade ($600K) - only coarse orderbook has enough depth
         // Fine can't handle it (only $10K depth), coarse can (>$1M depth)
@@ -1363,8 +1379,15 @@ mod tests {
         let medium_slippage = medium.get_slippage(dec!(50000), OrderSide::Buy).unwrap();
         let coarse_slippage = coarse.get_slippage(dec!(50000), OrderSide::Buy).unwrap();
 
-        assert!(medium_slippage < coarse_slippage, "Medium should have lower slippage than coarse");
-        assert_eq!(multi_slippage.unwrap(), medium_slippage, "Should prioritize medium (index 0)");
+        assert!(
+            medium_slippage < coarse_slippage,
+            "Medium should have lower slippage than coarse"
+        );
+        assert_eq!(
+            multi_slippage.unwrap(),
+            medium_slippage,
+            "Should prioritize medium (index 0)"
+        );
     }
 
     #[test]
@@ -1407,12 +1430,15 @@ mod tests {
             }],
         };
 
-        let multi =
-            MultiResolutionOrderbook::from_multiple("BTC".to_string(), Utc::now(), vec![fine, coarse]);
+        let multi = MultiResolutionOrderbook::from_multiple(
+            "BTC".to_string(),
+            Utc::now(),
+            vec![fine, coarse],
+        );
 
         // bid_notional should return the maximum across all resolutions
         let notional = multi.bid_notional(dec!(100)); // 100 bps = 1% spread
-        // Coarse orderbook should provide more liquidity
+                                                      // Coarse orderbook should provide more liquidity
         assert!(notional > dec!(100000)); // More than $100K
     }
 
@@ -1456,12 +1482,15 @@ mod tests {
             ],
         };
 
-        let multi =
-            MultiResolutionOrderbook::from_multiple("BTC".to_string(), Utc::now(), vec![fine, coarse]);
+        let multi = MultiResolutionOrderbook::from_multiple(
+            "BTC".to_string(),
+            Utc::now(),
+            vec![fine, coarse],
+        );
 
         // ask_notional should return the maximum across all resolutions
         let notional = multi.ask_notional(dec!(100)); // 100 bps = 1% spread
-        // Coarse orderbook should provide more liquidity
+                                                      // Coarse orderbook should provide more liquidity
         assert!(notional > dec!(100000)); // More than $100K
     }
 
@@ -1605,13 +1634,20 @@ mod tests {
         assert!(small_trade.is_some(), "Small trade should be feasible");
         // Should pick fine (index 0, prioritized)
         let fine_slippage = fine.get_slippage(dec!(5000), OrderSide::Buy).unwrap();
-        assert_eq!(small_trade.unwrap(), fine_slippage, "Should pick fine orderbook (index 0) for small trade");
+        assert_eq!(
+            small_trade.unwrap(),
+            fine_slippage,
+            "Should pick fine orderbook (index 0) for small trade"
+        );
 
         // Test 2: Medium trade ($50K) - only medium and coarse feasible
         let medium_trade = multi.get_slippage(dec!(50000), OrderSide::Buy);
         assert!(medium_trade.is_some(), "Medium trade should be feasible");
         // Fine can't handle $50K (only $10K depth), so should pick medium
-        assert!(fine.get_slippage(dec!(50000), OrderSide::Buy).is_none(), "Fine should be infeasible");
+        assert!(
+            fine.get_slippage(dec!(50000), OrderSide::Buy).is_none(),
+            "Fine should be infeasible"
+        );
         let medium_slippage = medium.get_slippage(dec!(50000), OrderSide::Buy).unwrap();
         assert_eq!(
             medium_trade.unwrap(),
@@ -1623,8 +1659,14 @@ mod tests {
         let large_trade = multi.get_slippage(dec!(200000), OrderSide::Buy);
         assert!(large_trade.is_some(), "Large trade should be feasible");
         // Both fine and medium can't handle $200K
-        assert!(fine.get_slippage(dec!(200000), OrderSide::Buy).is_none(), "Fine should be infeasible");
-        assert!(medium.get_slippage(dec!(200000), OrderSide::Buy).is_none(), "Medium should be infeasible");
+        assert!(
+            fine.get_slippage(dec!(200000), OrderSide::Buy).is_none(),
+            "Fine should be infeasible"
+        );
+        assert!(
+            medium.get_slippage(dec!(200000), OrderSide::Buy).is_none(),
+            "Medium should be infeasible"
+        );
         let coarse_slippage = coarse.get_slippage(dec!(200000), OrderSide::Buy).unwrap();
         assert_eq!(
             large_trade.unwrap(),
@@ -1634,7 +1676,10 @@ mod tests {
 
         // Test 4: Impossible trade ($1M) - no resolution feasible
         let impossible_trade = multi.get_slippage(dec!(1000000), OrderSide::Buy);
-        assert!(impossible_trade.is_none(), "Trade exceeding all resolutions should return None");
+        assert!(
+            impossible_trade.is_none(),
+            "Trade exceeding all resolutions should return None"
+        );
         // Verify all resolutions are indeed infeasible
         assert!(fine.get_slippage(dec!(1000000), OrderSide::Buy).is_none());
         assert!(medium.get_slippage(dec!(1000000), OrderSide::Buy).is_none());

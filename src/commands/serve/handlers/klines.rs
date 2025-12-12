@@ -1,5 +1,7 @@
-use axum::{extract::{Query, State}, Json};
-use chrono::Utc;
+use axum::{
+    extract::{Query, State},
+    Json,
+};
 
 use crate::commands::serve::{
     middleware::AppError,
@@ -11,6 +13,7 @@ use perps_database::Repository;
 
 /// GET /api/v1/klines
 /// Get OHLCV candlestick data
+#[allow(dead_code)]
 pub async fn get_klines(
     State(state): State<AppState>,
     Query(query): Query<KlineQuery>,

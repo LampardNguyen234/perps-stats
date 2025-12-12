@@ -1,4 +1,4 @@
-/// Utility functions for common operations across the perps-stats project
+//! Utility functions for common operations across the perps-stats project
 
 /// Normalize kline interval to a standard global format.
 ///
