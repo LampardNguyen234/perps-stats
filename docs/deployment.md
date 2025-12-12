@@ -4,7 +4,7 @@ This guide covers deploying `perps-stats` in production environments.
 
 ## Prerequisites
 
-- Rust 1.75+
+- Rust 1.91+
 - PostgreSQL 15+
 
 ## Installation

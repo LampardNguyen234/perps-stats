@@ -2,7 +2,7 @@
 # Optimized for production deployment with API server enabled
 
 # Stage 1: Builder - Compile Rust application
-FROM rust:1.75-slim-bookworm AS builder
+FROM rust:1.91.0 AS builder
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y \
@@ -47,8 +47,8 @@ WORKDIR /app
 # Copy binary from builder
 COPY --from=builder /app/target/release/perps-stats /app/perps-stats
 
-# Copy default symbols file (if exists)
-COPY --chown=perps:perps symbols.txt /etc/perps-stats/symbols.txt 2>/dev/null || echo "BTC" > /etc/perps-stats/symbols.txt
+# Copy default symbols file
+COPY --chown=perps:perps symbols.txt /apt/symbols.txt
 
 # Switch to non-root user
 USER perps
@@ -56,7 +56,7 @@ USER perps
 # Environment variables with defaults
 ENV DATABASE_URL="" \
     RUST_LOG="info" \
-    SYMBOLS_FILE="/etc/perps-stats/symbols.txt" \
+    SYMBOLS_FILE="/apt/symbols.txt" \
     EXCHANGES="extended,aster,pacifica,lighter,hyperliquid,paradex,binance,nado" \
     API_PORT="9999" \
     API_HOST="0.0.0.0" \
@@ -80,5 +80,4 @@ CMD ["/bin/sh", "-c", "/app/perps-stats start \
     --api-host ${API_HOST} \
     --api-port ${API_PORT} \
     --pool-size ${POOL_SIZE} \
-    --report-interval ${REPORT_INTERVAL} \
-    $([ \"${ENABLE_BACKFILL}\" = \"true\" ] && echo \"--enable-backfill\" || echo \"\")"]
+    --report-interval ${REPORT_INTERVAL}"]

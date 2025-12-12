@@ -14,7 +14,7 @@ This guide covers deploying the Perps Stats REST API server. For database setup,
 
 ## Prerequisites
 
-- **Rust**: 1.75 or later
+- **Rust**: 1.91 or later
 - **PostgreSQL**: Database already set up and migrated (see [Deployment Guide](deployment.md))
 - **Memory**: Minimum 2GB RAM (4GB+ recommended for production)
 
