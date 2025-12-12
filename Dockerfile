@@ -60,7 +60,7 @@ ENV DATABASE_URL="" \
     EXCHANGES="extended,aster,pacifica,lighter,hyperliquid,paradex,binance,nado" \
     API_PORT="9999" \
     API_HOST="0.0.0.0" \
-    POOL_SIZE="30" \
+    POOL_SIZE="100" \
     REPORT_INTERVAL="30" \
     ENABLE_BACKFILL="false"
 
