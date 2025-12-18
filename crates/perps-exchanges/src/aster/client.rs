@@ -222,7 +222,13 @@ impl IPerps for AsterClient {
 
     fn parse_symbol(&self, symbol: &str) -> String {
         // Aster uses Binance-compatible format: BTC -> BTCUSDT
-        format!("{}USDT", symbol.to_uppercase())
+        // Idempotent: if already in exchange format (ends with USDT), return as-is
+        let upper = symbol.to_uppercase();
+        if upper.ends_with("USDT") {
+            upper
+        } else {
+            format!("{}USDT", upper)
+        }
     }
 
     async fn get_markets(&self) -> Result<Vec<Market>> {
@@ -261,17 +267,20 @@ impl IPerps for AsterClient {
     }
 
     async fn get_ticker(&self, symbol: &str) -> Result<Ticker> {
+        // Parse symbol to exchange format (idempotent: BTCUSDT -> BTCUSDT, BTC -> BTCUSDT)
+        let parsed_symbol = self.parse_symbol(symbol);
+
         // Aster requires combining 24hr ticker, mark price, and book ticker for complete data
         let ticker: Ticker24hr = self
-            .get(&format!("/fapi/v1/ticker/24hr?symbol={}", symbol))
+            .get(&format!("/fapi/v1/ticker/24hr?symbol={}", parsed_symbol))
             .await?;
 
         let mark_price_data: MarkPrice = self
-            .get(&format!("/fapi/v1/premiumIndex?symbol={}", symbol))
+            .get(&format!("/fapi/v1/premiumIndex?symbol={}", parsed_symbol))
             .await?;
 
         let book_ticker: BookTicker = self
-            .get(&format!("/fapi/v1/ticker/bookTicker?symbol={}", symbol))
+            .get(&format!("/fapi/v1/ticker/bookTicker?symbol={}", parsed_symbol))
             .await?;
 
         let last_price = Decimal::from_str(&ticker.last_price)?;
@@ -382,17 +391,19 @@ impl IPerps for AsterClient {
     }
 
     async fn get_orderbook(&self, symbol: &str, depth: u32) -> Result<MultiResolutionOrderbook> {
+        let parsed_symbol = self.parse_symbol(symbol);
+
         // Check if StreamManager is available
         if let Some(ref manager) = self.stream_manager {
             // Subscribe to symbol (idempotent - no-op if already subscribed)
-            manager.subscribe(symbol.to_string()).await?;
+            manager.subscribe(parsed_symbol.clone()).await?;
 
             // Get orderbook from cache or REST fallback
             // StreamManager handles all complexity: caching, staleness checks, WebSocket streaming
             let client_clone = self.clone();
-            let symbol_clone = symbol.to_string();
+            let symbol_clone = parsed_symbol.clone();
             let orderbook = manager
-                .get_orderbook(symbol, depth, || async move {
+                .get_orderbook(&parsed_symbol, depth, || async move {
                     // REST API fallback closure - returns (Orderbook, lastUpdateId) for snapshot initialization
                     client_clone
                         .fetch_orderbook_snapshot_with_update_id(&symbol_clone, depth)
@@ -404,16 +415,17 @@ impl IPerps for AsterClient {
         }
 
         // Fallback when StreamManager is not available: direct REST API call
-        let orderbook = self.fetch_orderbook_rest(symbol, depth).await?;
+        let orderbook = self.fetch_orderbook_rest(&parsed_symbol, depth).await?;
         Ok(MultiResolutionOrderbook::from_single(orderbook))
     }
 
     async fn get_recent_trades(&self, symbol: &str, limit: u32) -> Result<Vec<Trade>> {
+        let parsed_symbol = self.parse_symbol(symbol);
         let limit = limit.min(1000); // Aster max limit is 1000
         let trades: Vec<crate::aster::types::Trade> = self
             .get(&format!(
                 "/fapi/v1/trades?symbol={}&limit={}",
-                symbol, limit
+                parsed_symbol, limit
             ))
             .await?;
 
@@ -439,8 +451,9 @@ impl IPerps for AsterClient {
     }
 
     async fn get_funding_rate(&self, symbol: &str) -> Result<FundingRate> {
+        let parsed_symbol = self.parse_symbol(symbol);
         let rates: Vec<crate::aster::types::FundingRate> = self
-            .get(&format!("/fapi/v1/fundingRate?symbol={}&limit=1", symbol))
+            .get(&format!("/fapi/v1/fundingRate?symbol={}&limit=1", parsed_symbol))
             .await?;
 
         let rate = rates
@@ -466,7 +479,8 @@ impl IPerps for AsterClient {
         end_time: Option<DateTime<Utc>>,
         limit: Option<u32>,
     ) -> Result<Vec<FundingRate>> {
-        let mut endpoint = format!("/fapi/v1/fundingRate?symbol={}", symbol);
+        let parsed_symbol = self.parse_symbol(symbol);
+        let mut endpoint = format!("/fapi/v1/fundingRate?symbol={}", parsed_symbol);
 
         if let Some(start) = start_time {
             endpoint.push_str(&format!("&startTime={}", start.timestamp_millis()));
@@ -499,8 +513,9 @@ impl IPerps for AsterClient {
     }
 
     async fn get_open_interest(&self, symbol: &str) -> Result<OpenInterest> {
+        let parsed_symbol = self.parse_symbol(symbol);
         let oi: crate::aster::types::OpenInterest = self
-            .get(&format!("/fapi/v1/openInterest?symbol={}", symbol))
+            .get(&format!("/fapi/v1/openInterest?symbol={}", parsed_symbol))
             .await?;
 
         Ok(OpenInterest {
@@ -519,6 +534,8 @@ impl IPerps for AsterClient {
         end_time: Option<DateTime<Utc>>,
         limit: Option<u32>,
     ) -> Result<Vec<Kline>> {
+        let parsed_symbol = self.parse_symbol(symbol);
+
         // Aster supports same intervals as Binance
         let interval = match interval {
             "1m" | "3m" | "5m" | "15m" | "30m" | "1h" | "2h" | "4h" | "6h" | "8h" | "12h"
@@ -531,7 +548,7 @@ impl IPerps for AsterClient {
             }
         };
 
-        let mut endpoint = format!("/fapi/v1/klines?symbol={}&interval={}", symbol, interval);
+        let mut endpoint = format!("/fapi/v1/klines?symbol={}&interval={}", parsed_symbol, interval);
 
         if let Some(start) = start_time {
             endpoint.push_str(&format!("&startTime={}", start.timestamp_millis()));
@@ -758,6 +775,19 @@ mod tests {
         assert_eq!(client.parse_symbol("BTC"), "BTCUSDT");
         assert_eq!(client.parse_symbol("ETH"), "ETHUSDT");
         assert_eq!(client.parse_symbol("btc"), "BTCUSDT");
+    }
+
+    #[tokio::test]
+    async fn test_parse_symbol_idempotent() {
+        let client = AsterClient::new_rest_only();
+        // Test idempotency: parsing already-formatted symbols should return as-is
+        assert_eq!(client.parse_symbol("BTCUSDT"), "BTCUSDT");
+        assert_eq!(client.parse_symbol("ETHUSDT"), "ETHUSDT");
+        assert_eq!(client.parse_symbol("btcusdt"), "BTCUSDT");
+        // Double parsing should be idempotent
+        let parsed_once = client.parse_symbol("BTC");
+        let parsed_twice = client.parse_symbol(&parsed_once);
+        assert_eq!(parsed_once, parsed_twice);
     }
 
     #[test]
