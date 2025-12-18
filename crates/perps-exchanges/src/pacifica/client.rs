@@ -724,7 +724,6 @@ mod tests {
         );
         let orderbook = orderbook.unwrap();
         assert_eq!(orderbook.symbol, "BTC");
-        assert!(!orderbook.bids.is_empty());
-        assert!(!orderbook.asks.is_empty());
+        assert!(!orderbook.orderbooks.is_empty());
     }
 }

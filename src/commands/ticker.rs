@@ -651,7 +651,7 @@ fn display_table(ticker: &Ticker, exchange: &str) -> Result<()> {
             &format!(
                 "{:.2} ({:.2}%)",
                 ticker.price_change_24h,
-                ticker.price_change_pct * rust_decimal::Decimal::new(100, 0)
+                ticker.price_change_pct * rust_decimal::Decimal::from(100)
             ),
             format::Alignment::RIGHT,
         ),

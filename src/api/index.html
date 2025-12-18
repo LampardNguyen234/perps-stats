@@ -583,6 +583,7 @@
     <script>
         // API Configuration
         const API_BASE_URL = window.location.origin + '/api/v1';
+        let availableExchanges = [];
 
         // API Endpoints Configuration
         const endpoints = [
@@ -630,7 +631,7 @@
                 path: '/tickers',
                 description: 'Get the most recent ticker data for a symbol. Symbol is required. With exchange: returns ticker for that specific exchange/symbol combination (single result). Without exchange: returns latest ticker from each exchange for the symbol (multiple results).',
                 parameters: [
-                    { name: 'exchange', type: 'select', required: false, description: 'Exchange name (optional filter)', options: ['binance', 'bybit', 'hyperliquid', 'kucoin', 'paradex', 'extended', 'lighter', 'aster', 'pacifica', 'nado'] },
+                    { name: 'exchange', type: 'select', required: false, description: 'Exchange name (optional filter)', options: 'dynamic' },
                     { name: 'symbol', type: 'text', required: true, description: 'Trading symbol (required)', placeholder: 'BTC' }
                 ]
             },
@@ -642,7 +643,7 @@
                 path: '/tickers/history',
                 description: 'Get historical ticker data within a time range for a symbol. Symbol is required. With exchange: returns tickers for that specific exchange/symbol combination. Without exchange: returns tickers for that symbol across all exchanges.',
                 parameters: [
-                    { name: 'exchange', type: 'select', required: false, description: 'Exchange name (optional filter)', options: ['binance', 'bybit', 'hyperliquid', 'kucoin', 'paradex', 'extended', 'lighter', 'aster', 'pacifica', 'nado'] },
+                    { name: 'exchange', type: 'select', required: false, description: 'Exchange name (optional filter)', options: 'dynamic' },
                     { name: 'symbol', type: 'text', required: true, description: 'Trading symbol (required)', placeholder: 'BTC' },
                     { name: 'start', type: 'datetime-local', required: false, description: 'Start time - Unix timestamp in seconds (defaults to 24 hours ago)' },
                     { name: 'end', type: 'datetime-local', required: false, description: 'End time - Unix timestamp in seconds (defaults to now)' },
@@ -658,7 +659,7 @@
                 path: '/liquidity',
                 description: 'Get the most recent liquidity depth statistics for a symbol. Symbol is required. With exchange: returns liquidity for that specific exchange/symbol combination (single result). Without exchange: returns latest liquidity from each exchange for the symbol (multiple results).',
                 parameters: [
-                    { name: 'exchange', type: 'select', required: false, description: 'Exchange name (optional filter)', options: ['binance', 'bybit', 'hyperliquid', 'kucoin', 'paradex', 'extended', 'lighter', 'aster', 'pacifica', 'nado'] },
+                    { name: 'exchange', type: 'select', required: false, description: 'Exchange name (optional filter)', options: 'dynamic' },
                     { name: 'symbol', type: 'text', required: true, description: 'Trading symbol (required)', placeholder: 'BTC' }
                 ]
             },
@@ -670,7 +671,7 @@
                 path: '/liquidity/history',
                 description: 'Get historical liquidity depth data within a time range for a symbol. Symbol is required. With exchange: returns liquidity for that specific exchange/symbol combination. Without exchange: returns liquidity for that symbol across all exchanges.',
                 parameters: [
-                    { name: 'exchange', type: 'select', required: false, description: 'Exchange name (optional filter)', options: ['binance', 'bybit', 'hyperliquid', 'kucoin', 'paradex', 'extended', 'lighter', 'aster', 'pacifica', 'nado'] },
+                    { name: 'exchange', type: 'select', required: false, description: 'Exchange name (optional filter)', options: 'dynamic' },
                     { name: 'symbol', type: 'text', required: true, description: 'Trading symbol (required)', placeholder: 'BTC' },
                     { name: 'start', type: 'datetime-local', required: false, description: 'Start time - Unix timestamp in seconds' },
                     { name: 'end', type: 'datetime-local', required: false, description: 'End time - Unix timestamp in seconds' },
@@ -686,7 +687,7 @@
                 path: '/orderbooks',
                 description: 'Get the most recent orderbook snapshot for a symbol. Symbol is required. With exchange: returns orderbook for that specific exchange/symbol combination (single result). Without exchange: returns latest orderbook from each exchange for the symbol (multiple results).',
                 parameters: [
-                    { name: 'exchange', type: 'select', required: false, description: 'Exchange name (optional filter)', options: ['binance', 'bybit', 'hyperliquid', 'kucoin', 'paradex', 'extended', 'lighter', 'aster', 'pacifica', 'nado'] },
+                    { name: 'exchange', type: 'select', required: false, description: 'Exchange name (optional filter)', options: 'dynamic' },
                     { name: 'symbol', type: 'text', required: true, description: 'Trading symbol (required)', placeholder: 'BTC' }
                 ]
             },
@@ -698,7 +699,7 @@
                 path: '/orderbooks/history',
                 description: 'Get historical orderbook snapshots within a time range for a symbol. Symbol is required. With exchange: returns orderbooks for that specific exchange/symbol combination. Without exchange: returns orderbooks for that symbol across all exchanges.',
                 parameters: [
-                    { name: 'exchange', type: 'select', required: false, description: 'Exchange name (optional filter)', options: ['binance', 'bybit', 'hyperliquid', 'kucoin', 'paradex', 'extended', 'lighter', 'aster', 'pacifica', 'nado'] },
+                    { name: 'exchange', type: 'select', required: false, description: 'Exchange name (optional filter)', options: 'dynamic' },
                     { name: 'symbol', type: 'text', required: true, description: 'Trading symbol (required)', placeholder: 'BTC' },
                     { name: 'start', type: 'datetime-local', required: false, description: 'Start time - Unix timestamp in seconds' },
                     { name: 'end', type: 'datetime-local', required: false, description: 'End time - Unix timestamp in seconds' },
@@ -714,7 +715,7 @@
                 path: '/slippage',
                 description: 'Get the most recent slippage calculations for a symbol and trade amount. Symbol and amount are required. With exchange: returns slippage for that specific exchange/symbol/amount combination. Without exchange: returns latest slippage from each exchange for the symbol/amount.',
                 parameters: [
-                    { name: 'exchange', type: 'select', required: false, description: 'Exchange name (optional filter)', options: ['binance', 'bybit', 'hyperliquid', 'kucoin', 'paradex', 'extended', 'lighter', 'aster', 'pacifica', 'nado'] },
+                    { name: 'exchange', type: 'select', required: false, description: 'Exchange name (optional filter)', options: 'dynamic' },
                     { name: 'symbol', type: 'text', required: true, description: 'Trading symbol (required)', placeholder: 'BTC' },
                     { name: 'amount', type: 'text', required: true, description: 'Trade amount in USD (required)', placeholder: '10000' }
                 ]
@@ -727,7 +728,7 @@
                 path: '/slippage/history',
                 description: 'Get historical slippage calculations within a time range for a symbol and trade amount. Symbol and amount are required. With exchange: returns slippage for that specific exchange/symbol/amount combination. Without exchange: returns slippage for that symbol/amount across all exchanges.',
                 parameters: [
-                    { name: 'exchange', type: 'select', required: false, description: 'Exchange name (optional filter)', options: ['binance', 'bybit', 'hyperliquid', 'kucoin', 'paradex', 'extended', 'lighter', 'aster', 'pacifica', 'nado'] },
+                    { name: 'exchange', type: 'select', required: false, description: 'Exchange name (optional filter)', options: 'dynamic' },
                     { name: 'symbol', type: 'text', required: true, description: 'Trading symbol (required)', placeholder: 'BTC' },
                     { name: 'amount', type: 'text', required: true, description: 'Trade amount in USD (required)', placeholder: '10000' },
                     { name: 'start', type: 'datetime-local', required: false, description: 'Start time - Unix timestamp in seconds' },
@@ -741,8 +742,23 @@
         // Group endpoints by category
         const categories = [...new Set(endpoints.map(e => e.category))];
 
+        // Fetch available exchanges from API
+        async function loadExchanges() {
+            try {
+                const response = await fetch(`${API_BASE_URL}/exchanges`);
+                if (response.ok) {
+                    const exchanges = await response.json();
+                    availableExchanges = exchanges.map(e => e.name).sort();
+                }
+            } catch (error) {
+                console.error('Failed to load exchanges:', error);
+                availableExchanges = [];
+            }
+        }
+
         // Initialize
-        function init() {
+        async function init() {
+            await loadExchanges();
             renderSidebar();
             showEndpoint(endpoints[0].id);
         }
@@ -848,12 +864,13 @@
             } else {
                 const formHtml = endpoint.parameters.map(param => {
                     if (param.type === 'select') {
+                        const options = param.options === 'dynamic' ? availableExchanges : param.options;
                         return `
                             <div class="form-group">
                                 <label class="form-label">${param.name}${param.required ? ' *' : ''}</label>
                                 <select class="form-select" id="${param.name}" ${param.required ? 'required' : ''}>
                                     <option value="">Select ${param.description}</option>
-                                    ${param.options.map(opt => `<option value="${opt}">${opt}</option>`).join('')}
+                                    ${options.map(opt => `<option value="${opt}">${opt}</option>`).join('')}
                                 </select>
                             </div>
                         `;

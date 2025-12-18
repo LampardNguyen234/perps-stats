@@ -646,8 +646,7 @@ mod tests {
         let client = HyperliquidClient::default();
         let orderbook = client.get_orderbook("BTC", 10).await.unwrap();
         assert_eq!(orderbook.symbol, "BTC");
-        assert!(!orderbook.bids.is_empty());
-        assert!(!orderbook.asks.is_empty());
+        assert!(!orderbook.orderbooks.is_empty());
     }
 
     #[tokio::test]

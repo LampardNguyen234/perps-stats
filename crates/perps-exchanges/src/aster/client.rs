@@ -959,7 +959,7 @@ mod tests {
         assert!(result.is_none());
 
         // This simulates the fallback behavior in get_all_tickers
-        let (bid, bid_qty, ask, ask_qty) = if result.is_some() {
+        let (bid, _bid_qty, ask, _ask_qty) = if result.is_some() {
             (Decimal::ONE, Decimal::ONE, Decimal::ONE, Decimal::ONE)
         } else {
             (Decimal::ZERO, Decimal::ZERO, Decimal::ZERO, Decimal::ZERO)

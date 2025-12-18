@@ -57,7 +57,7 @@ USER perps
 ENV DATABASE_URL="" \
     RUST_LOG="info" \
     SYMBOLS_FILE="/apt/symbols.txt" \
-    EXCHANGES="extended,aster,pacifica,lighter,hyperliquid,paradex,binance,nado" \
+    EXCHANGES="extended,aster,pacifica,lighter,hyperliquid,paradex,binance,nado,gravity" \
     API_PORT="9999" \
     API_HOST="0.0.0.0" \
     POOL_SIZE="100" \

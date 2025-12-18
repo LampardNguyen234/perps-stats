@@ -4,7 +4,7 @@ A Rust-based backend service for retrieving and serving perpetual futures (perps
 
 ## Features
 
-- **Multi-Exchange Support**: Aster, Binance, Bybit, Extended, Hyperliquid, KuCoin, Lighter, Pacifica, Paradex
+- **Multi-Exchange Support**: Aster, Binance, Bybit, Extended, Gravity, Hyperliquid, KuCoin, Lighter, Nado, Pacifica, Paradex
 - **Historical Data Backfilling**: Intelligent backfill with auto-discovery and gap detection
 - **Real-Time Streaming**: WebSocket-based data ingestion for tickers, trades, orderbooks, funding rates
 - **Unified Data Collection**: Automated periodic fetching with the `start` command
@@ -28,9 +28,9 @@ For detailed architecture information, see [docs/architecture.md](docs/architect
 
 ### Prerequisites
 
-- Rust 1.70+ (install via [rustup](https://rustup.rs/))
-- PostgreSQL 14+ with TimescaleDB extension
-- Docker (optional, for running PostgreSQL)
+- Rust 1.91+ (install via [rustup](https://rustup.rs/))
+- PostgreSQL 17+ with TimescaleDB extension
+- Docker (optional)
 
 ### Installation
 
@@ -89,30 +89,6 @@ cargo run -- backfill -s BTC,ETH --start-date 2024-01-01 --end-date 2024-12-31
 
 # Backfill specific exchanges
 cargo run -- backfill --exchanges binance,hyperliquid -s BTC
-
-# Custom intervals and data types
-cargo run -- backfill -s BTC --intervals 1h,4h,1d --data-types klines,funding_rates
-```
-
-#### Stream Real-Time Data
-```bash
-# Stream tickers and trades
-cargo run -- stream -s BTC --data-types ticker,trade
-
-# Stream with database storage
-DATABASE_URL=postgres://localhost/perps_stats cargo run -- stream -s BTC,ETH --data-types ticker,trade,orderbook
-
-# Stream from specific exchange
-cargo run -- stream --exchange binance -s BTC --data-types ticker,trade --max-duration 3600
-```
-
-#### Periodic Excel Exports
-```bash
-# Export ticker + liquidity data every 5 minutes
-cargo run -- run
-
-# Custom exchanges and interval
-cargo run -- run --exchanges binance,bybit --interval 30 --max-snapshots 10
 ```
 
 #### Retrieve Market Data
@@ -147,17 +123,19 @@ cargo run -- db clean --truncate
 
 ## Supported Exchanges
 
-| Exchange    | REST API | WebSocket | Symbol Format | Notes                     |
-|-------------|:--------:|:---------:|---------------|---------------------------|
-| Aster       |    ✓     |     -     | BTCUSDT       | Binance-compatible        |
-| Binance     |    ✓     |     -     | BTCUSDT       | Full support              |
-| Bybit       |    ✓     |     -     | BTCUSDT       | Full support              |
-| Extended    |    ✓     |     -     | BTC-USD       | Starknet L2 DEX           |
-| Hyperliquid |    ✓     |     -     | BTC           | POST-based API            |
-| KuCoin      |    ✓     |     -     | XBTUSDTM      | Full support              |
-| Lighter     |    ✓     |     -     | BTC           | Uses market_id internally |
-| Pacifica    |    ✓     |     -     | BTC           | StarkEx L2 DEX            |
-| Paradex     |    ✓     |     -     | BTC-USD-PERP  | Full support              |
+| Exchange    | REST API | WebSocket | Symbol Format | Notes                                         |
+|-------------|:--------:|:---------:|---------------|-----------------------------------------------|
+| Aster       |    ✓     |     -     | BTCUSDT       | Binance-compatible                            |
+| Binance     |    ✓     |     -     | BTCUSDT       | Full support                                  |
+| Bybit       |    ✓     |     -     | BTCUSDT       | Full support                                  |
+| Extended    |    ✓     |     -     | BTC-USD       | Starknet L2 DEX                               |
+| Gravity     |    ✓     |     -     | BTC_USDT_Perp | Solana Perpetuals DEX (requires migration 07) |
+| Hyperliquid |    ✓     |     -     | BTC           | POST-based API                                |
+| KuCoin      |    ✓     |     -     | XBTUSDTM      | Full support                                  |
+| Lighter     |    ✓     |     -     | BTC           | Uses market_id internally                     |
+| Nado        |    ✓     |     -     | BTC-USD       | Binance Lisbon hackathon winner               |
+| Pacifica    |    ✓     |     -     | BTC           | StarkEx L2 DEX                                |
+| Paradex     |    ✓     |     -     | BTC-USD-PERP  | Full support                                  |
 
 ## Documentation
 

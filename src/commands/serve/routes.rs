@@ -17,7 +17,10 @@ pub fn create_routes(state: AppState) -> Router {
         .route("/symbols", get(handlers::symbols::get_symbols))
         // Tickers
         .route("/tickers", get(handlers::tickers::get_latest_tickers))
-        .route("/tickers/history", get(handlers::tickers::get_ticker_history))
+        .route(
+            "/tickers/history",
+            get(handlers::tickers::get_ticker_history),
+        )
         // Liquidity
         .route("/liquidity", get(handlers::liquidity::get_latest_liquidity))
         .route(
@@ -35,14 +38,20 @@ pub fn create_routes(state: AppState) -> Router {
         // Trades
         // .route("/trades", get(handlers::trades::get_trades))
         // Orderbooks
-        .route("/orderbooks", get(handlers::orderbooks::get_latest_orderbooks))
+        .route(
+            "/orderbooks",
+            get(handlers::orderbooks::get_latest_orderbooks),
+        )
         .route(
             "/orderbooks/history",
             get(handlers::orderbooks::get_orderbook_history),
         )
         // Slippage endpoints
         .route("/slippage", get(handlers::slippage::get_latest_slippage))
-        .route("/slippage/history", get(handlers::slippage::get_slippage_history))
+        .route(
+            "/slippage/history",
+            get(handlers::slippage::get_slippage_history),
+        )
         .with_state(state.clone());
 
     Router::new()
