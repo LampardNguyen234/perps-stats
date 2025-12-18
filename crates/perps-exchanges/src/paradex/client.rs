@@ -89,7 +89,14 @@ impl IPerps for ParadexClient {
     }
 
     fn parse_symbol(&self, symbol: &str) -> String {
-        format!("{}-USD-PERP", symbol.to_uppercase())
+        // Paradex uses format: BTC -> BTC-USD-PERP
+        // Idempotent: if already in exchange format (ends with -USD-PERP), return as-is
+        let upper = symbol.to_uppercase();
+        if upper.ends_with("-USD-PERP") {
+            upper
+        } else {
+            format!("{}-USD-PERP", upper)
+        }
     }
 
     async fn get_markets(&self) -> Result<Vec<Market>> {
@@ -141,8 +148,9 @@ impl IPerps for ParadexClient {
     }
 
     async fn get_orderbook(&self, symbol: &str, _depth: u32) -> Result<MultiResolutionOrderbook> {
+        let parsed_symbol = self.parse_symbol(symbol);
         let response: OrderbookResponse = self
-            .get(&format!("/orderbook/{}?depth=100", symbol))
+            .get(&format!("/orderbook/{}?depth=100", parsed_symbol))
             .await?;
         let bids = response
             .bids
@@ -178,7 +186,8 @@ impl IPerps for ParadexClient {
     }
 
     async fn get_recent_trades(&self, symbol: &str, _limit: u32) -> Result<Vec<Trade>> {
-        let response: TradesResponse = self.get(&format!("/trades?symbol={}", symbol)).await?;
+        let parsed_symbol = self.parse_symbol(symbol);
+        let response: TradesResponse = self.get(&format!("/trades?symbol={}", parsed_symbol)).await?;
         let trades = response
             .trades
             .into_iter()
@@ -201,8 +210,9 @@ impl IPerps for ParadexClient {
     }
 
     async fn get_funding_rate(&self, symbol: &str) -> Result<FundingRate> {
+        let parsed_symbol = self.parse_symbol(symbol);
         let response: FundingRateResponse = self
-            .get(&format!("/funding/data?market={}", symbol))
+            .get(&format!("/funding/data?market={}", parsed_symbol))
             .await?;
         let rate = response
             .results
@@ -278,9 +288,11 @@ impl IPerps for ParadexClient {
     // --- Partial Implementations using BBO ---
 
     async fn get_ticker(&self, symbol: &str) -> Result<Ticker> {
+        let parsed_symbol = self.parse_symbol(symbol);
+
         // Fetch market summary for 24h statistics
         let summary_response: MarketSummaryResponse = self
-            .get(&format!("/markets/summary?market={}", symbol))
+            .get(&format!("/markets/summary?market={}", parsed_symbol))
             .await?;
         let summary = summary_response
             .results
@@ -288,7 +300,7 @@ impl IPerps for ParadexClient {
             .ok_or_else(|| anyhow!("No summary data found for {}", symbol))?;
 
         // Fetch BBO for best bid/ask with quantities
-        let bbo: BboResponse = self.get(&format!("/bbo/{}", symbol)).await?;
+        let bbo: BboResponse = self.get(&format!("/bbo/{}", parsed_symbol)).await?;
 
         // Parse prices
         let last_price = Decimal::from_str(&summary.last_traded_price)?;
@@ -381,5 +393,37 @@ impl IPerps for ParadexClient {
 
     async fn get_all_market_stats(&self) -> Result<Vec<MarketStats>> {
         unimplemented!("get_all_market_stats is not available from a public Hyperliquid endpoint.")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_symbol() {
+        let client = ParadexClient::new();
+        assert_eq!(client.parse_symbol("BTC"), "BTC-USD-PERP");
+        assert_eq!(client.parse_symbol("ETH"), "ETH-USD-PERP");
+        assert_eq!(client.parse_symbol("btc"), "BTC-USD-PERP");
+    }
+
+    #[test]
+    fn test_parse_symbol_idempotent() {
+        let client = ParadexClient::new();
+        // Test idempotency: parsing already-formatted symbols should return as-is
+        assert_eq!(client.parse_symbol("BTC-USD-PERP"), "BTC-USD-PERP");
+        assert_eq!(client.parse_symbol("ETH-USD-PERP"), "ETH-USD-PERP");
+        assert_eq!(client.parse_symbol("btc-usd-perp"), "BTC-USD-PERP");
+        // Double parsing should be idempotent
+        let parsed_once = client.parse_symbol("BTC");
+        let parsed_twice = client.parse_symbol(&parsed_once);
+        assert_eq!(parsed_once, parsed_twice);
+    }
+
+    #[test]
+    fn test_client_creation() {
+        let client = ParadexClient::new();
+        assert_eq!(client.get_name(), "paradex");
     }
 }
