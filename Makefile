@@ -17,11 +17,13 @@ help:
 	@echo "  make start          - Start unified service (data collection + API)"
 	@echo "  make serve          - Start API server only"
 	@echo ""
-	@echo "Docker:"
+	@echo "Docker (with docker-compose):"
 	@echo "  make docker-build   - Build Docker image"
-	@echo "  make docker-start   - Start Docker container"
-	@echo "  make docker-stop    - Stop Docker container"
-	@echo "  make docker-logs    - View Docker logs"
+	@echo "  make docker-start   - Start Docker services (perps-stats + PostgreSQL)"
+	@echo "  make docker-stop    - Stop Docker services"
+	@echo "  make docker-ps      - Show Docker service status"
+	@echo "  make docker-logs    - View Docker service logs"
+	@echo "  make docker-clean   - Remove Docker containers and volumes"
 	@echo ""
 	@echo "Database:"
 	@echo "  make db-migrate     - Run database migrations"
@@ -58,11 +60,13 @@ clean:
 start:
 	@echo "Starting unified service (data collection + API)..."
 	@echo "Prerequisites: DATABASE_URL must be set"
+	@echo "Prerequisites: symbols must be set in symbols.txt"
+	@echo "Prerequisites: exchanges must be set in exchanges.txt"
 	@echo "Make sure symbols.txt exists in the project root"
 	@echo ""
 	cargo run --release -- start \
 		--symbols-file symbols.txt \
-		-e "extended,aster,pacifica,lighter,hyperliquid,paradex,binance,nado" \
+		-e $$(cat exchanges.txt) \
 		--enable-api \
 		--api-port 9999 \
 		--pool-size 100
@@ -82,9 +86,13 @@ docker-build:
 docker-start:
 	@echo "Starting Docker container..."
 	@echo "Prerequisites: DATABASE_URL must be set"
+	@echo "Prerequisites: symbols.txt and exchanges.txt must exist"
 	@echo ""
 	make docker-build && docker run -d \
 		--name perps-stats \
+		-v $(PWD)/symbols.txt:/app/symbols.txt:ro \
+		-v $(PWD)/exchanges.txt:/app/exchanges.txt:ro \
+		-e DATABASE_URL=$(DATABASE_URL) \
 		-p 9999:9999 \
 		perps-stats:latest
 	@echo "✓ Container started. API available at http://127.0.0.1:9999/api/"

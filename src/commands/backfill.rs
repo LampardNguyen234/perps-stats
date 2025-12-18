@@ -13,7 +13,7 @@ use tokio::time::sleep;
 
 #[derive(Args)]
 pub struct BackfillArgs {
-    /// Exchanges to backfill from (comma-separated). Defaults to all: aster,binance,bybit,extended,hyperliquid,kucoin,lighter,pacifica,paradex
+    /// Exchanges to backfill from (comma-separated). Defaults to all: aster,binance,bybit,extended,gravity,hyperliquid,kucoin,lighter,nado,pacifica,paradex
     #[arg(short, long, value_delimiter = ',')]
     pub exchanges: Vec<String>,
 
@@ -420,6 +420,7 @@ pub async fn execute(args: BackfillArgs) -> Result<()> {
         "aster",
         "binance",
         "extended",
+        "gravity",
         "hyperliquid",
         "bybit",
         "kucoin",

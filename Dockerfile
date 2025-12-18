@@ -47,8 +47,9 @@ WORKDIR /app
 # Copy binary from builder
 COPY --from=builder /app/target/release/perps-stats /app/perps-stats
 
-# Copy default symbols file
-COPY --chown=perps:perps symbols.txt /apt/symbols.txt
+# Copy configuration files
+COPY --chown=perps:perps symbols.txt /app/symbols.txt
+COPY --chown=perps:perps exchanges.txt /app/exchanges.txt
 
 # Switch to non-root user
 USER perps
@@ -56,8 +57,8 @@ USER perps
 # Environment variables with defaults
 ENV DATABASE_URL="" \
     RUST_LOG="info" \
-    SYMBOLS_FILE="/apt/symbols.txt" \
-    EXCHANGES="extended,aster,pacifica,lighter,hyperliquid,paradex,binance,nado" \
+    SYMBOLS_FILE="/app/symbols.txt" \
+    EXCHANGES_FILE="/app/exchanges.txt" \
     API_PORT="9999" \
     API_HOST="0.0.0.0" \
     POOL_SIZE="100" \
@@ -72,10 +73,10 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
     CMD curl -f http://localhost:9999/api/v1/health || exit 1
 
 # Default command: start unified service with API enabled
-# Note: ENABLE_ORDERBOOK_STREAMING is not configurable (always false - data collection via REST API only)
-CMD ["/bin/sh", "-c", "/app/perps-stats start \
+# Reads exchanges from exchanges.txt file instead of hardcoding
+CMD ["/bin/sh", "-c", "EXCHANGES=$(cat ${EXCHANGES_FILE}) && /app/perps-stats start \
     --symbols-file ${SYMBOLS_FILE} \
-    --exchanges ${EXCHANGES} \
+    --exchanges \"${EXCHANGES}\" \
     --enable-api \
     --api-host ${API_HOST} \
     --api-port ${API_PORT} \

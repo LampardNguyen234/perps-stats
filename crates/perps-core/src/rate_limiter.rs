@@ -203,6 +203,15 @@ impl RateLimiter {
         Self::new(vec![RateLimit::per_second(20), RateLimit::per_minute(1200)])
     }
 
+    /// Create preset rate limiter for Gravity Dex
+    /// Conservative rate limit based on market data API:
+    /// - No explicit rate limit documented in Gravity API
+    /// - Using conservative 50 requests per second estimate
+    /// - All market data endpoints are public (no auth required)
+    pub fn gravity() -> Self {
+        Self::new(vec![RateLimit::per_second(50), RateLimit::per_minute(3000)])
+    }
+
     /// Create a disabled rate limiter (no limits)
     /// Useful for testing or when rate limiting is not needed
     pub fn disabled() -> Self {
@@ -550,6 +559,11 @@ mod tests {
         let paradex = RateLimiter::paradex();
         assert_eq!(paradex.limits().len(), 2);
         assert_eq!(paradex.limits()[0].max_requests, 10);
+
+        let _gravity = RateLimiter::gravity();
+        assert_eq!(_gravity.limits().len(), 2);
+        assert_eq!(_gravity.limits()[0].max_requests, 50);
+        assert_eq!(_gravity.limits()[0].window, Duration::from_secs(1));
 
         let disabled = RateLimiter::disabled();
         assert_eq!(disabled.limits().len(), 0);

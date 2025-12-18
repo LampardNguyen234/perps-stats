@@ -17,7 +17,7 @@ use tokio::time::{interval, Duration};
 
 #[derive(Args)]
 pub struct StartArgs {
-    /// Exchanges to stream from (comma-separated: aster,binance,hyperliquid,bybit,kucoin,lighter,paradex). If not specified, uses all supported exchanges.
+    /// Exchanges to stream from (comma-separated: aster,binance,extended,gravity,hyperliquid,bybit,kucoin,lighter,nado,pacifica,paradex). If not specified, uses all supported exchanges.
     #[arg(short, long, value_delimiter = ',')]
     pub exchanges: Option<Vec<String>>,
 
@@ -582,7 +582,6 @@ async fn spawn_klines_task(
                 return Ok(());
             }
 
-            let parsed_symbol = client.parse_symbol(symbol);
             let repo = repository.lock().await;
 
             // Check if we have any klines for this symbol/exchange/interval
@@ -665,10 +664,10 @@ async fn spawn_klines_task(
                             chrono::Duration::milliseconds(interval_ms * chunk_size as i64);
                         let chunk_end = (current_start + chunk_duration).min(now);
 
-                        // Fetch chunk
+                        // Fetch chunk (pass global symbol; client handles conversion)
                         match client
                             .get_klines(
-                                &parsed_symbol,
+                                symbol,
                                 &klines_timeframe,
                                 Some(current_start),
                                 Some(chunk_end),
@@ -826,7 +825,7 @@ async fn spawn_klines_task(
 
                             match client
                                 .get_klines(
-                                    &parsed_symbol,
+                                    symbol,
                                     &klines_timeframe,
                                     Some(current_start),
                                     Some(chunk_end),
@@ -949,7 +948,6 @@ async fn spawn_klines_task(
                     break;
                 }
 
-                let parsed_symbol = client.parse_symbol(symbol);
                 let repo = repository.lock().await;
                 let latest_kline = repo
                     .get_latest_kline(&exchange, symbol, &klines_timeframe)
@@ -962,9 +960,10 @@ async fn spawn_klines_task(
                     None => now - chrono::Duration::hours(1), // Fallback to last hour
                 };
 
+                // Pass global symbol; client handles conversion
                 match client
                     .get_klines(
-                        &parsed_symbol,
+                        symbol,
                         &klines_timeframe,
                         Some(start_time),
                         Some(now),
@@ -1109,11 +1108,9 @@ async fn spawn_liquidity_report_task(
                         break;
                     }
 
-                    // Parse symbol to exchange-specific format
-                    let parsed_symbol = client.parse_symbol(symbol);
-
                     // Fetch orderbook once and calculate both liquidity depth and slippage
-                    match client.get_orderbook(&parsed_symbol, 1000).await {
+                    // (pass global symbol; client handles conversion)
+                    match client.get_orderbook(symbol, 1000).await {
                         Ok(multi_orderbook) => {
                             // MultiResolutionOrderbook automatically selects best resolution for each calculation
 
@@ -1308,11 +1305,8 @@ async fn spawn_ticker_report_task(
                         break;
                     }
 
-                    // Parse symbol to exchange-specific format
-                    let parsed_symbol = client.parse_symbol(symbol);
-
-                    // Fetch ticker from REST API
-                    match client.get_ticker(&parsed_symbol).await {
+                    // Fetch ticker from REST API (pass global symbol; client handles conversion)
+                    match client.get_ticker(symbol).await {
                         Ok(ticker) => {
                             if !ticker.is_empty() {
                                 tickers_by_exchange
@@ -1439,6 +1433,7 @@ pub async fn execute(args: StartArgs) -> Result<()> {
         "aster",
         "binance",
         "extended",
+        "gravity",
         "hyperliquid",
         "bybit",
         "kucoin",

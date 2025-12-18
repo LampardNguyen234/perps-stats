@@ -2,6 +2,7 @@ use crate::aster::AsterClient;
 use crate::binance::BinanceClient;
 use crate::bybit::BybitClient;
 use crate::extended::ExtendedClient;
+use crate::gravity::GravityClient;
 use crate::hyperliquid::HyperliquidClient;
 use crate::kucoin::KucoinClient;
 use crate::lighter::LighterClient;
@@ -18,6 +19,10 @@ pub async fn all_exchanges() -> Vec<(String, Box<dyn IPerps + Send + Sync>)> {
         (
             "bybit".to_string(),
             Box::new(BybitClient::new()) as Box<dyn IPerps + Send + Sync>,
+        ),
+        (
+            "gravity".to_string(),
+            Box::new(GravityClient::new()) as Box<dyn IPerps + Send + Sync>,
         ),
         (
             "hyperliquid".to_string(),
@@ -97,6 +102,7 @@ pub async fn get_exchange(name: &str) -> anyhow::Result<Box<dyn IPerps + Send + 
             let client = ExtendedClient::new().await?;
             Ok(Box::new(client))
         }
+        "gravity" => Ok(Box::new(GravityClient::new())),
         "hyperliquid" => Ok(Box::new(HyperliquidClient::new())),
         "kucoin" => {
             let client = KucoinClient::new().await?;
@@ -106,6 +112,94 @@ pub async fn get_exchange(name: &str) -> anyhow::Result<Box<dyn IPerps + Send + 
         "nado" => Ok(Box::new(NadoClient::new())),
         "pacifica" => Ok(Box::new(PacificaClient::new())),
         "paradex" => Ok(Box::new(ParadexClient::new())),
-        _ => anyhow::bail!("Unsupported exchange: {}. Currently supported: aster, binance, bybit, extended, hyperliquid, kucoin, lighter, nado, pacifica, paradex", name),
+        _ => anyhow::bail!("Unsupported exchange: {}. Currently supported: aster, binance, bybit, extended, gravity, hyperliquid, kucoin, lighter, nado, pacifica, paradex", name),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Test that Gravity exchange can be created via factory
+    #[tokio::test]
+    async fn test_get_exchange_gravity() {
+        let result = get_exchange("gravity").await;
+        assert!(result.is_ok(), "get_exchange(\"gravity\") should succeed");
+
+        let client = result.unwrap();
+        assert_eq!(client.get_name(), "gravity");
+    }
+
+    /// Test that Gravity exchange respects case-insensitive exchange names
+    #[tokio::test]
+    async fn test_get_exchange_gravity_case_insensitive() {
+        let lowercase = get_exchange("gravity").await;
+        let uppercase = get_exchange("GRAVITY").await;
+        let mixedcase = get_exchange("Gravity").await;
+
+        assert!(lowercase.is_ok(), "lowercase 'gravity' should work");
+        assert!(uppercase.is_ok(), "uppercase 'GRAVITY' should work");
+        assert!(mixedcase.is_ok(), "mixedcase 'Gravity' should work");
+
+        assert_eq!(lowercase.unwrap().get_name(), "gravity");
+        assert_eq!(uppercase.unwrap().get_name(), "gravity");
+        assert_eq!(mixedcase.unwrap().get_name(), "gravity");
+    }
+
+    /// Test that Gravity is included in all_exchanges()
+    #[tokio::test]
+    async fn test_all_exchanges_includes_gravity() {
+        let exchanges = all_exchanges().await;
+        let gravity_found = exchanges.iter().any(|(name, _)| name == "gravity");
+        assert!(
+            gravity_found,
+            "Gravity should be included in all_exchanges()"
+        );
+    }
+
+    /// Test that Gravity in all_exchanges has correct name
+    #[tokio::test]
+    async fn test_gravity_in_all_exchanges_has_correct_name() {
+        let exchanges = all_exchanges().await;
+        for (name, client) in exchanges {
+            if name == "gravity" {
+                assert_eq!(client.get_name(), "gravity");
+                return;
+            }
+        }
+        panic!("Gravity not found in all_exchanges()");
+    }
+
+    /// Test that unknown exchange returns error
+    #[tokio::test]
+    async fn test_get_exchange_unknown() {
+        let result = get_exchange("nonexistent_exchange_xyz").await;
+        assert!(result.is_err(), "Unknown exchange should return error");
+    }
+
+    /// Test that at least one exchange is available
+    #[tokio::test]
+    async fn test_all_exchanges_not_empty() {
+        let exchanges = all_exchanges().await;
+        assert!(
+            !exchanges.is_empty(),
+            "all_exchanges() should return at least one exchange"
+        );
+    }
+
+    /// Test that factory has Bybit and Gravity as guaranteed exchanges
+    #[tokio::test]
+    async fn test_guaranteed_exchanges_present() {
+        let exchanges = all_exchanges().await;
+        let names: Vec<_> = exchanges.iter().map(|(n, _)| n.as_str()).collect();
+
+        assert!(
+            names.contains(&"bybit"),
+            "bybit should be in all_exchanges()"
+        );
+        assert!(
+            names.contains(&"gravity"),
+            "gravity should be in all_exchanges()"
+        );
     }
 }
