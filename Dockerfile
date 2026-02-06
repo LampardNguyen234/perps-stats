@@ -47,6 +47,9 @@ WORKDIR /app
 # Copy binary from builder
 COPY --from=builder /app/target/release/perps-stats /app/perps-stats
 
+# Copy migrations directory (required for db migrate command)
+COPY --chown=perps:perps migrations /app/migrations
+
 # Copy configuration files
 COPY --chown=perps:perps symbols.txt /app/symbols.txt
 COPY --chown=perps:perps exchanges.txt /app/exchanges.txt

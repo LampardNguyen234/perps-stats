@@ -264,7 +264,7 @@ CREATE TABLE IF NOT EXISTS kline_discovery_cache (
     );
 
 -- Index for efficient lookups
-CREATE INDEX idx_kline_discovery_cache_lookup ON kline_discovery_cache(exchange_id, symbol, interval);
+CREATE INDEX IF NOT EXISTS idx_kline_discovery_cache_lookup ON kline_discovery_cache(exchange_id, symbol, interval);
 
 -- Index for cleanup queries (e.g., delete old cache entries)
-CREATE INDEX idx_kline_discovery_cache_discovered_at ON kline_discovery_cache(discovered_at);
+CREATE INDEX IF NOT EXISTS idx_kline_discovery_cache_discovered_at ON kline_discovery_cache(discovered_at);
