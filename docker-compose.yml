@@ -1,0 +1,86 @@
+version: '3.8'
+
+services:
+  # PostgreSQL with TimescaleDB extension
+  postgres:
+    image: timescale/timescaledb:latest-pg17
+    container_name: perps-stats-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: perps
+      POSTGRES_PASSWORD: perps_password
+      POSTGRES_DB: perps_stats
+      POSTGRES_INITDB_ARGS: "-E UTF8"
+    ports:
+      - "5555:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U perps -d perps_stats"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - perps-network
+
+  # Database migration runner (runs once to initialize schema)
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: perps-stats-migrate
+    environment:
+      DATABASE_URL: postgres://perps:perps_password@172.17.0.1:5555/perps_stats
+      RUST_LOG: info
+    command: ["/app/perps-stats", "db", "migrate"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - perps-network
+    restart: "no"
+
+  # Perps-stats unified service (data collection + API)
+  perps-stats:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: perps-stats-service
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://perps:perps_password@172.17.0.1:5555/perps_stats
+      RUST_LOG: info
+      SYMBOLS_FILE: /app/symbols.txt
+      EXCHANGES_FILE: /app/exchanges.txt
+      API_PORT: 9999
+      API_HOST: 0.0.0.0
+      POOL_SIZE: 100
+      REPORT_INTERVAL: 30
+    ports:
+      - "9999:9999"
+    volumes:
+      - ./symbols.txt:/app/symbols.txt:ro
+      - ./exchanges.txt:/app/exchanges.txt:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9999/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      - perps-network
+
+volumes:
+  postgres_data:
+    driver: local
+
+networks:
+  perps-network:
+    driver: bridge
