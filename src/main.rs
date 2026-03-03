@@ -3,7 +3,7 @@ mod commands;
 
 use anyhow::Result;
 use clap::Parser;
-use cli::{Cli, Commands, DbCommands};
+use cli::{Cli, Commands, DbCommands, StatsCommands};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
@@ -149,6 +149,12 @@ async fn main() -> Result<()> {
         Commands::Export(args) => {
             commands::export::execute(args).await?;
         }
+        Commands::Stats { command } => match command {
+            StatsCommands::OiRate(args) => commands::stats::execute_oi_rate(args).await?,
+            StatsCommands::Summary(args) => commands::stats::execute_summary(args).await?,
+            StatsCommands::Chart(args) => commands::stats::execute_chart(args).await?,
+            StatsCommands::Hist(args) => commands::stats::execute_hist(args).await?,
+        },
     }
 
     Ok(())

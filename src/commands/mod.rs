@@ -7,5 +7,6 @@ pub mod market;
 pub mod run;
 pub mod serve;
 pub mod start;
+pub mod stats;
 pub mod stream;
 pub mod ticker;

@@ -167,6 +167,27 @@ pub enum Commands {
 
     /// Export all database tables to CSV or Excel files
     Export(crate::commands::export::ExportArgs),
+
+    /// Statistical analysis commands
+    Stats {
+        #[command(subcommand)]
+        command: StatsCommands,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum StatsCommands {
+    /// Calculate open interest to volume ratio statistics
+    OiRate(crate::commands::stats::OiRateArgs),
+
+    /// Summarise statistics (min/mean/median/P5/P95/P99/max) for a data type per symbol or exchange
+    Summary(crate::commands::stats::SummaryArgs),
+
+    /// Plot a data value over time for one or more symbols/exchanges
+    Chart(crate::commands::stats::ChartArgs),
+
+    /// Print a histogram of a data field (oi, volume) for one or more symbols/exchanges
+    Hist(crate::commands::stats::HistArgs),
 }
 
 #[derive(Subcommand)]
