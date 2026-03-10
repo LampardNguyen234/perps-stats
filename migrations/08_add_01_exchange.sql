@@ -3,5 +3,5 @@
 
 -- UP: Insert 01 exchange if it doesn't already exist
 INSERT INTO exchanges (name, maker_fee, taker_fee)
-VALUES ('01', 0.0, 0.0) -- fees unknown, default to zero
+VALUES ('01', 0.0, 0.0002) -- fees unknown, default to zero
 ON CONFLICT (name) DO NOTHING;
