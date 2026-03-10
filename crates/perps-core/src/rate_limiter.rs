@@ -203,6 +203,14 @@ impl RateLimiter {
         Self::new(vec![RateLimit::per_second(20), RateLimit::per_minute(1200)])
     }
 
+    /// Create preset rate limiter for 01 (Nord) Exchange
+    /// Conservative rate limit based on Nord API:
+    /// - 20 requests per second
+    /// - 1200 requests per minute
+    pub fn o1() -> Self {
+        Self::new(vec![RateLimit::per_second(20), RateLimit::per_minute(1200)])
+    }
+
     /// Create preset rate limiter for Gravity Dex
     /// Conservative rate limit based on market data API:
     /// - No explicit rate limit documented in Gravity API

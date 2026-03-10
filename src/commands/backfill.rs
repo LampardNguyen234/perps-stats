@@ -390,6 +390,7 @@ pub async fn execute(args: BackfillArgs) -> Result<()> {
     // Apply defaults
     let exchanges_to_process = if args.exchanges.is_empty() {
         vec![
+            "01".to_string(),
             "aster".to_string(),
             "binance".to_string(),
             "bybit".to_string(),
@@ -417,6 +418,7 @@ pub async fn execute(args: BackfillArgs) -> Result<()> {
 
     // Validate exchanges
     let supported_exchanges = vec![
+        "01",
         "aster",
         "binance",
         "extended",

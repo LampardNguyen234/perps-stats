@@ -204,7 +204,13 @@ pub async fn execute_summary(args: SummaryArgs) -> Result<()> {
     if symbols.len() > 1 {
         // Multiple symbols, single exchange — group by symbol
         let stats = fetch_summary_by_symbol(&pool, &symbols, &exchange_ids[0], column).await?;
-        display_summary_by_symbol(&stats, &args.format, &exchanges[0], &args.data, args.notional)?;
+        display_summary_by_symbol(
+            &stats,
+            &args.format,
+            &exchanges[0],
+            &args.data,
+            args.notional,
+        )?;
     } else if exchanges.len() > 1 {
         // Single symbol, multiple exchanges — group by exchange
         let stats = fetch_summary_by_exchange(&pool, &symbols[0], &exchange_ids, column).await?;
@@ -226,9 +232,7 @@ async fn fetch_summary_by_symbol(
     exchange_id: &i32,
     column: &str,
 ) -> Result<Vec<SummaryStatsWithContext>> {
-    let placeholders: Vec<String> = (2..=symbols.len() + 1)
-        .map(|i| format!("${}", i))
-        .collect();
+    let placeholders: Vec<String> = (2..=symbols.len() + 1).map(|i| format!("${}", i)).collect();
 
     let query = format!(
         r#"
@@ -544,19 +548,40 @@ pub async fn execute_chart(args: ChartArgs) -> Result<()> {
         // Single symbol, multiple exchanges — plot by exchange
         let data =
             fetch_value_timeseries_by_exchange(&pool, &symbols[0], &exchange_ids, column).await?;
-        plot_value_timeseries(&data, &symbols[0], "exchange", &args.data, args.notional, args.log_scale)?;
+        plot_value_timeseries(
+            &data,
+            &symbols[0],
+            "exchange",
+            &args.data,
+            args.notional,
+            args.log_scale,
+        )?;
     } else if symbols.len() > 1 && exchanges.len() == 1 {
         // Multiple symbols, single exchange — plot by symbol
         let data =
             fetch_value_timeseries_by_symbol(&pool, &symbols, &exchange_ids[0], column).await?;
-        plot_value_timeseries(&data, &exchanges[0], "symbol", &args.data, args.notional, args.log_scale)?;
+        plot_value_timeseries(
+            &data,
+            &exchanges[0],
+            "symbol",
+            &args.data,
+            args.notional,
+            args.log_scale,
+        )?;
     } else {
         // Single symbol, single exchange — time-series for this pair
         let data =
             fetch_value_timeseries_by_exchange(&pool, &symbols[0], &[exchange_ids[0]], column)
                 .await?;
         let ctx = format!("{}_{}", symbols[0], exchanges[0]);
-        plot_value_timeseries(&data, &ctx, "timeseries", &args.data, args.notional, args.log_scale)?;
+        plot_value_timeseries(
+            &data,
+            &ctx,
+            "timeseries",
+            &args.data,
+            args.notional,
+            args.log_scale,
+        )?;
     }
 
     Ok(())
@@ -642,7 +667,8 @@ pub async fn execute_oi_rate(args: OiRateArgs) -> Result<()> {
             plot_oi_timeseries(&data, &exchanges[0], "symbol")?;
         } else if symbols.len() == 1 && exchanges.len() == 1 {
             // Single symbol, single exchange - plot time-series for this pair
-            let data = fetch_oi_timeseries_by_exchange(&pool, &symbols[0], &[exchange_ids[0]]).await?;
+            let data =
+                fetch_oi_timeseries_by_exchange(&pool, &symbols[0], &[exchange_ids[0]]).await?;
             let filename_context = format!("{}_{}", symbols[0], exchanges[0]);
             plot_oi_timeseries(&data, &filename_context, "timeseries")?;
         } else {
@@ -679,12 +705,11 @@ pub async fn execute_oi_rate(args: OiRateArgs) -> Result<()> {
 
 /// Get all unique symbol names from database
 async fn get_all_symbol_names(pool: &PgPool) -> Result<Vec<String>> {
-    let names = sqlx::query_scalar::<_, String>(
-        "SELECT DISTINCT symbol FROM tickers ORDER BY symbol"
-    )
-    .fetch_all(pool)
-    .await
-    .context("Failed to fetch symbol names")?;
+    let names =
+        sqlx::query_scalar::<_, String>("SELECT DISTINCT symbol FROM tickers ORDER BY symbol")
+            .fetch_all(pool)
+            .await
+            .context("Failed to fetch symbol names")?;
 
     Ok(names)
 }
@@ -701,9 +726,7 @@ async fn get_all_exchange_names(pool: &PgPool) -> Result<Vec<String>> {
 
 /// Get exchange IDs from names
 async fn get_exchange_ids(pool: &PgPool, exchanges: &[String]) -> Result<Vec<i32>> {
-    let placeholders: Vec<String> = (1..=exchanges.len())
-        .map(|i| format!("${}", i))
-        .collect();
+    let placeholders: Vec<String> = (1..=exchanges.len()).map(|i| format!("${}", i)).collect();
     let query = format!(
         "SELECT id FROM exchanges WHERE LOWER(name) IN ({})",
         placeholders.join(", ")
@@ -785,9 +808,7 @@ async fn fetch_oi_rate_by_symbol(
     symbols: &[String],
     exchange_id: &i32,
 ) -> Result<Vec<OiVolumeStatsWithContext>> {
-    let placeholders: Vec<String> = (2..=symbols.len() + 1)
-        .map(|i| format!("${}", i))
-        .collect();
+    let placeholders: Vec<String> = (2..=symbols.len() + 1).map(|i| format!("${}", i)).collect();
 
     let query = format!(
         r#"
@@ -1036,24 +1057,19 @@ fn display_stats_overall(
         }
         _ => {
             // Print caption
-            println!("\n{} on {} - OI-to-Volume Ratio Summary", symbol, exchange.to_uppercase());
+            println!(
+                "\n{} on {} - OI-to-Volume Ratio Summary",
+                symbol,
+                exchange.to_uppercase()
+            );
             println!("{}", "=".repeat(60));
 
             let mut table = Table::new();
             table.set_format(*format::consts::FORMAT_NO_LINESEP_WITH_TITLE);
-            table.set_titles(Row::new(vec![
-                Cell::new("Metric"),
-                Cell::new("Value (%)"),
-            ]));
+            table.set_titles(Row::new(vec![Cell::new("Metric"), Cell::new("Value (%)")]));
 
-            table.add_row(Row::new(vec![
-                Cell::new("Symbol"),
-                Cell::new(symbol),
-            ]));
-            table.add_row(Row::new(vec![
-                Cell::new("Exchange"),
-                Cell::new(exchange),
-            ]));
+            table.add_row(Row::new(vec![Cell::new("Symbol"), Cell::new(symbol)]));
+            table.add_row(Row::new(vec![Cell::new("Exchange"), Cell::new(exchange)]));
             table.add_row(Row::new(vec![
                 Cell::new("Min"),
                 Cell::new(&format_number(stats.min_oi_vol_pct)),
@@ -1144,9 +1160,7 @@ async fn fetch_oi_timeseries_by_symbol(
     symbols: &[String],
     exchange_id: &i32,
 ) -> Result<Vec<OiTimeSeriesPoint>> {
-    let placeholders: Vec<String> = (2..=symbols.len() + 1)
-        .map(|i| format!("${}", i))
-        .collect();
+    let placeholders: Vec<String> = (2..=symbols.len() + 1).map(|i| format!("${}", i)).collect();
 
     let query = format!(
         r#"
@@ -1202,18 +1216,20 @@ fn get_color_for_label(label: &str) -> RGBColor {
         "op" => RGBColor(255, 4, 32),           // Optimism Red
         _ => {
             // For unknown labels, use tableau color palette rotation
-            let hash = label.bytes().fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32));
+            let hash = label
+                .bytes()
+                .fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32));
             let colors = [
-                RGBColor(31, 119, 180),   // Blue
-                RGBColor(255, 127, 14),   // Orange
-                RGBColor(44, 160, 44),    // Green
-                RGBColor(214, 39, 40),    // Red
-                RGBColor(148, 103, 189),  // Purple
-                RGBColor(140, 86, 75),    // Brown
-                RGBColor(227, 119, 194),  // Pink
-                RGBColor(127, 127, 127),  // Gray
-                RGBColor(188, 189, 34),   // Yellow-Green
-                RGBColor(23, 190, 207),   // Cyan
+                RGBColor(31, 119, 180),  // Blue
+                RGBColor(255, 127, 14),  // Orange
+                RGBColor(44, 160, 44),   // Green
+                RGBColor(214, 39, 40),   // Red
+                RGBColor(148, 103, 189), // Purple
+                RGBColor(140, 86, 75),   // Brown
+                RGBColor(227, 119, 194), // Pink
+                RGBColor(127, 127, 127), // Gray
+                RGBColor(188, 189, 34),  // Yellow-Green
+                RGBColor(23, 190, 207),  // Cyan
             ];
             colors[(hash as usize) % colors.len()]
         }
@@ -1221,11 +1237,7 @@ fn get_color_for_label(label: &str) -> RGBColor {
 }
 
 /// Plot OI/Volume ratio time-series data with log-scale
-fn plot_oi_timeseries(
-    data: &[OiTimeSeriesPoint],
-    context: &str,
-    grouping: &str,
-) -> Result<()> {
+fn plot_oi_timeseries(data: &[OiTimeSeriesPoint], context: &str, grouping: &str) -> Result<()> {
     if data.is_empty() {
         anyhow::bail!("No data to plot");
     }
@@ -1278,7 +1290,10 @@ fn plot_oi_timeseries(
         .margin(10)
         .x_label_area_size(40)
         .y_label_area_size(80)
-        .build_cartesian_2d(min_ts..max_ts, ((min_ratio * 0.5)..(max_ratio * 1.5)).log_scale())?;
+        .build_cartesian_2d(
+            min_ts..max_ts,
+            ((min_ratio * 0.5)..(max_ratio * 1.5)).log_scale(),
+        )?;
 
     chart
         .configure_mesh()
@@ -1373,9 +1388,7 @@ async fn fetch_value_timeseries_by_symbol(
     exchange_id: &i32,
     column: &str,
 ) -> Result<Vec<ValuePoint>> {
-    let placeholders: Vec<String> = (2..=symbols.len() + 1)
-        .map(|i| format!("${}", i))
-        .collect();
+    let placeholders: Vec<String> = (2..=symbols.len() + 1).map(|i| format!("${}", i)).collect();
 
     let query = format!(
         r#"
@@ -1477,10 +1490,7 @@ fn plot_value_timeseries(
             .margin(10)
             .x_label_area_size(40)
             .y_label_area_size(90)
-            .build_cartesian_2d(
-                min_ts..max_ts,
-                ((min_oi * 0.5)..(max_oi * 2.0)).log_scale(),
-            )?;
+            .build_cartesian_2d(min_ts..max_ts, ((min_oi * 0.5)..(max_oi * 2.0)).log_scale())?;
 
         chart
             .configure_mesh()
@@ -1636,7 +1646,13 @@ async fn fetch_raw_values(
 }
 
 /// Bin a slice of values into `num_bins` equal-width bins.
-fn compute_histogram(label: String, data_type: &str, notional: bool, values: &[f64], num_bins: usize) -> Histogram {
+fn compute_histogram(
+    label: String,
+    data_type: &str,
+    notional: bool,
+    values: &[f64],
+    num_bins: usize,
+) -> Histogram {
     let total = values.len();
     let min = values.iter().cloned().fold(f64::INFINITY, f64::min);
     let max = values.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
@@ -1688,10 +1704,7 @@ fn compute_histogram(label: String, data_type: &str, notional: bool, values: &[f
 
 /// Render one histogram as a terminal bar chart.
 fn render_histogram_table(hist: &Histogram) {
-    println!(
-        "\n{} — {}",
-        hist.label, hist.data_type_label
-    );
+    println!("\n{} — {}", hist.label, hist.data_type_label);
     println!(
         "  Min: {}   Max: {}   Mean: {}   Samples: {}",
         format_oi_value(hist.min),
@@ -1934,9 +1947,7 @@ async fn fetch_price_dev_by_symbol(
     price_col: &str,
     ref_col: &str,
 ) -> Result<Vec<PriceDevStats>> {
-    let placeholders: Vec<String> = (2..=symbols.len() + 1)
-        .map(|i| format!("${}", i))
-        .collect();
+    let placeholders: Vec<String> = (2..=symbols.len() + 1).map(|i| format!("${}", i)).collect();
 
     let query = format!(
         r#"
@@ -2094,10 +2105,7 @@ fn display_price_dev_table(
             println!("{}", serde_json::to_string_pretty(&out)?);
         }
         _ => {
-            for (section_label, rows) in [
-                (mk_label, mark_rows),
-                (last_label, last_rows),
-            ] {
+            for (section_label, rows) in [(mk_label, mark_rows), (last_label, last_rows)] {
                 println!("\n{} — {}", group_header, section_label);
                 let mut table = Table::new();
                 table.set_format(*format::consts::FORMAT_NO_LINESEP_WITH_TITLE);
@@ -2139,11 +2147,7 @@ fn format_dev_stat(v: Option<f64>) -> String {
 }
 
 /// Plot mark/index/last price timeseries for a single symbol+exchange.
-fn plot_price_timeseries(
-    data: &[PricePoint],
-    symbol: &str,
-    exchange: &str,
-) -> Result<()> {
+fn plot_price_timeseries(data: &[PricePoint], symbol: &str, exchange: &str) -> Result<()> {
     if data.is_empty() {
         anyhow::bail!("No price data to plot");
     }
@@ -2202,8 +2206,7 @@ fn plot_price_timeseries(
     let mark_color = RGBColor(255, 127, 14);
     chart
         .draw_series(LineSeries::new(
-            data.iter()
-                .filter_map(|p| p.mark_price.map(|v| (p.ts, v))),
+            data.iter().filter_map(|p| p.mark_price.map(|v| (p.ts, v))),
             &mark_color,
         ))?
         .label("Mark Price")
@@ -2213,8 +2216,7 @@ fn plot_price_timeseries(
     let last_color = RGBColor(31, 119, 180);
     chart
         .draw_series(LineSeries::new(
-            data.iter()
-                .filter_map(|p| p.last_price.map(|v| (p.ts, v))),
+            data.iter().filter_map(|p| p.last_price.map(|v| (p.ts, v))),
             &last_color,
         ))?
         .label("Last Price")
@@ -2224,8 +2226,7 @@ fn plot_price_timeseries(
     let index_color = RGBColor(44, 160, 44);
     chart
         .draw_series(LineSeries::new(
-            data.iter()
-                .filter_map(|p| p.index_price.map(|v| (p.ts, v))),
+            data.iter().filter_map(|p| p.index_price.map(|v| (p.ts, v))),
             index_color.stroke_width(2),
         ))?
         .label("Index Price")
@@ -2325,9 +2326,14 @@ pub async fn execute_price_dev(args: PriceDevArgs) -> Result<()> {
         let mark_rows =
             fetch_price_dev_by_symbol(&pool, &symbols, exchange_ids[0], "last_price", "mark_price")
                 .await?;
-        let last_rows =
-            fetch_price_dev_by_symbol(&pool, &symbols, exchange_ids[0], "last_price", "index_price")
-                .await?;
+        let last_rows = fetch_price_dev_by_symbol(
+            &pool,
+            &symbols,
+            exchange_ids[0],
+            "last_price",
+            "index_price",
+        )
+        .await?;
         let header = format!("Exchange: {}", exchanges[0].to_uppercase());
         display_price_dev_table(&mark_rows, &last_rows, &header, &args.format)?;
     } else {

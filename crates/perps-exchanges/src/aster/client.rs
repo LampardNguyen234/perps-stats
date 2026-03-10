@@ -280,7 +280,10 @@ impl IPerps for AsterClient {
             .await?;
 
         let book_ticker: BookTicker = self
-            .get(&format!("/fapi/v1/ticker/bookTicker?symbol={}", parsed_symbol))
+            .get(&format!(
+                "/fapi/v1/ticker/bookTicker?symbol={}",
+                parsed_symbol
+            ))
             .await?;
 
         let last_price = Decimal::from_str(&ticker.last_price)?;
@@ -453,7 +456,10 @@ impl IPerps for AsterClient {
     async fn get_funding_rate(&self, symbol: &str) -> Result<FundingRate> {
         let parsed_symbol = self.parse_symbol(symbol);
         let rates: Vec<crate::aster::types::FundingRate> = self
-            .get(&format!("/fapi/v1/fundingRate?symbol={}&limit=1", parsed_symbol))
+            .get(&format!(
+                "/fapi/v1/fundingRate?symbol={}&limit=1",
+                parsed_symbol
+            ))
             .await?;
 
         let rate = rates
@@ -548,7 +554,10 @@ impl IPerps for AsterClient {
             }
         };
 
-        let mut endpoint = format!("/fapi/v1/klines?symbol={}&interval={}", parsed_symbol, interval);
+        let mut endpoint = format!(
+            "/fapi/v1/klines?symbol={}&interval={}",
+            parsed_symbol, interval
+        );
 
         if let Some(start) = start_time {
             endpoint.push_str(&format!("&startTime={}", start.timestamp_millis()));

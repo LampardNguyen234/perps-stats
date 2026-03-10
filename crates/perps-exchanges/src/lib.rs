@@ -9,6 +9,7 @@ pub mod hyperliquid;
 pub mod kucoin;
 pub mod lighter;
 pub mod nado;
+pub mod o1;
 pub mod pacifica;
 pub mod paradex;
 
@@ -23,6 +24,7 @@ pub use hyperliquid::HyperliquidClient;
 pub use kucoin::KucoinClient;
 pub use lighter::LighterClient;
 pub use nado::NadoClient;
+pub use o1::O1Client;
 pub use pacifica::PacificaClient;
 pub use paradex::ParadexClient;
 

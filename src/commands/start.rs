@@ -1430,6 +1430,7 @@ pub async fn execute(args: StartArgs) -> Result<()> {
 
     // Determine which exchanges to use
     let supported_exchanges = vec![
+        "01",
         "aster",
         "binance",
         "extended",

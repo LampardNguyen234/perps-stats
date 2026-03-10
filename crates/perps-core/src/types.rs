@@ -1,7 +1,7 @@
-use std::cmp::{max,min};
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize, Serializer};
+use std::cmp::{max, min};
 
 /// Custom serializer for DateTime<Utc> to UNIX timestamp in seconds
 fn serialize_timestamp_as_unix<S>(dt: &DateTime<Utc>, serializer: S) -> Result<S::Ok, S::Error>
@@ -236,7 +236,10 @@ impl Orderbook {
 
         let max_ask_price = self.asks.last()?.price;
         let spread = (max_ask_price - mid_price) / mid_price;
-        Some(min((spread * Decimal::from(10000)).round_dp(4), Decimal::from(999999))) // Convert to bps and round to 4 decimals
+        Some(min(
+            (spread * Decimal::from(10000)).round_dp(4),
+            Decimal::from(999999),
+        )) // Convert to bps and round to 4 decimals
     }
 
     /// Calculate the maximum basis points spread on the bid side (how far the deepest bid extends).
@@ -269,7 +272,10 @@ impl Orderbook {
 
         let min_bid_price = self.bids.last()?.price;
         let spread = (mid_price - min_bid_price) / mid_price;
-        Some(min((spread * Decimal::from(10000)).round_dp(4), Decimal::from(999999))) // Convert to bps and round to 4 decimals
+        Some(min(
+            (spread * Decimal::from(10000)).round_dp(4),
+            Decimal::from(999999),
+        )) // Convert to bps and round to 4 decimals
     }
 
     /// Calculate slippage in basis points for a given trade amount and side.

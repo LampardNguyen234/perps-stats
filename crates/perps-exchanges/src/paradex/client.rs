@@ -187,7 +187,9 @@ impl IPerps for ParadexClient {
 
     async fn get_recent_trades(&self, symbol: &str, _limit: u32) -> Result<Vec<Trade>> {
         let parsed_symbol = self.parse_symbol(symbol);
-        let response: TradesResponse = self.get(&format!("/trades?symbol={}", parsed_symbol)).await?;
+        let response: TradesResponse = self
+            .get(&format!("/trades?symbol={}", parsed_symbol))
+            .await?;
         let trades = response
             .trades
             .into_iter()
