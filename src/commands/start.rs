@@ -1552,6 +1552,10 @@ pub async fn execute(args: StartArgs) -> Result<()> {
         .await?;
     let repository = Arc::new(Mutex::new(PostgresRepository::new(pool.clone())));
 
+    // Pre-create daily partitions for the next 7 days
+    tracing::info!("Ensuring daily partitions exist for the next 7 days");
+    perps_database::partitions::create_partitions(&pool, 7).await?;
+
     // Create shutdown signal
     let shutdown = Arc::new(AtomicBool::new(false));
 

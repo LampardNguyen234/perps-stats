@@ -275,15 +275,14 @@ impl PostgresRepository {
         Ok(row.0)
     }
 
-    /// Ensure partition exists for a given date and table
-    /// Creates the partition if it doesn't exist
+    /// Ensure partition exists for a given date and table.
+    /// Creates the partition if it doesn't exist.
     pub async fn ensure_partition(&self, table: &str, date: NaiveDate) -> anyhow::Result<()> {
         let partition_name = format!("{}_{}", table, date.format("%Y_%m_%d"));
         let next_date = date
             .succ_opt()
             .ok_or_else(|| anyhow::anyhow!("Failed to calculate next date"))?;
 
-        // Check if partition exists
         let exists: bool =
             sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_class WHERE relname = $1)")
                 .bind(&partition_name)
@@ -300,14 +299,13 @@ impl PostgresRepository {
             );
 
             sqlx::query(&query).execute(&self.pool).await?;
-            tracing::debug!("✓ Created partition: {}", partition_name);
+            tracing::debug!("Created partition: {}", partition_name);
         }
 
         Ok(())
     }
 
     /// Ensure partitions exist for a timestamp range
-    /// This method creates partitions for all dates within the range
     pub async fn ensure_partitions_for_range(
         &self,
         table: &str,
@@ -329,91 +327,22 @@ impl PostgresRepository {
     }
 
     /// Drop old partitions older than the specified number of days
-    /// This method helps manage disk space by removing historical data
     pub async fn cleanup_old_partitions(&self, retention_days: i64) -> anyhow::Result<usize> {
-        let tables = vec![
-            "tickers",
-            "orderbooks",
-            "trades",
-            "funding_rates",
-            "liquidity_depth",
-            "klines",
-        ];
-
-        // Calculate cutoff date manually
-        let today = Utc::now().date_naive();
-        let mut cutoff_date = today;
-        for _ in 0..retention_days {
-            cutoff_date = cutoff_date
-                .pred_opt()
-                .ok_or_else(|| anyhow::anyhow!("Failed to calculate cutoff date"))?;
-        }
-
-        let mut dropped_count = 0;
-
-        for table in &tables {
-            // Find all partitions for this table that are older than cutoff
-            let query = format!(
-                "SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename LIKE '{}_%' ORDER BY tablename",
-                table
-            );
-
-            let rows: Vec<(String,)> = sqlx::query_as(&query).fetch_all(&self.pool).await?;
-
-            for (partition_name,) in rows {
-                // Extract date from partition name (format: table_YYYY_MM_DD)
-                if let Some(date_str) = partition_name.strip_prefix(&format!("{}_", table)) {
-                    // Parse date from YYYY_MM_DD format
-                    let parts: Vec<&str> = date_str.split('_').collect();
-                    if parts.len() == 3 {
-                        if let (Ok(year), Ok(month), Ok(day)) = (
-                            parts[0].parse::<i32>(),
-                            parts[1].parse::<u32>(),
-                            parts[2].parse::<u32>(),
-                        ) {
-                            if let Some(partition_date) = NaiveDate::from_ymd_opt(year, month, day)
-                            {
-                                if partition_date < cutoff_date {
-                                    // Drop this partition
-                                    let drop_query =
-                                        format!("DROP TABLE IF EXISTS {} CASCADE", partition_name);
-                                    sqlx::query(&drop_query).execute(&self.pool).await?;
-                                    tracing::info!("Dropped old partition: {}", partition_name);
-                                    dropped_count += 1;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(dropped_count)
+        crate::partitions::drop_old_partitions(&self.pool, retention_days as i32)
+            .await
     }
 
-    /// Get statistics about partition counts per table
+    /// Get partition counts per table
     pub async fn get_partition_stats(&self) -> anyhow::Result<Vec<(String, usize)>> {
-        let tables = vec![
-            "tickers",
-            "orderbooks",
-            "trades",
-            "funding_rates",
-            "liquidity_depth",
-            "klines",
-        ];
-        let mut stats = Vec::new();
+        let partitions = crate::partitions::list_partitions(&self.pool).await?;
 
-        for table in &tables {
-            let query = format!(
-                "SELECT COUNT(*) FROM pg_tables WHERE schemaname = 'public' AND tablename LIKE '{}_%'",
-                table
-            );
-
-            let count: (i64,) = sqlx::query_as(&query).fetch_one(&self.pool).await?;
-
-            stats.push((table.to_string(), count.0 as usize));
+        let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        for p in &partitions {
+            *counts.entry(p.parent_table.clone()).or_default() += 1;
         }
 
+        let mut stats: Vec<(String, usize)> = counts.into_iter().collect();
+        stats.sort_by(|a, b| a.0.cmp(&b.0));
         Ok(stats)
     }
 }

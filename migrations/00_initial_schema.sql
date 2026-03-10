@@ -1,10 +1,9 @@
--- Consolidated initial schema migration
+-- Consolidated initial schema migration (native PostgreSQL range partitioning)
 
 -- ============================================
 -- 1. REFERENCE TABLES
 -- ============================================
 
--- Create exchanges table
 CREATE TABLE IF NOT EXISTS exchanges (
     id SERIAL PRIMARY KEY,
     name TEXT NOT NULL UNIQUE,
@@ -34,7 +33,7 @@ INSERT INTO exchanges (name, maker_fee, taker_fee) VALUES
     ('01',          0.0,      0.0002)      -- 0% / 0.02%
 ON CONFLICT (name) DO NOTHING;
 
--- Create markets table
+-- Markets table (reference, not time-series)
 CREATE TABLE IF NOT EXISTS markets (
     id BIGSERIAL PRIMARY KEY,
     exchange_id INT NOT NULL REFERENCES exchanges(id) ON DELETE CASCADE,
@@ -54,13 +53,17 @@ CREATE INDEX IF NOT EXISTS idx_markets_symbol ON markets(symbol);
 CREATE INDEX IF NOT EXISTS idx_markets_exchange_symbol ON markets(exchange_id, symbol);
 
 -- ============================================
--- 2. TIME-SERIES TABLES
+-- 2. TIME-SERIES TABLES (partitioned by ts)
 -- ============================================
+-- Notes:
+--   - No BIGSERIAL PRIMARY KEY (partitioned tables require PK to include partition key)
+--   - No FK constraints (not supported on partitioned tables)
+--   - UNIQUE constraints must include the partition column (ts)
+--   - Partitions are created/managed by the application (partitions.rs)
 
 -- Tickers table
 CREATE TABLE IF NOT EXISTS tickers (
-    id BIGSERIAL PRIMARY KEY,
-    exchange_id INT NOT NULL REFERENCES exchanges(id),
+    exchange_id INT NOT NULL,
     symbol TEXT NOT NULL,
     last_price NUMERIC,
     mark_price NUMERIC,
@@ -78,12 +81,11 @@ CREATE TABLE IF NOT EXISTS tickers (
     high_24h NUMERIC,
     low_24h NUMERIC,
     ts TIMESTAMP WITH TIME ZONE NOT NULL
-);
+) PARTITION BY RANGE (ts);
 
 -- Orderbooks table (summary only — full book stored in Parquet files)
 CREATE TABLE IF NOT EXISTS orderbooks (
-    id BIGSERIAL PRIMARY KEY,
-    exchange_id INT NOT NULL REFERENCES exchanges(id),
+    exchange_id INT NOT NULL,
     symbol TEXT NOT NULL,
     bids_notional NUMERIC,
     asks_notional NUMERIC,
@@ -95,7 +97,7 @@ CREATE TABLE IF NOT EXISTS orderbooks (
     best_bid_qty NUMERIC,
     best_ask_qty NUMERIC,
     ts TIMESTAMP WITH TIME ZONE NOT NULL
-);
+) PARTITION BY RANGE (ts);
 
 COMMENT ON COLUMN orderbooks.bid_size IS 'Number of bid levels in the orderbook';
 COMMENT ON COLUMN orderbooks.ask_size IS 'Number of ask levels in the orderbook';
@@ -109,8 +111,7 @@ COMMENT ON COLUMN orderbooks.best_ask_qty IS 'Quantity available at best ask pri
 
 -- Trades table
 CREATE TABLE IF NOT EXISTS trades (
-    id BIGSERIAL PRIMARY KEY,
-    exchange_id INT NOT NULL REFERENCES exchanges(id),
+    exchange_id INT NOT NULL,
     symbol TEXT NOT NULL,
     trade_id TEXT,
     price NUMERIC NOT NULL,
@@ -118,23 +119,21 @@ CREATE TABLE IF NOT EXISTS trades (
     side TEXT,
     ts TIMESTAMP WITH TIME ZONE NOT NULL,
     raw JSONB
-);
+) PARTITION BY RANGE (ts);
 
 -- Funding rates table
 CREATE TABLE IF NOT EXISTS funding_rates (
-    id BIGSERIAL PRIMARY KEY,
-    exchange_id INT NOT NULL REFERENCES exchanges(id),
+    exchange_id INT NOT NULL,
     symbol TEXT NOT NULL,
     rate NUMERIC NOT NULL,
     next_rate NUMERIC,
     ts TIMESTAMP WITH TIME ZONE NOT NULL,
     raw JSONB
-);
+) PARTITION BY RANGE (ts);
 
 -- Liquidity depth table
 CREATE TABLE IF NOT EXISTS liquidity_depth (
-    id BIGSERIAL PRIMARY KEY,
-    exchange_id INT NOT NULL REFERENCES exchanges(id),
+    exchange_id INT NOT NULL,
     symbol TEXT NOT NULL,
     mid_price NUMERIC NOT NULL,
     bid_1bps NUMERIC NOT NULL,
@@ -150,15 +149,14 @@ CREATE TABLE IF NOT EXISTS liquidity_depth (
     max_ask_bps DECIMAL(10,4) NULL,
     max_bid_bps DECIMAL(10,4) NULL,
     ts TIMESTAMP WITH TIME ZONE NOT NULL
-);
+) PARTITION BY RANGE (ts);
 
 COMMENT ON COLUMN liquidity_depth.max_ask_bps IS 'Maximum ask spread in basis points from mid-price (how far the deepest ask extends)';
 COMMENT ON COLUMN liquidity_depth.max_bid_bps IS 'Maximum bid spread in basis points from mid-price (how far the deepest bid extends)';
 
 -- Klines table (OHLCV candlestick data)
 CREATE TABLE IF NOT EXISTS klines (
-    id BIGSERIAL PRIMARY KEY,
-    exchange_id INT NOT NULL REFERENCES exchanges(id),
+    exchange_id INT NOT NULL,
     symbol TEXT NOT NULL,
     interval TEXT NOT NULL,
     open_time TIMESTAMP WITH TIME ZONE NOT NULL,
@@ -171,13 +169,12 @@ CREATE TABLE IF NOT EXISTS klines (
     quote_volume NUMERIC NOT NULL,
     trade_count INT,
     ts TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
-    UNIQUE (exchange_id, symbol, interval, open_time)
-);
+    UNIQUE (exchange_id, symbol, interval, open_time, ts)
+) PARTITION BY RANGE (ts);
 
 -- Slippage table
 CREATE TABLE IF NOT EXISTS slippage (
-    id BIGSERIAL PRIMARY KEY,
-    exchange_id INTEGER NOT NULL REFERENCES exchanges(id),
+    exchange_id INTEGER NOT NULL,
     symbol VARCHAR(20) NOT NULL,
     ts TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     mid_price DECIMAL(20, 5) NOT NULL,
@@ -193,11 +190,29 @@ CREATE TABLE IF NOT EXISTS slippage (
     sell_total_cost DECIMAL(20, 2),
     sell_feasible BOOLEAN NOT NULL,
     CONSTRAINT slippage_unique UNIQUE (exchange_id, symbol, ts, trade_amount)
-);
+) PARTITION BY RANGE (ts);
 
 COMMENT ON TABLE slippage IS 'Slippage calculations for fixed trade amounts (1K, 10K, 50K, 100K, 500K USD) across exchanges';
 
--- Kline discovery cache table
+-- ============================================
+-- 3. DEFAULT PARTITIONS
+-- ============================================
+-- Default partitions catch any data that doesn't match a date-specific partition.
+-- This prevents INSERT failures when a partition hasn't been pre-created yet.
+
+CREATE TABLE IF NOT EXISTS tickers_default PARTITION OF tickers DEFAULT;
+CREATE TABLE IF NOT EXISTS orderbooks_default PARTITION OF orderbooks DEFAULT;
+CREATE TABLE IF NOT EXISTS trades_default PARTITION OF trades DEFAULT;
+CREATE TABLE IF NOT EXISTS funding_rates_default PARTITION OF funding_rates DEFAULT;
+CREATE TABLE IF NOT EXISTS liquidity_depth_default PARTITION OF liquidity_depth DEFAULT;
+CREATE TABLE IF NOT EXISTS klines_default PARTITION OF klines DEFAULT;
+CREATE TABLE IF NOT EXISTS slippage_default PARTITION OF slippage DEFAULT;
+
+-- ============================================
+-- 4. NON-PARTITIONED TABLES
+-- ============================================
+
+-- Kline discovery cache (small lookup table, not time-series)
 CREATE TABLE IF NOT EXISTS kline_discovery_cache (
     id SERIAL PRIMARY KEY,
     exchange_id INTEGER NOT NULL REFERENCES exchanges(id) ON DELETE CASCADE,
@@ -210,10 +225,7 @@ CREATE TABLE IF NOT EXISTS kline_discovery_cache (
     UNIQUE(exchange_id, symbol, interval)
 );
 
--- ============================================
--- 3. AUDIT TABLES
--- ============================================
-
+-- Ingest events audit table
 CREATE TABLE IF NOT EXISTS ingest_events (
     id BIGSERIAL PRIMARY KEY,
     exchange_id INT,
@@ -225,52 +237,45 @@ CREATE TABLE IF NOT EXISTS ingest_events (
 );
 
 -- ============================================
--- 4. INDEXES
+-- 5. INDEXES
 -- ============================================
+-- Composite (exchange_id, symbol, ts DESC) is the primary query pattern.
+-- Indexes are defined on the parent table and automatically inherited by partitions.
 
 -- Tickers
+CREATE INDEX IF NOT EXISTS idx_tickers_exchange_symbol_ts ON tickers (exchange_id, symbol, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_tickers_symbol_ts ON tickers (symbol, ts DESC);
-CREATE INDEX IF NOT EXISTS idx_tickers_exchange_ts ON tickers (exchange_id, ts DESC);
-CREATE INDEX IF NOT EXISTS idx_tickers_exchange_symbol ON tickers (exchange_id, symbol);
 
 -- Orderbooks
+CREATE INDEX IF NOT EXISTS idx_orderbooks_exchange_symbol_ts ON orderbooks (exchange_id, symbol, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_orderbooks_symbol_ts ON orderbooks (symbol, ts DESC);
-CREATE INDEX IF NOT EXISTS idx_orderbooks_exchange_ts ON orderbooks (exchange_id, ts DESC);
-CREATE INDEX IF NOT EXISTS idx_orderbooks_exchange_symbol ON orderbooks (exchange_id, symbol);
 
 -- Trades
+CREATE INDEX IF NOT EXISTS idx_trades_exchange_symbol_ts ON trades (exchange_id, symbol, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_trades_symbol_ts ON trades (symbol, ts DESC);
-CREATE INDEX IF NOT EXISTS idx_trades_exchange_ts ON trades (exchange_id, ts DESC);
-CREATE INDEX IF NOT EXISTS idx_trades_exchange_symbol ON trades (exchange_id, symbol);
 
 -- Funding rates
+CREATE INDEX IF NOT EXISTS idx_funding_exchange_symbol_ts ON funding_rates (exchange_id, symbol, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_funding_symbol_ts ON funding_rates (symbol, ts DESC);
-CREATE INDEX IF NOT EXISTS idx_funding_exchange_ts ON funding_rates (exchange_id, ts DESC);
-CREATE INDEX IF NOT EXISTS idx_funding_exchange_symbol ON funding_rates (exchange_id, symbol);
 
 -- Liquidity depth
-CREATE INDEX IF NOT EXISTS idx_liquidity_depth_symbol_ts ON liquidity_depth(symbol, ts DESC);
-CREATE INDEX IF NOT EXISTS idx_liquidity_depth_exchange_ts ON liquidity_depth(exchange_id, ts DESC);
-CREATE INDEX IF NOT EXISTS idx_liquidity_depth_exchange_symbol ON liquidity_depth(exchange_id, symbol);
+CREATE INDEX IF NOT EXISTS idx_liquidity_depth_exchange_symbol_ts ON liquidity_depth (exchange_id, symbol, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_liquidity_depth_symbol_ts ON liquidity_depth (symbol, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_liquidity_depth_max_bps ON liquidity_depth (exchange_id, symbol, max_ask_bps, max_bid_bps);
-CREATE INDEX IF NOT EXISTS idx_liquidity_depth_ts_max_bps ON liquidity_depth (exchange_id, symbol, ts) WHERE max_ask_bps IS NOT NULL AND max_bid_bps IS NOT NULL;
 
 -- Klines
-CREATE INDEX IF NOT EXISTS idx_klines_exchange_symbol ON klines(exchange_id, symbol);
-CREATE INDEX IF NOT EXISTS idx_klines_symbol_interval ON klines(symbol, interval);
-CREATE INDEX IF NOT EXISTS idx_klines_open_time ON klines(open_time DESC);
-CREATE INDEX IF NOT EXISTS idx_klines_ts ON klines(ts DESC);
-CREATE INDEX IF NOT EXISTS idx_klines_exchange_symbol_interval ON klines(exchange_id, symbol, interval);
+CREATE INDEX IF NOT EXISTS idx_klines_exchange_symbol_interval_ts ON klines (exchange_id, symbol, interval, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_klines_open_time ON klines (open_time DESC);
 
 -- Slippage
-CREATE INDEX IF NOT EXISTS idx_slippage_exchange_symbol_time ON slippage(exchange_id, symbol, ts DESC);
-CREATE INDEX IF NOT EXISTS idx_slippage_symbol_time ON slippage(symbol, ts DESC);
-CREATE INDEX IF NOT EXISTS idx_slippage_trade_amount ON slippage(trade_amount);
+CREATE INDEX IF NOT EXISTS idx_slippage_exchange_symbol_ts ON slippage (exchange_id, symbol, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_slippage_symbol_ts ON slippage (symbol, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_slippage_trade_amount ON slippage (trade_amount);
 
 -- Kline discovery cache
-CREATE INDEX IF NOT EXISTS idx_kline_discovery_cache_lookup ON kline_discovery_cache(exchange_id, symbol, interval);
-CREATE INDEX IF NOT EXISTS idx_kline_discovery_cache_discovered_at ON kline_discovery_cache(discovered_at);
+CREATE INDEX IF NOT EXISTS idx_kline_discovery_cache_lookup ON kline_discovery_cache (exchange_id, symbol, interval);
+CREATE INDEX IF NOT EXISTS idx_kline_discovery_cache_discovered_at ON kline_discovery_cache (discovered_at);
 
 -- Ingest events
-CREATE INDEX IF NOT EXISTS idx_ingest_events_ts ON ingest_events(ts DESC);
-CREATE INDEX IF NOT EXISTS idx_ingest_events_status ON ingest_events(status);
+CREATE INDEX IF NOT EXISTS idx_ingest_events_ts ON ingest_events (ts DESC);
+CREATE INDEX IF NOT EXISTS idx_ingest_events_status ON ingest_events (status);

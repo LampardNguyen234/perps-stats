@@ -2,8 +2,16 @@ use anyhow::{Context, Result};
 use chrono::{NaiveDate, Utc};
 use sqlx::PgPool;
 
-/// Tables that support partitioning
-const PARTITIONED_TABLES: &[&str] = &["tickers", "orderbooks", "trades", "funding_rates"];
+/// Tables that support daily partitioning
+const PARTITIONED_TABLES: &[&str] = &[
+    "tickers",
+    "orderbooks",
+    "trades",
+    "funding_rates",
+    "liquidity_depth",
+    "klines",
+    "slippage",
+];
 
 /// Create daily partitions for the next N days
 pub async fn create_partitions(pool: &PgPool, days: i32) -> Result<()> {
@@ -53,7 +61,7 @@ async fn create_partition_for_date(pool: &PgPool, table: &str, date: NaiveDate) 
 
     // Create the partition
     let create_sql = format!(
-        "CREATE TABLE {} PARTITION OF {} FOR VALUES FROM ('{}') TO ('{}')",
+        "CREATE TABLE IF NOT EXISTS {} PARTITION OF {} FOR VALUES FROM ('{}') TO ('{}')",
         partition_name, table, start_date, end_date
     );
 
@@ -87,14 +95,15 @@ async fn drop_partitions_before_date(
     table: &str,
     cutoff_date: NaiveDate,
 ) -> Result<usize> {
-    // Query to find partitions for this table
+    // Query to find partitions for this table (exclude default partitions)
     let partitions: Vec<String> = sqlx::query_scalar(
         r#"
-        SELECT c.relname
+        SELECT c.relname::text
         FROM pg_class c
         JOIN pg_inherits i ON i.inhrelid = c.oid
         JOIN pg_class p ON p.oid = i.inhparent
         WHERE p.relname = $1
+          AND c.relname NOT LIKE '%_default'
         "#,
     )
     .bind(table)
@@ -131,8 +140,8 @@ pub async fn list_partitions(pool: &PgPool) -> Result<Vec<PartitionInfo>> {
     let partitions = sqlx::query_as::<_, PartitionInfo>(
         r#"
         SELECT
-            p.relname AS parent_table,
-            c.relname AS partition_name,
+            p.relname::text AS parent_table,
+            c.relname::text AS partition_name,
             pg_size_pretty(pg_total_relation_size(c.oid)) AS size
         FROM pg_class c
         JOIN pg_inherits i ON i.inhrelid = c.oid

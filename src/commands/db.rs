@@ -36,7 +36,7 @@ pub async fn migrate(database_url: Option<String>) -> Result<()> {
 pub async fn clean(
     database_url: Option<String>,
     older_than: Option<i32>,
-    _drop_partitions_older_than: Option<i32>, // Deprecated: partitioning not used
+    drop_partitions_older_than: Option<i32>,
     truncate: bool,
 ) -> Result<()> {
     let db_url = database_url.ok_or_else(|| {
@@ -45,8 +45,8 @@ pub async fn clean(
         )
     })?;
 
-    if !truncate && older_than.is_none() {
-        anyhow::bail!("Must specify at least one cleaning option: --older-than or --truncate");
+    if !truncate && older_than.is_none() && drop_partitions_older_than.is_none() {
+        anyhow::bail!("Must specify at least one cleaning option: --older-than, --drop-partitions-older-than, or --truncate");
     }
 
     if truncate {
@@ -69,6 +69,12 @@ pub async fn clean(
         tracing::info!("Deleting data older than {} days", days);
         delete_old_data(&pool, days).await?;
         tracing::info!("✓ Old data deleted");
+    }
+
+    if let Some(days) = drop_partitions_older_than {
+        tracing::info!("Dropping partitions older than {} days", days);
+        let dropped = perps_database::partitions::drop_old_partitions(&pool, days).await?;
+        tracing::info!("✓ Dropped {} partitions", dropped);
     }
 
     Ok(())
