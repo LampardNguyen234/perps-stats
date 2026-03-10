@@ -154,6 +154,7 @@ async fn main() -> Result<()> {
             StatsCommands::Summary(args) => commands::stats::execute_summary(args).await?,
             StatsCommands::Chart(args) => commands::stats::execute_chart(args).await?,
             StatsCommands::Hist(args) => commands::stats::execute_hist(args).await?,
+            StatsCommands::PriceDev(args) => commands::stats::execute_price_dev(args).await?,
         },
     }
 

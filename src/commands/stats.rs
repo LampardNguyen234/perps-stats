@@ -1876,6 +1876,485 @@ fn render_histogram_json(hist: &Histogram) -> serde_json::Value {
     })
 }
 
+// ─── stats price-dev ─────────────────────────────────────────────────────────
+
+/// Arguments for `stats price-dev`
+#[derive(Args)]
+pub struct PriceDevArgs {
+    /// Comma-separated list of symbols (e.g., BTC,ETH). Defaults to all symbols if not specified.
+    #[arg(short, long)]
+    pub symbols: Option<String>,
+
+    /// Comma-separated list of exchanges (e.g., binance,bybit). Defaults to all exchanges if not specified.
+    #[arg(short, long)]
+    pub exchanges: Option<String>,
+
+    /// Output format (table, json)
+    #[arg(short, long, default_value = "table")]
+    pub format: String,
+
+    /// Generate a timeseries plot of mark/index/last price (requires single symbol and single exchange)
+    #[arg(long, default_value_t = false)]
+    pub plot: bool,
+
+    /// Database URL (required)
+    #[arg(long, env = "DATABASE_URL")]
+    pub database_url: Option<String>,
+}
+
+/// Deviation statistics (%) for one price pair
+#[derive(Debug, sqlx::FromRow)]
+struct PriceDevStats {
+    pub label: Option<String>,
+    pub min_dev: Option<f64>,
+    pub mean_dev: Option<f64>,
+    pub median_dev: Option<f64>,
+    pub p95_dev: Option<f64>,
+    pub p99_dev: Option<f64>,
+    pub max_dev: Option<f64>,
+    pub sample_count: Option<i64>,
+}
+
+/// A raw timeseries point for all three prices
+#[derive(Debug, sqlx::FromRow)]
+struct PricePoint {
+    pub ts: DateTime<Utc>,
+    pub mark_price: Option<f64>,
+    pub last_price: Option<f64>,
+    pub index_price: Option<f64>,
+}
+
+/// Fetch price-deviation stats grouped by symbol (multiple symbols, single exchange).
+///
+/// Returns one row per symbol with stats on (mark-index)/index % deviation.
+async fn fetch_price_dev_by_symbol(
+    pool: &PgPool,
+    symbols: &[String],
+    exchange_id: i32,
+    price_col: &str,
+    ref_col: &str,
+) -> Result<Vec<PriceDevStats>> {
+    let placeholders: Vec<String> = (2..=symbols.len() + 1)
+        .map(|i| format!("${}", i))
+        .collect();
+
+    let query = format!(
+        r#"
+        SELECT
+            sub.symbol AS label,
+            MIN(sub.dev)::DOUBLE PRECISION            AS min_dev,
+            AVG(sub.dev)::DOUBLE PRECISION            AS mean_dev,
+            PERCENTILE_CONT(0.5)  WITHIN GROUP (ORDER BY sub.dev)::DOUBLE PRECISION AS median_dev,
+            PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY sub.dev)::DOUBLE PRECISION AS p95_dev,
+            PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY sub.dev)::DOUBLE PRECISION AS p99_dev,
+            MAX(sub.dev)::DOUBLE PRECISION            AS max_dev,
+            COUNT(*)::BIGINT                          AS sample_count
+        FROM (
+            SELECT t.symbol,
+                   ABS((t.{price} - t.{ref_col}) / NULLIF(t.{ref_col}, 0) * 100) AS dev
+            FROM tickers t
+            WHERE t.exchange_id = $1
+              AND t.symbol IN ({placeholders})
+              AND t.{price}   IS NOT NULL
+              AND t.{ref_col} IS NOT NULL
+              AND t.{ref_col} <> 0
+        ) sub
+        WHERE sub.dev IS NOT NULL
+        GROUP BY sub.symbol
+        ORDER BY sub.symbol
+        "#,
+        price = price_col,
+        ref_col = ref_col,
+        placeholders = placeholders.join(", ")
+    );
+
+    let mut qb = sqlx::query_as::<_, PriceDevStats>(&query).bind(exchange_id);
+    for s in symbols {
+        qb = qb.bind(s);
+    }
+
+    qb.fetch_all(pool)
+        .await
+        .context("Failed to fetch price-dev stats by symbol")
+}
+
+/// Fetch price-deviation stats grouped by exchange (single symbol, multiple exchanges).
+async fn fetch_price_dev_by_exchange(
+    pool: &PgPool,
+    symbol: &str,
+    exchange_ids: &[i32],
+    price_col: &str,
+    ref_col: &str,
+) -> Result<Vec<PriceDevStats>> {
+    let placeholders: Vec<String> = (2..=exchange_ids.len() + 1)
+        .map(|i| format!("${}", i))
+        .collect();
+
+    let query = format!(
+        r#"
+        SELECT
+            e.name                                    AS label,
+            MIN(sub.dev)::DOUBLE PRECISION            AS min_dev,
+            AVG(sub.dev)::DOUBLE PRECISION            AS mean_dev,
+            PERCENTILE_CONT(0.5)  WITHIN GROUP (ORDER BY sub.dev)::DOUBLE PRECISION AS median_dev,
+            PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY sub.dev)::DOUBLE PRECISION AS p95_dev,
+            PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY sub.dev)::DOUBLE PRECISION AS p99_dev,
+            MAX(sub.dev)::DOUBLE PRECISION            AS max_dev,
+            COUNT(*)::BIGINT                          AS sample_count
+        FROM (
+            SELECT t.exchange_id,
+                   ABS((t.{price} - t.{ref_col}) / NULLIF(t.{ref_col}, 0) * 100) AS dev
+            FROM tickers t
+            WHERE t.symbol = $1
+              AND t.exchange_id IN ({placeholders})
+              AND t.{price}   IS NOT NULL
+              AND t.{ref_col} IS NOT NULL
+              AND t.{ref_col} <> 0
+        ) sub
+        JOIN exchanges e ON sub.exchange_id = e.id
+        WHERE sub.dev IS NOT NULL
+        GROUP BY e.id, e.name
+        ORDER BY e.name
+        "#,
+        price = price_col,
+        ref_col = ref_col,
+        placeholders = placeholders.join(", ")
+    );
+
+    let mut qb = sqlx::query_as::<_, PriceDevStats>(&query).bind(symbol);
+    for id in exchange_ids {
+        qb = qb.bind(id);
+    }
+
+    qb.fetch_all(pool)
+        .await
+        .context("Failed to fetch price-dev stats by exchange")
+}
+
+/// Fetch all three price series for a single symbol/exchange pair.
+async fn fetch_price_timeseries(
+    pool: &PgPool,
+    symbol: &str,
+    exchange_id: i32,
+) -> Result<Vec<PricePoint>> {
+    sqlx::query_as::<_, PricePoint>(
+        r#"
+        SELECT
+            ts AS ts,
+            mark_price::DOUBLE PRECISION  AS mark_price,
+            last_price::DOUBLE PRECISION  AS last_price,
+            index_price::DOUBLE PRECISION AS index_price
+        FROM tickers
+        WHERE exchange_id = $1
+          AND symbol = $2
+          AND (mark_price IS NOT NULL OR last_price IS NOT NULL OR index_price IS NOT NULL)
+        ORDER BY ts
+        "#,
+    )
+    .bind(exchange_id)
+    .bind(symbol)
+    .fetch_all(pool)
+    .await
+    .context("Failed to fetch price timeseries")
+}
+
+/// Display a price-deviation stats table (two sections: mark vs index, last vs index).
+fn display_price_dev_table(
+    mark_rows: &[PriceDevStats],
+    last_rows: &[PriceDevStats],
+    group_header: &str,
+    fmt: &str,
+) -> Result<()> {
+    let mk_label = "Last vs Mark (%)";
+    let last_label = "Last vs Index (%)";
+
+    match fmt.to_lowercase().as_str() {
+        "json" => {
+            let build_rows = |rows: &[PriceDevStats]| {
+                rows.iter()
+                    .map(|r| {
+                        serde_json::json!({
+                            "label":        r.label,
+                            "min":          r.min_dev,
+                            "mean":         r.mean_dev,
+                            "median":       r.median_dev,
+                            "p95":          r.p95_dev,
+                            "p99":          r.p99_dev,
+                            "max":          r.max_dev,
+                            "sample_count": r.sample_count,
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let out = serde_json::json!({
+                "context":    group_header,
+                "last_vs_mark":   build_rows(mark_rows),
+                "last_vs_index":  build_rows(last_rows),
+            });
+            println!("{}", serde_json::to_string_pretty(&out)?);
+        }
+        _ => {
+            for (section_label, rows) in [
+                (mk_label, mark_rows),
+                (last_label, last_rows),
+            ] {
+                println!("\n{} — {}", group_header, section_label);
+                let mut table = Table::new();
+                table.set_format(*format::consts::FORMAT_NO_LINESEP_WITH_TITLE);
+                table.set_titles(Row::new(vec![
+                    Cell::new("Label"),
+                    Cell::new("Min %"),
+                    Cell::new("Mean %"),
+                    Cell::new("Median %"),
+                    Cell::new("P95 %"),
+                    Cell::new("P99 %"),
+                    Cell::new("Max %"),
+                    Cell::new("Samples"),
+                ]));
+                for r in rows {
+                    table.add_row(Row::new(vec![
+                        Cell::new(r.label.as_deref().unwrap_or("N/A")),
+                        Cell::new(&format_dev_stat(r.min_dev)),
+                        Cell::new(&format_dev_stat(r.mean_dev)),
+                        Cell::new(&format_dev_stat(r.median_dev)),
+                        Cell::new(&format_dev_stat(r.p95_dev)),
+                        Cell::new(&format_dev_stat(r.p99_dev)),
+                        Cell::new(&format_dev_stat(r.max_dev)),
+                        Cell::new(&r.sample_count.unwrap_or(0).to_string()),
+                    ]));
+                }
+                table.printstd();
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Format a price-deviation percentage value.
+fn format_dev_stat(v: Option<f64>) -> String {
+    match v {
+        Some(v) => format!("{:.4}%", v),
+        None => "N/A".to_string(),
+    }
+}
+
+/// Plot mark/index/last price timeseries for a single symbol+exchange.
+fn plot_price_timeseries(
+    data: &[PricePoint],
+    symbol: &str,
+    exchange: &str,
+) -> Result<()> {
+    if data.is_empty() {
+        anyhow::bail!("No price data to plot");
+    }
+
+    let min_ts = data.iter().map(|p| p.ts).min().unwrap();
+    let max_ts = data.iter().map(|p| p.ts).max().unwrap();
+
+    // Collect finite values for all three series
+    let all_values: Vec<f64> = data
+        .iter()
+        .flat_map(|p| [p.mark_price, p.last_price, p.index_price])
+        .flatten()
+        .filter(|v| v.is_finite() && *v > 0.0)
+        .collect();
+
+    if all_values.is_empty() {
+        anyhow::bail!("No finite price values to plot");
+    }
+
+    let min_v = all_values.iter().cloned().fold(f64::INFINITY, f64::min);
+    let max_v = all_values.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let padding = (max_v - min_v) * 0.05;
+
+    std::fs::create_dir_all("out").context("Failed to create output directory")?;
+    let filename = format!(
+        "out/price_dev_{}_{}.png",
+        symbol.to_lowercase(),
+        exchange.to_lowercase()
+    );
+
+    let root = BitMapBackend::new(&filename, (1400, 800)).into_drawing_area();
+    root.fill(&WHITE)?;
+
+    let title = format!(
+        "Mark / Last / Index Price — {} on {}",
+        symbol,
+        exchange.to_uppercase()
+    );
+
+    let mut chart = ChartBuilder::on(&root)
+        .caption(&title, ("sans-serif", 28).into_font())
+        .margin(15)
+        .x_label_area_size(45)
+        .y_label_area_size(90)
+        .build_cartesian_2d(min_ts..max_ts, (min_v - padding)..(max_v + padding))?;
+
+    chart
+        .configure_mesh()
+        .x_desc("Date")
+        .y_desc("Price (USD)")
+        .x_label_formatter(&|x| x.format("%Y-%m-%d").to_string())
+        .y_label_formatter(&|y| format_oi_value(*y))
+        .draw()?;
+
+    // mark_price — orange
+    let mark_color = RGBColor(255, 127, 14);
+    chart
+        .draw_series(LineSeries::new(
+            data.iter()
+                .filter_map(|p| p.mark_price.map(|v| (p.ts, v))),
+            &mark_color,
+        ))?
+        .label("Mark Price")
+        .legend(move |(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], &mark_color));
+
+    // last_price — blue
+    let last_color = RGBColor(31, 119, 180);
+    chart
+        .draw_series(LineSeries::new(
+            data.iter()
+                .filter_map(|p| p.last_price.map(|v| (p.ts, v))),
+            &last_color,
+        ))?
+        .label("Last Price")
+        .legend(move |(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], &last_color));
+
+    // index_price — green (dashed-style via thicker line)
+    let index_color = RGBColor(44, 160, 44);
+    chart
+        .draw_series(LineSeries::new(
+            data.iter()
+                .filter_map(|p| p.index_price.map(|v| (p.ts, v))),
+            index_color.stroke_width(2),
+        ))?
+        .label("Index Price")
+        .legend(move |(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], &index_color));
+
+    chart
+        .configure_series_labels()
+        .position(SeriesLabelPosition::UpperRight)
+        .background_style(&WHITE.mix(0.8))
+        .border_style(&BLACK)
+        .draw()?;
+
+    root.present()?;
+    println!("\n✓ Plot saved to: {}", filename);
+
+    Ok(())
+}
+
+pub async fn execute_price_dev(args: PriceDevArgs) -> Result<()> {
+    let db_url = args.database_url.ok_or_else(|| {
+        anyhow::anyhow!(
+            "DATABASE_URL is required. Set via --database-url flag or DATABASE_URL environment variable"
+        )
+    })?;
+
+    tracing::info!("Connecting to database");
+    let pool = PgPool::connect(&db_url)
+        .await
+        .context("Failed to connect to database")?;
+
+    let symbols: Vec<String> = match args.symbols {
+        Some(ref s) => s
+            .split(',')
+            .map(|v| v.trim().to_uppercase())
+            .filter(|v| !v.is_empty())
+            .collect(),
+        None => {
+            tracing::info!("No symbols specified, fetching all symbols");
+            get_all_symbol_names(&pool).await?
+        }
+    };
+
+    let exchanges: Vec<String> = match args.exchanges {
+        Some(ref e) => e
+            .split(',')
+            .map(|v| v.trim().to_lowercase())
+            .filter(|v| !v.is_empty())
+            .collect(),
+        None => {
+            tracing::info!("No exchanges specified, fetching all exchanges");
+            get_all_exchange_names(&pool).await?
+        }
+    };
+
+    if symbols.is_empty() {
+        anyhow::bail!("No symbols found in database");
+    }
+    if exchanges.is_empty() {
+        anyhow::bail!("No exchanges found in database");
+    }
+
+    // --plot requires exactly one symbol and one exchange
+    if args.plot && (symbols.len() > 1 || exchanges.len() > 1) {
+        anyhow::bail!(
+            "--plot requires a single symbol and a single exchange.\n\
+            Got {} symbol(s) and {} exchange(s).",
+            symbols.len(),
+            exchanges.len()
+        );
+    }
+
+    if symbols.len() > 1 && exchanges.len() > 1 {
+        anyhow::bail!(
+            "Invalid combination: multiple symbols ({}) with multiple exchanges ({}) is not supported.\n\
+            Use either:\n\
+            - Multiple symbols with a single exchange\n\
+            - Single symbol with multiple exchanges",
+            symbols.len(),
+            exchanges.len()
+        );
+    }
+
+    let exchange_ids = get_exchange_ids(&pool, &exchanges).await?;
+    if exchange_ids.is_empty() {
+        anyhow::bail!("No valid exchanges found in database");
+    }
+
+    if args.plot {
+        // Single symbol, single exchange — timeseries plot
+        let data = fetch_price_timeseries(&pool, &symbols[0], exchange_ids[0]).await?;
+        plot_price_timeseries(&data, &symbols[0], &exchanges[0])?;
+        return Ok(());
+    }
+
+    if symbols.len() > 1 {
+        // Multiple symbols, single exchange
+        let mark_rows =
+            fetch_price_dev_by_symbol(&pool, &symbols, exchange_ids[0], "last_price", "mark_price")
+                .await?;
+        let last_rows =
+            fetch_price_dev_by_symbol(&pool, &symbols, exchange_ids[0], "last_price", "index_price")
+                .await?;
+        let header = format!("Exchange: {}", exchanges[0].to_uppercase());
+        display_price_dev_table(&mark_rows, &last_rows, &header, &args.format)?;
+    } else {
+        // Single symbol, one or more exchanges
+        let mark_rows = fetch_price_dev_by_exchange(
+            &pool,
+            &symbols[0],
+            &exchange_ids,
+            "last_price",
+            "mark_price",
+        )
+        .await?;
+        let last_rows = fetch_price_dev_by_exchange(
+            &pool,
+            &symbols[0],
+            &exchange_ids,
+            "last_price",
+            "index_price",
+        )
+        .await?;
+        let header = format!("Symbol: {}", symbols[0]);
+        display_price_dev_table(&mark_rows, &last_rows, &header, &args.format)?;
+    }
+
+    Ok(())
+}
+
 pub async fn execute_hist(args: HistArgs) -> Result<()> {
     // Validate data type early so we fail fast before DB connection
     let column = data_type_column(&args.data, args.notional)?;

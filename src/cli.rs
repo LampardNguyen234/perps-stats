@@ -188,6 +188,9 @@ pub enum StatsCommands {
 
     /// Print a histogram of a data field (oi, volume) for one or more symbols/exchanges
     Hist(crate::commands::stats::HistArgs),
+
+    /// Report price deviation statistics between mark, last, and index price
+    PriceDev(crate::commands::stats::PriceDevArgs),
 }
 
 #[derive(Subcommand)]
