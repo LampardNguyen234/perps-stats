@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize, Serializer};
-use std::cmp::{max, min};
+use std::cmp::min;
 
 /// Custom serializer for DateTime<Utc> to UNIX timestamp in seconds
 fn serialize_timestamp_as_unix<S>(dt: &DateTime<Utc>, serializer: S) -> Result<S::Ok, S::Error>

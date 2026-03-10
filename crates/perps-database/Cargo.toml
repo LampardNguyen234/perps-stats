@@ -19,8 +19,19 @@ anyhow = "1.0"
 # Logging
 tracing = "0.1"
 
-# JSON serialization
-serde_json = "1.0"
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
 
 # Decimal
 rust_decimal = "1.37"
+
+# Arrow / Parquet for orderbook storage
+arrow = { version = "53", default-features = false, features = ["ipc"] }
+parquet = { version = "53", default-features = false, features = ["arrow", "zstd"] }
+
+# Date/time
+chrono = "0.4"
+
+[dev-dependencies]
+tempfile = "3.10"
+rust_decimal_macros = "1.37"

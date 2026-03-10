@@ -20,8 +20,7 @@ clap = { version = "4.5", features = ["derive", "env"] }
 tokio = { version = "1.41", features = ["full"] }
 futures = "0.3"
 
-# WebSocket
-tokio-tungstenite = { version = "0.21", features = ["native-tls"] }
+# URL parsing
 url = "2.5"
 
 # Logging
@@ -59,20 +58,19 @@ plotters = "0.3"
 # Database
 sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "migrate", "macros"], default-features = false }
 
+# Arrow / Parquet (for orderbook CLI export command)
+parquet = { version = "53", default-features = false, features = ["arrow", "zstd"] }
+
 # Web server (for REST API)
 axum = "0.7"
 tower = "0.4"
 tower-http = { version = "0.5", features = ["cors", "trace", "timeout", "fs"] }
-hyper = { version = "1.0", features = ["full"] }
 
 # Workspace crates
 perps-core = { path = "crates/perps-core" }
 perps-exchanges = { path = "crates/perps-exchanges" }
 perps-database = { path = "crates/perps-database" }
 perps-aggregator = { path = "crates/perps-aggregator" }
-
-# Force older version of base64ct to avoid edition2024 requirement
-base64ct = "=1.6.0"
 
 [dev-dependencies]
 tempfile = "3.10"

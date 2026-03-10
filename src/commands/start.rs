@@ -84,6 +84,10 @@ pub struct StartArgs {
     /// Database connection pool size (for both API and data collection)
     #[arg(long, default_value = "20")]
     pub pool_size: u32,
+
+    /// Directory for Parquet orderbook storage
+    #[arg(long, env = "PARQUET_DIR", default_value = "data/parquet")]
+    pub parquet_dir: String,
 }
 
 /// Load symbols from file (supports both line-separated and comma-separated formats)
@@ -1034,6 +1038,7 @@ async fn spawn_liquidity_report_task(
     exchange_symbols: HashMap<String, Vec<String>>,
     report_interval: u64,
     repository: Arc<Mutex<PostgresRepository>>,
+    parquet_writer: Arc<Mutex<perps_database::OrderbookParquetWriter>>,
     shutdown: Arc<AtomicBool>,
     _exclude_fees: bool,
     _override_fee: Option<f64>,
@@ -1181,6 +1186,20 @@ async fn spawn_liquidity_report_task(
 
                             // Store orderbook (use finest resolution for storage)
                             if let Some(finest_book) = multi_orderbook.best_for_tight_spreads() {
+                                // Write full orderbook to Parquet
+                                {
+                                    let mut pw = parquet_writer.lock().await;
+                                    if let Err(e) = pw.write_orderbook(exchange, symbol, finest_book) {
+                                        tracing::error!(
+                                            "Failed to write orderbook to Parquet for {}/{}: {}",
+                                            exchange,
+                                            symbol,
+                                            e
+                                        );
+                                    }
+                                }
+
+                                // Store derived columns to SQL
                                 let repo = repository.lock().await;
                                 match repo
                                     .store_orderbooks_with_exchange(
@@ -1220,7 +1239,23 @@ async fn spawn_liquidity_report_task(
                 }
             }
 
+            // Flush Parquet buffers at the end of each report cycle
+            {
+                let mut pw = parquet_writer.lock().await;
+                if let Err(e) = pw.flush_all() {
+                    tracing::error!("Failed to flush Parquet writer after report cycle: {}", e);
+                }
+            }
+
             tracing::info!("Completed liquidity depth report generation");
+        }
+
+        // Final flush on task exit
+        {
+            let mut pw = parquet_writer.lock().await;
+            if let Err(e) = pw.flush_all() {
+                tracing::error!("Failed to flush Parquet writer on task exit: {}", e);
+            }
         }
 
         tracing::info!("Liquidity depth report generation task stopped");
@@ -1556,11 +1591,18 @@ pub async fn execute(args: StartArgs) -> Result<()> {
         tracing::info!("Klines backfill disabled, skipping klines tasks");
     }
 
+    // Initialize Parquet writer for orderbook storage
+    let parquet_writer = Arc::new(Mutex::new(
+        perps_database::OrderbookParquetWriter::with_defaults(&args.parquet_dir),
+    ));
+    tracing::info!("Parquet orderbook storage directory: {}", args.parquet_dir);
+
     // Spawn liquidity depth report generation task (single task for all exchanges)
     let liquidity_report_task = spawn_liquidity_report_task(
         exchange_symbols.clone(),
         args.report_interval,
         repository.clone(),
+        parquet_writer.clone(),
         shutdown.clone(),
         args.exclude_fees,
         args.override_fee,
@@ -1626,6 +1668,16 @@ pub async fn execute(args: StartArgs) -> Result<()> {
 
     // Wait for all tasks to complete
     let results = futures::future::join_all(tasks).await;
+
+    // Flush remaining Parquet buffers on shutdown
+    {
+        let mut pw = parquet_writer.lock().await;
+        if let Err(e) = pw.flush_all() {
+            tracing::error!("Failed to flush Parquet writer on shutdown: {}", e);
+        } else {
+            tracing::info!("Flushed Parquet writer on shutdown");
+        }
+    }
 
     // Check for errors
     let mut had_errors = false;

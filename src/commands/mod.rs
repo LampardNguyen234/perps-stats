@@ -4,6 +4,7 @@ pub mod db;
 pub mod export;
 pub mod liquidity;
 pub mod market;
+pub mod orderbook;
 pub mod run;
 pub mod serve;
 pub mod start;

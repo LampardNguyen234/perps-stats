@@ -943,7 +943,7 @@ fn display_stats_by_exchange(
 
             for stat in stats {
                 table.add_row(Row::new(vec![
-                    Cell::new(&stat.exchange.as_deref().unwrap_or("N/A")),
+                    Cell::new(stat.exchange.as_deref().unwrap_or("N/A")),
                     Cell::new(&format_number(stat.min_oi_vol_pct)),
                     Cell::new(&format_number(stat.mean_oi_vol_pct)),
                     Cell::new(&format_number(stat.median_oi_vol_pct)),
@@ -1011,7 +1011,7 @@ fn display_stats_by_symbol(
 
             for stat in stats {
                 table.add_row(Row::new(vec![
-                    Cell::new(&stat.symbol.as_deref().unwrap_or("N/A")),
+                    Cell::new(stat.symbol.as_deref().unwrap_or("N/A")),
                     Cell::new(&format_number(stat.min_oi_vol_pct)),
                     Cell::new(&format_number(stat.mean_oi_vol_pct)),
                     Cell::new(&format_number(stat.median_oi_vol_pct)),
@@ -1249,7 +1249,7 @@ fn plot_oi_timeseries(data: &[OiTimeSeriesPoint], context: &str, grouping: &str)
     for point in data {
         series
             .entry(point.label.clone())
-            .or_insert_with(Vec::new)
+            .or_default()
             .push((point.ts, point.oi_vol_ratio));
     }
 
@@ -1316,14 +1316,14 @@ fn plot_oi_timeseries(data: &[OiTimeSeriesPoint], context: &str, grouping: &str)
                 &color,
             ))?
             .label(label)
-            .legend(move |(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], &color));
+            .legend(move |(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], color));
     }
 
     chart
         .configure_series_labels()
         .position(SeriesLabelPosition::UpperRight)
-        .background_style(&WHITE.mix(0.8))
-        .border_style(&BLACK)
+        .background_style(WHITE.mix(0.8))
+        .border_style(BLACK)
         .draw()?;
 
     root.present()?;
@@ -1508,14 +1508,14 @@ fn plot_value_timeseries(
                     &color,
                 ))?
                 .label(label.as_str())
-                .legend(move |(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], &color));
+                .legend(move |(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], color));
         }
 
         chart
             .configure_series_labels()
             .position(SeriesLabelPosition::UpperRight)
-            .background_style(&WHITE.mix(0.8))
-            .border_style(&BLACK)
+            .background_style(WHITE.mix(0.8))
+            .border_style(BLACK)
             .draw()?;
     } else {
         let mut chart = ChartBuilder::on(&root)
@@ -1541,14 +1541,14 @@ fn plot_value_timeseries(
                     &color,
                 ))?
                 .label(label.as_str())
-                .legend(move |(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], &color));
+                .legend(move |(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], color));
         }
 
         chart
             .configure_series_labels()
             .position(SeriesLabelPosition::UpperRight)
-            .background_style(&WHITE.mix(0.8))
-            .border_style(&BLACK)
+            .background_style(WHITE.mix(0.8))
+            .border_style(BLACK)
             .draw()?;
     }
 
@@ -2210,7 +2210,7 @@ fn plot_price_timeseries(data: &[PricePoint], symbol: &str, exchange: &str) -> R
             &mark_color,
         ))?
         .label("Mark Price")
-        .legend(move |(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], &mark_color));
+        .legend(move |(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], mark_color));
 
     // last_price — blue
     let last_color = RGBColor(31, 119, 180);
@@ -2220,7 +2220,7 @@ fn plot_price_timeseries(data: &[PricePoint], symbol: &str, exchange: &str) -> R
             &last_color,
         ))?
         .label("Last Price")
-        .legend(move |(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], &last_color));
+        .legend(move |(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], last_color));
 
     // index_price — green (dashed-style via thicker line)
     let index_color = RGBColor(44, 160, 44);
@@ -2230,13 +2230,13 @@ fn plot_price_timeseries(data: &[PricePoint], symbol: &str, exchange: &str) -> R
             index_color.stroke_width(2),
         ))?
         .label("Index Price")
-        .legend(move |(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], &index_color));
+        .legend(move |(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], index_color));
 
     chart
         .configure_series_labels()
         .position(SeriesLabelPosition::UpperRight)
-        .background_style(&WHITE.mix(0.8))
-        .border_style(&BLACK)
+        .background_style(WHITE.mix(0.8))
+        .border_style(BLACK)
         .draw()?;
 
     root.present()?;

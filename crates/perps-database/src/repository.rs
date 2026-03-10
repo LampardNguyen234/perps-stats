@@ -522,23 +522,22 @@ impl Repository for PostgresRepository {
             // Calculate total notional values
             let (bids_notional, asks_notional) = orderbook.total_notional();
 
-            // Convert orderbook to JSON
-            let raw_book = serde_json::to_value(orderbook)?;
-
             // Get best bid/ask prices and quantities using the new helper methods
             let best_bid = orderbook.best_bid();
             let best_ask = orderbook.best_ask();
             let best_bid_qty = orderbook.best_bid_qty();
             let best_ask_qty = orderbook.best_ask_qty();
 
+            // NOTE: Full orderbook (bids/asks) is stored in Parquet files, not in SQL.
+            // Only derived summary columns are stored here.
             sqlx::query(
                 r#"
                 INSERT INTO orderbooks (
                     exchange_id, symbol, bids_notional, asks_notional,
                     bid_size, ask_size, best_bid, best_ask, best_bid_qty, best_ask_qty,
-                    raw_book, spread_bps, ts
+                    spread_bps, ts
                 )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
                 ON CONFLICT DO NOTHING
                 "#,
             )
@@ -552,7 +551,6 @@ impl Repository for PostgresRepository {
             .bind(best_ask)
             .bind(best_bid_qty)
             .bind(best_ask_qty)
-            .bind(raw_book)
             .bind(spread_bps)
             .bind(orderbook.timestamp)
             .execute(&mut *tx)
@@ -1210,10 +1208,13 @@ impl Repository for PostgresRepository {
         let exchange_id = self.get_exchange_id(exchange).await?;
         let normalized_symbol = extract_base_symbol(symbol);
 
+        // NOTE: Full orderbook bids/asks are stored in Parquet files.
+        // This method returns summary-only Orderbook structs with empty bids/asks.
+        // Use OrderbookParquetReader for full book data.
         let query = if let Some(limit_val) = limit {
             format!(
                 r#"
-                SELECT raw_book, ts
+                SELECT symbol, best_bid, best_ask, best_bid_qty, best_ask_qty, ts
                 FROM orderbooks
                 WHERE exchange_id = $1 AND symbol = $2 AND ts >= $3 AND ts <= $4
                 ORDER BY ts DESC
@@ -1223,7 +1224,7 @@ impl Repository for PostgresRepository {
             )
         } else {
             r#"
-            SELECT raw_book, ts
+            SELECT symbol, best_bid, best_ask, best_bid_qty, best_ask_qty, ts
             FROM orderbooks
             WHERE exchange_id = $1 AND symbol = $2 AND ts >= $3 AND ts <= $4
             ORDER BY ts DESC
@@ -1241,10 +1242,35 @@ impl Repository for PostgresRepository {
 
         let mut orderbooks = Vec::new();
         for row in rows {
-            let raw_book: serde_json::Value = row.get("raw_book");
-            if let Ok(orderbook) = serde_json::from_value::<Orderbook>(raw_book) {
-                orderbooks.push(orderbook);
+            let symbol: String = row.get("symbol");
+            let ts: DateTime<Utc> = row.get("ts");
+            let best_bid: Option<Decimal> = row.get("best_bid");
+            let best_ask: Option<Decimal> = row.get("best_ask");
+            let best_bid_qty: Option<Decimal> = row.get("best_bid_qty");
+            let best_ask_qty: Option<Decimal> = row.get("best_ask_qty");
+
+            let mut bids = Vec::new();
+            let mut asks = Vec::new();
+
+            if let (Some(price), Some(qty)) = (best_bid, best_bid_qty) {
+                bids.push(perps_core::OrderbookLevel {
+                    price,
+                    quantity: qty,
+                });
             }
+            if let (Some(price), Some(qty)) = (best_ask, best_ask_qty) {
+                asks.push(perps_core::OrderbookLevel {
+                    price,
+                    quantity: qty,
+                });
+            }
+
+            orderbooks.push(Orderbook {
+                symbol,
+                bids,
+                asks,
+                timestamp: ts,
+            });
         }
 
         Ok(orderbooks)
@@ -1258,9 +1284,11 @@ impl Repository for PostgresRepository {
         let exchange_id = self.get_exchange_id(exchange).await?;
         let normalized_symbol = extract_base_symbol(symbol);
 
+        // NOTE: Returns summary-only Orderbook with best bid/ask only.
+        // Use OrderbookParquetReader for full book data.
         let row = sqlx::query(
             r#"
-            SELECT raw_book, ts
+            SELECT symbol, best_bid, best_ask, best_bid_qty, best_ask_qty, ts
             FROM orderbooks
             WHERE exchange_id = $1 AND symbol = $2
             ORDER BY ts DESC
@@ -1272,9 +1300,36 @@ impl Repository for PostgresRepository {
         .fetch_optional(&self.pool)
         .await?;
 
-        Ok(row.and_then(|r| {
-            let raw_book: serde_json::Value = r.get("raw_book");
-            serde_json::from_value::<Orderbook>(raw_book).ok()
+        Ok(row.map(|r| {
+            let symbol: String = r.get("symbol");
+            let ts: DateTime<Utc> = r.get("ts");
+            let best_bid: Option<Decimal> = r.get("best_bid");
+            let best_ask: Option<Decimal> = r.get("best_ask");
+            let best_bid_qty: Option<Decimal> = r.get("best_bid_qty");
+            let best_ask_qty: Option<Decimal> = r.get("best_ask_qty");
+
+            let mut bids = Vec::new();
+            let mut asks = Vec::new();
+
+            if let (Some(price), Some(qty)) = (best_bid, best_bid_qty) {
+                bids.push(perps_core::OrderbookLevel {
+                    price,
+                    quantity: qty,
+                });
+            }
+            if let (Some(price), Some(qty)) = (best_ask, best_ask_qty) {
+                asks.push(perps_core::OrderbookLevel {
+                    price,
+                    quantity: qty,
+                });
+            }
+
+            Orderbook {
+                symbol,
+                bids,
+                asks,
+                timestamp: ts,
+            }
         }))
     }
 

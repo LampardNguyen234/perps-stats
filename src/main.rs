@@ -149,6 +149,9 @@ async fn main() -> Result<()> {
         Commands::Export(args) => {
             commands::export::execute(args).await?;
         }
+        Commands::Orderbook(args) => {
+            commands::orderbook::execute(args).await?;
+        }
         Commands::Stats { command } => match command {
             StatsCommands::OiRate(args) => commands::stats::execute_oi_rate(args).await?,
             StatsCommands::Summary(args) => commands::stats::execute_summary(args).await?,
