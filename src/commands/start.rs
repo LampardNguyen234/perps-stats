@@ -69,6 +69,10 @@ pub struct StartArgs {
     #[arg(long)]
     pub override_fee: Option<f64>,
 
+    /// Max number of symbols processed concurrently per report cycle
+    #[arg(long, default_value = "3")]
+    pub chunk: usize,
+
     /// Enable REST API server alongside data collection
     #[arg(long)]
     pub enable_api: bool,
@@ -1033,10 +1037,29 @@ async fn spawn_klines_task(
     }))
 }
 
-/// Spawn liquidity depth report generation task
+/// Build symbol → exchanges mapping (inverse of exchange → symbols).
+fn build_symbol_exchanges(exchange_symbols: &HashMap<String, Vec<String>>) -> (Vec<String>, HashMap<String, Vec<String>>) {
+    let mut symbol_exchanges: HashMap<String, Vec<String>> = HashMap::new();
+    for (exchange, symbols) in exchange_symbols {
+        for symbol in symbols {
+            symbol_exchanges
+                .entry(symbol.clone())
+                .or_default()
+                .push(exchange.clone());
+        }
+    }
+    let all_symbols: Vec<String> = symbol_exchanges.keys().cloned().collect();
+    (all_symbols, symbol_exchanges)
+}
+
+/// Spawn liquidity report task.
+///
+/// Semaphore-gated work queue: at most `max_concurrent_symbols` symbols processed
+/// concurrently. For each symbol, all exchanges fire in parallel.
 async fn spawn_liquidity_report_task(
     exchange_symbols: HashMap<String, Vec<String>>,
     report_interval: u64,
+    max_concurrent_symbols: usize,
     repository: Arc<Mutex<PostgresRepository>>,
     parquet_writer: Arc<Mutex<perps_database::OrderbookParquetWriter>>,
     shutdown: Arc<AtomicBool>,
@@ -1045,21 +1068,19 @@ async fn spawn_liquidity_report_task(
 ) -> Result<tokio::task::JoinHandle<Result<()>>> {
     Ok(tokio::spawn(async move {
         tracing::info!(
-            "Starting liquidity depth report generation task (interval: {}s)",
+            "Starting liquidity report task (interval: {}s)",
             report_interval
         );
 
-        let mut ticker = interval(Duration::from_secs(report_interval));
+        let mut tick = interval(Duration::from_secs(report_interval));
         let aggregator = Aggregator::new();
 
-        // Create REST API clients for each exchange
         let mut clients: HashMap<String, Box<dyn perps_core::IPerps + Send + Sync>> =
             HashMap::new();
         for exchange in exchange_symbols.keys() {
             match factory::get_exchange(exchange).await {
                 Ok(client) => {
                     clients.insert(exchange.clone(), client);
-                    tracing::debug!("Initialized REST client for exchange: {}", exchange);
                 }
                 Err(e) => {
                     tracing::error!("Failed to initialize REST client for {}: {}", exchange, e);
@@ -1067,189 +1088,166 @@ async fn spawn_liquidity_report_task(
             }
         }
 
+        let (all_symbols, symbol_exchanges) = build_symbol_exchanges(&exchange_symbols);
+
         loop {
-            // Use tokio::select! to check shutdown signal while waiting for next tick
             tokio::select! {
-                _ = ticker.tick() => {
-                    // Continue with report generation
-                }
+                _ = tick.tick() => {}
                 _ = tokio::time::sleep(Duration::from_millis(100)) => {
-                    // Check shutdown signal periodically
                     if shutdown.load(Ordering::Relaxed) {
-                        tracing::info!("Shutdown signal received for report generation task");
+                        tracing::info!("Shutdown signal received for liquidity report task");
                         break;
                     }
-                    continue; // Wait for next tick or shutdown check
+                    continue;
                 }
             }
 
             tracing::info!(
-                "Generating liquidity depth report for {} exchanges",
-                exchange_symbols.len()
+                "Generating liquidity report for {} symbols × {} exchanges",
+                all_symbols.len(),
+                clients.len()
             );
 
-            for (exchange, symbols) in &exchange_symbols {
-                // Check shutdown before processing each exchange
-                if shutdown.load(Ordering::Relaxed) {
-                    tracing::info!("Shutdown signal received during liquidity report generation");
-                    break;
-                }
+            let semaphore = tokio::sync::Semaphore::new(max_concurrent_symbols);
 
-                // Get REST client for this exchange
-                let client = match clients.get(exchange) {
-                    Some(c) => c,
-                    None => {
-                        tracing::error!("No REST client available for exchange: {}", exchange);
-                        continue;
-                    }
-                };
+            let symbol_futures = all_symbols.iter().map(|symbol| {
+                let exchanges = &symbol_exchanges[symbol];
+                let clients = &clients;
+                let aggregator = &aggregator;
+                let semaphore = &semaphore;
+                let shutdown = &shutdown;
+                let symbol = symbol.clone();
 
-                for symbol in symbols {
-                    // Check shutdown before processing each symbol
+                async move {
+                    let _permit = semaphore.acquire().await.expect("semaphore closed");
                     if shutdown.load(Ordering::Relaxed) {
-                        tracing::info!(
-                            "Shutdown signal received during liquidity report generation"
-                        );
-                        break;
+                        return vec![];
                     }
 
-                    // Fetch orderbook once and calculate both liquidity depth and slippage
-                    // (pass global symbol; client handles conversion)
-                    match client.get_orderbook(symbol, 1000).await {
-                        Ok(multi_orderbook) => {
-                            // MultiResolutionOrderbook automatically selects best resolution for each calculation
+                    let exchange_futures = exchanges.iter().filter_map(|exchange| {
+                        let client = match clients.get(exchange) {
+                            Some(c) => c,
+                            None => return None,
+                        };
+                        let exchange = exchange.clone();
+                        let symbol = symbol.clone();
 
-                            // Calculate liquidity depth
-                            match aggregator
-                                .calculate_liquidity_depth(&multi_orderbook, exchange, symbol)
-                                .await
-                            {
-                                Ok(depth_stats) => {
-                                    // Store liquidity depth
-                                    let repo = repository.lock().await;
-                                    match repo.store_liquidity_depth(&[depth_stats]).await {
-                                        Ok(_) => {
-                                            tracing::debug!(
-                                                "Stored liquidity depth for {}/{}",
-                                                exchange,
-                                                symbol
-                                            );
-                                        }
-                                        Err(e) => {
-                                            tracing::error!(
-                                                "Failed to store liquidity depth for {}/{}: {}",
-                                                exchange,
-                                                symbol,
-                                                e
-                                            );
-                                        }
+                        Some(async move {
+                            match client.get_orderbook(&symbol, 1000).await {
+                                Ok(multi_orderbook) => {
+                                    let is_empty = multi_orderbook.best_for_tight_spreads()
+                                        .map(|ob| ob.bids.is_empty() || ob.asks.is_empty())
+                                        .unwrap_or(true);
+                                    if is_empty {
+                                        tracing::warn!(
+                                            "Empty orderbook for {}/{}, skipping",
+                                            exchange, symbol
+                                        );
+                                        return None;
                                     }
-                                    drop(repo);
+                                    let depth_result = aggregator
+                                        .calculate_liquidity_depth(
+                                            &multi_orderbook,
+                                            &exchange,
+                                            &symbol,
+                                        )
+                                        .await;
+                                    let slippages =
+                                        aggregator.calculate_all_slippages(&multi_orderbook);
+                                    Some((exchange, symbol, multi_orderbook, depth_result, slippages))
                                 }
                                 Err(e) => {
                                     tracing::error!(
-                                        "Failed to calculate liquidity depth for {}/{}: {}",
-                                        exchange,
-                                        symbol,
-                                        e
+                                        "Failed to fetch orderbook for {}/{}: {}",
+                                        exchange, symbol, e
                                     );
+                                    None
                                 }
                             }
+                        })
+                    });
 
-                            // Calculate slippage for all trade amounts (raw, without fees)
-                            let slippages = aggregator.calculate_all_slippages(&multi_orderbook);
+                    let results: Vec<_> = futures::future::join_all(exchange_futures)
+                        .await.into_iter().flatten().collect();
+                    tracing::info!(
+                        "Completed liquidity for {} ({}/{} exchanges)",
+                        symbol, results.len(), exchanges.len(),
+                    );
+                    results
+                }
+            });
 
-                            // Store slippage
-                            let repo = repository.lock().await;
-                            match repo
-                                .store_slippage_with_exchange(exchange, &slippages)
-                                .await
+            let all_results: Vec<_> = futures::future::join_all(symbol_futures)
+                .await.into_iter().flatten().collect();
+
+            if shutdown.load(Ordering::Relaxed) {
+                tracing::info!("Shutdown signal received for liquidity report task");
+                break;
+            }
+
+            // Batch store liquidity + slippage
+            {
+                let repo = repository.lock().await;
+                for (exchange, symbol, _multi_ob, depth_result, slippages) in &all_results {
+                    match depth_result {
+                        Ok(depth_stats) => {
+                            if let Err(e) =
+                                repo.store_liquidity_depth(std::slice::from_ref(depth_stats)).await
                             {
-                                Ok(_) => {
-                                    tracing::debug!(
-                                        "Stored {} slippage entries for {}/{}",
-                                        slippages.len(),
-                                        exchange,
-                                        symbol
-                                    );
-                                }
-                                Err(e) => {
-                                    tracing::error!(
-                                        "Failed to store slippage for {}/{}: {}",
-                                        exchange,
-                                        symbol,
-                                        e
-                                    );
-                                }
-                            }
-                            drop(repo);
-
-                            // Store orderbook (use finest resolution for storage)
-                            if let Some(finest_book) = multi_orderbook.best_for_tight_spreads() {
-                                // Write full orderbook to Parquet
-                                {
-                                    let mut pw = parquet_writer.lock().await;
-                                    if let Err(e) =
-                                        pw.write_orderbook(exchange, symbol, finest_book)
-                                    {
-                                        tracing::error!(
-                                            "Failed to write orderbook to Parquet for {}/{}: {}",
-                                            exchange,
-                                            symbol,
-                                            e
-                                        );
-                                    }
-                                }
-
-                                // Store derived columns to SQL
-                                let repo = repository.lock().await;
-                                match repo
-                                    .store_orderbooks_with_exchange(
-                                        exchange,
-                                        std::slice::from_ref(finest_book),
-                                    )
-                                    .await
-                                {
-                                    Ok(_) => {
-                                        tracing::debug!(
-                                            "Stored orderbook for {}/{}",
-                                            exchange,
-                                            symbol
-                                        );
-                                    }
-                                    Err(e) => {
-                                        tracing::error!(
-                                            "Failed to store orderbook for {}/{}: {}",
-                                            exchange,
-                                            symbol,
-                                            e
-                                        );
-                                    }
-                                }
-                                drop(repo);
+                                tracing::error!(
+                                    "Failed to store liquidity depth for {}/{}: {}",
+                                    exchange, symbol, e
+                                );
                             }
                         }
                         Err(e) => {
                             tracing::error!(
-                                "Failed to fetch orderbook for {}/{}: {}",
-                                exchange,
-                                symbol,
-                                e
+                                "Failed to calculate liquidity depth for {}/{}: {}",
+                                exchange, symbol, e
                             );
                         }
+                    }
+
+                    if let Err(e) = repo.store_slippage_with_exchange(exchange, slippages).await {
+                        tracing::error!(
+                            "Failed to store slippage for {}/{}: {}", exchange, symbol, e
+                        );
                     }
                 }
             }
 
-            // Flush Parquet buffers at the end of each report cycle
+            // Batch store orderbooks (Parquet + SQL)
             {
                 let mut pw = parquet_writer.lock().await;
+                let repo = repository.lock().await;
+                for (exchange, symbol, multi_ob, _depth_result, _slippages) in &all_results {
+                    if let Some(finest_book) = multi_ob.best_for_tight_spreads() {
+                        if let Err(e) = pw.write_orderbook(exchange, symbol, finest_book) {
+                            tracing::error!(
+                                "Failed to write orderbook to Parquet for {}/{}: {}",
+                                exchange, symbol, e
+                            );
+                        }
+                        if let Err(e) = repo
+                            .store_orderbooks_with_exchange(
+                                exchange, std::slice::from_ref(finest_book),
+                            )
+                            .await
+                        {
+                            tracing::error!(
+                                "Failed to store orderbook for {}/{}: {}",
+                                exchange, symbol, e
+                            );
+                        }
+                    }
+                }
+
                 if let Err(e) = pw.flush_all() {
                     tracing::error!("Failed to flush Parquet writer after report cycle: {}", e);
                 }
             }
 
-            tracing::info!("Completed liquidity depth report generation");
+            tracing::info!("Completed liquidity report generation");
         }
 
         // Final flush on task exit
@@ -1260,34 +1258,36 @@ async fn spawn_liquidity_report_task(
             }
         }
 
-        tracing::info!("Liquidity depth report generation task stopped");
+        tracing::info!("Liquidity report task stopped");
         Ok(())
     }))
 }
 
-/// Spawn ticker report generation task
+/// Spawn ticker report task.
+///
+/// Semaphore-gated work queue: at most `max_concurrent_symbols` symbols processed
+/// concurrently. For each symbol, all exchanges fire in parallel.
 async fn spawn_ticker_report_task(
     exchange_symbols: HashMap<String, Vec<String>>,
     report_interval: u64,
+    max_concurrent_symbols: usize,
     repository: Arc<Mutex<PostgresRepository>>,
     shutdown: Arc<AtomicBool>,
 ) -> Result<tokio::task::JoinHandle<Result<()>>> {
     Ok(tokio::spawn(async move {
         tracing::info!(
-            "Starting ticker report generation task (interval: {}s)",
+            "Starting ticker report task (interval: {}s)",
             report_interval
         );
 
-        let mut ticker_interval = interval(Duration::from_secs(report_interval));
+        let mut tick = interval(Duration::from_secs(report_interval));
 
-        // Create REST API clients for each exchange
         let mut clients: HashMap<String, Box<dyn perps_core::IPerps + Send + Sync>> =
             HashMap::new();
         for exchange in exchange_symbols.keys() {
             match factory::get_exchange(exchange).await {
                 Ok(client) => {
                     clients.insert(exchange.clone(), client);
-                    tracing::debug!("Initialized REST client for exchange: {}", exchange);
                 }
                 Err(e) => {
                     tracing::error!("Failed to initialize REST client for {}: {}", exchange, e);
@@ -1295,100 +1295,111 @@ async fn spawn_ticker_report_task(
             }
         }
 
+        let (all_symbols, symbol_exchanges) = build_symbol_exchanges(&exchange_symbols);
+
         loop {
-            // Use tokio::select! to check shutdown signal while waiting for next tick
             tokio::select! {
-                _ = ticker_interval.tick() => {
-                    // Continue with ticker report generation
-                }
+                _ = tick.tick() => {}
                 _ = tokio::time::sleep(Duration::from_millis(100)) => {
-                    // Check shutdown signal periodically
                     if shutdown.load(Ordering::Relaxed) {
-                        tracing::info!("Shutdown signal received for ticker report generation task");
+                        tracing::info!("Shutdown signal received for ticker report task");
                         break;
                     }
-                    continue; // Wait for next tick or shutdown check
+                    continue;
                 }
             }
 
             tracing::info!(
-                "Generating ticker report for {} exchanges",
-                exchange_symbols.len()
+                "Generating ticker report for {} symbols × {} exchanges",
+                all_symbols.len(),
+                clients.len()
             );
 
-            // Group tickers by exchange for storage
-            let mut tickers_by_exchange: HashMap<String, Vec<Ticker>> = HashMap::new();
+            let semaphore = tokio::sync::Semaphore::new(max_concurrent_symbols);
 
-            for (exchange, symbols) in &exchange_symbols {
-                // Check shutdown before processing each exchange
-                if shutdown.load(Ordering::Relaxed) {
-                    tracing::info!("Shutdown signal received during ticker report generation");
-                    break;
-                }
+            let symbol_futures = all_symbols.iter().map(|symbol| {
+                let exchanges = &symbol_exchanges[symbol];
+                let clients = &clients;
+                let semaphore = &semaphore;
+                let shutdown = &shutdown;
+                let symbol = symbol.clone();
 
-                // Get REST client for this exchange
-                let client = match clients.get(exchange) {
-                    Some(c) => c,
-                    None => {
-                        tracing::error!("No REST client available for exchange: {}", exchange);
-                        continue;
-                    }
-                };
-
-                for symbol in symbols {
-                    // Check shutdown before processing each symbol
+                async move {
+                    let _permit = semaphore.acquire().await.expect("semaphore closed");
                     if shutdown.load(Ordering::Relaxed) {
-                        tracing::info!("Shutdown signal received during ticker report generation");
-                        break;
+                        return vec![];
                     }
 
-                    // Fetch ticker from REST API (pass global symbol; client handles conversion)
-                    match client.get_ticker(symbol).await {
-                        Ok(ticker) => {
-                            if !ticker.is_empty() {
-                                tickers_by_exchange
-                                    .entry(exchange.clone())
-                                    .or_default()
-                                    .push(ticker);
-                            } else {
-                                tracing::error!(
-                                    "Ticker {} empty for exchange {}",
-                                    symbol,
-                                    exchange
-                                );
+                    let exchange_futures = exchanges.iter().filter_map(|exchange| {
+                        let client = match clients.get(exchange) {
+                            Some(c) => c,
+                            None => return None,
+                        };
+                        let exchange = exchange.clone();
+                        let symbol = symbol.clone();
+
+                        Some(async move {
+                            match client.get_ticker(&symbol).await {
+                                Ok(ticker) => {
+                                    if !ticker.is_empty() {
+                                        Some((exchange, ticker))
+                                    } else {
+                                        tracing::warn!(
+                                            "Empty ticker for {}/{}, skipping",
+                                            exchange, symbol
+                                        );
+                                        None
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::error!(
+                                        "Failed to fetch ticker for {}/{}: {}",
+                                        exchange, symbol, e
+                                    );
+                                    None
+                                }
                             }
-                        }
-                        Err(e) => {
-                            tracing::error!(
-                                "Failed to fetch ticker for {}/{}: {}",
-                                exchange,
-                                symbol,
-                                e
-                            );
-                        }
-                    }
+                        })
+                    });
+
+                    let results: Vec<_> = futures::future::join_all(exchange_futures)
+                        .await.into_iter().flatten().collect();
+                    tracing::info!(
+                        "Completed ticker for {} ({}/{} exchanges)",
+                        symbol, results.len(), exchanges.len(),
+                    );
+                    results
+                }
+            });
+
+            let all_results = futures::future::join_all(symbol_futures).await;
+
+            if shutdown.load(Ordering::Relaxed) {
+                tracing::info!("Shutdown signal received for ticker report task");
+                break;
+            }
+
+            let mut ticker_results: HashMap<String, Vec<Ticker>> = HashMap::new();
+            for symbol_results in all_results {
+                for (exchange, ticker) in symbol_results {
+                    ticker_results.entry(exchange).or_default().push(ticker);
                 }
             }
 
-            // Store all tickers in batch
-            if !tickers_by_exchange.is_empty() {
+            if !ticker_results.is_empty() {
                 let repo = repository.lock().await;
-
-                // Store tickers for each exchange
-                for (exchange, tickers) in tickers_by_exchange {
-                    match repo.store_tickers_with_exchange(&exchange, &tickers).await {
+                for (exchange, tickers) in &ticker_results {
+                    match repo.store_tickers_with_exchange(exchange, tickers).await {
                         Ok(_) => {
                             tracing::debug!(
                                 "Stored {} tickers for exchange {}",
-                                tickers.len(),
-                                exchange
+                                tickers.len(), exchange
                             );
                         }
                         Err(e) => {
                             tracing::error!(
                                 "Failed to store tickers for exchange {}: {}",
-                                exchange,
-                                e
+                                exchange, e
                             );
                         }
                     }
@@ -1398,7 +1409,7 @@ async fn spawn_ticker_report_task(
             tracing::info!("Completed ticker report generation");
         }
 
-        tracing::info!("Ticker report generation task stopped");
+        tracing::info!("Ticker report task stopped");
         Ok(())
     }))
 }
@@ -1603,10 +1614,11 @@ pub async fn execute(args: StartArgs) -> Result<()> {
     ));
     tracing::info!("Parquet orderbook storage directory: {}", args.parquet_dir);
 
-    // Spawn liquidity depth report generation task (single task for all exchanges)
-    let liquidity_report_task = spawn_liquidity_report_task(
+    // Spawn liquidity report task (parallel: semaphore-gated symbols, all exchanges per symbol)
+    let liquidity_task = spawn_liquidity_report_task(
         exchange_symbols.clone(),
         args.report_interval,
+        args.chunk,
         repository.clone(),
         parquet_writer.clone(),
         shutdown.clone(),
@@ -1614,17 +1626,18 @@ pub async fn execute(args: StartArgs) -> Result<()> {
         args.override_fee,
     )
     .await?;
-    tasks.push(liquidity_report_task);
+    tasks.push(liquidity_task);
 
-    // Spawn ticker report generation task (single task for all exchanges)
-    let ticker_report_task = spawn_ticker_report_task(
+    // Spawn ticker report task (parallel: semaphore-gated symbols, all exchanges per symbol)
+    let ticker_task = spawn_ticker_report_task(
         exchange_symbols.clone(),
         args.report_interval,
+        args.chunk,
         repository.clone(),
         shutdown.clone(),
     )
     .await?;
-    tasks.push(ticker_report_task);
+    tasks.push(ticker_task);
 
     // Spawn API server task if enabled
     if args.enable_api {

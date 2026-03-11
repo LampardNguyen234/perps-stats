@@ -616,8 +616,8 @@ impl IPerps for BinanceClient {
 
         let mut markets = Vec::new();
         for symbol_info in symbols {
-            // Only include perpetual futures
-            if symbol_info["contractType"].as_str() == Some("PERPETUAL")
+            // Include perpetual futures (both crypto and TradFi commodities like XAU, XAG)
+            if matches!(symbol_info["contractType"].as_str(), Some("PERPETUAL") | Some("TRADIFI_PERPETUAL"))
                 && symbol_info["status"].as_str() == Some("TRADING")
             {
                 match self.convert_exchange_info_to_market(symbol_info.clone()) {
