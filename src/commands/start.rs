@@ -1,5 +1,5 @@
 use anyhow::Result;
-use chrono;
+use chrono::{self, Timelike, Utc};
 use clap::Args;
 use futures::StreamExt as _;
 use perps_aggregator::{Aggregator, IAggregator};
@@ -1102,10 +1102,14 @@ async fn spawn_liquidity_report_task(
                 }
             }
 
+            // Capture a single batch timestamp (rounded to seconds) for all data in this cycle
+            let batch_ts = Utc::now().with_nanosecond(0).unwrap();
+
             tracing::info!(
-                "Generating liquidity report for {} symbols × {} exchanges",
+                "Generating liquidity report for {} symbols × {} exchanges (batch_ts: {})",
                 all_symbols.len(),
-                clients.len()
+                clients.len(),
+                batch_ts
             );
 
             let semaphore = tokio::sync::Semaphore::new(max_concurrent_symbols);
@@ -1185,7 +1189,7 @@ async fn spawn_liquidity_report_task(
                 break;
             }
 
-            // Aggregate results by exchange for batch storage
+            // Aggregate results by exchange for batch storage, overriding timestamps with batch_ts
             let mut all_depth_stats: Vec<LiquidityDepthStats> = Vec::new();
             let mut slippages_by_exchange: HashMap<String, Vec<Slippage>> = HashMap::new();
             let mut orderbooks_by_exchange: HashMap<String, Vec<Orderbook>> = HashMap::new();
@@ -1193,7 +1197,9 @@ async fn spawn_liquidity_report_task(
             for (exchange, symbol, multi_ob, depth_result, slippages) in &all_results {
                 match depth_result {
                     Ok(depth_stats) => {
-                        all_depth_stats.push(depth_stats.clone());
+                        let mut stats = depth_stats.clone();
+                        stats.timestamp = batch_ts;
+                        all_depth_stats.push(stats);
                     }
                     Err(e) => {
                         tracing::error!(
@@ -1207,14 +1213,20 @@ async fn spawn_liquidity_report_task(
                     slippages_by_exchange
                         .entry(exchange.clone())
                         .or_default()
-                        .extend(slippages.iter().cloned());
+                        .extend(slippages.iter().map(|s| {
+                            let mut s = s.clone();
+                            s.timestamp = batch_ts;
+                            s
+                        }));
                 }
 
                 if let Some(finest_book) = multi_ob.best_for_tight_spreads() {
+                    let mut ob = finest_book.clone();
+                    ob.timestamp = batch_ts;
                     orderbooks_by_exchange
                         .entry(exchange.clone())
                         .or_default()
-                        .push(finest_book.clone());
+                        .push(ob);
                 }
             }
 
@@ -1240,15 +1252,15 @@ async fn spawn_liquidity_report_task(
                 }
             }
 
-            // Batch write Parquet
+            // Batch write Parquet (orderbooks already have batch_ts from above)
             {
                 let mut pw = parquet_writer.lock().await;
-                for (exchange, symbol, multi_ob, _depth_result, _slippages) in &all_results {
-                    if let Some(finest_book) = multi_ob.best_for_tight_spreads() {
-                        if let Err(e) = pw.write_orderbook(exchange, symbol, finest_book) {
+                for (exchange, obs) in &orderbooks_by_exchange {
+                    for ob in obs {
+                        if let Err(e) = pw.write_orderbook(exchange, &ob.symbol, ob) {
                             tracing::error!(
                                 "Failed to write orderbook to Parquet for {}/{}: {}",
-                                exchange, symbol, e
+                                exchange, ob.symbol, e
                             );
                         }
                     }
@@ -1259,7 +1271,7 @@ async fn spawn_liquidity_report_task(
                 }
             }
 
-            tracing::info!("Completed liquidity report generation");
+            tracing::info!("Completed liquidity report generation (batch_ts: {})", batch_ts);
         }
 
         // Final flush on task exit
@@ -1321,10 +1333,14 @@ async fn spawn_ticker_report_task(
                 }
             }
 
+            // Capture a single batch timestamp (rounded to seconds) for all data in this cycle
+            let batch_ts = Utc::now().with_nanosecond(0).unwrap();
+
             tracing::info!(
-                "Generating ticker report for {} symbols × {} exchanges",
+                "Generating ticker report for {} symbols × {} exchanges (batch_ts: {})",
                 all_symbols.len(),
-                clients.len()
+                clients.len(),
+                batch_ts
             );
 
             let semaphore = tokio::sync::Semaphore::new(max_concurrent_symbols);
@@ -1391,9 +1407,11 @@ async fn spawn_ticker_report_task(
                 break;
             }
 
+            // Override timestamps with batch_ts
             let mut ticker_results: HashMap<String, Vec<Ticker>> = HashMap::new();
             for symbol_results in all_results {
-                for (exchange, ticker) in symbol_results {
+                for (exchange, mut ticker) in symbol_results {
+                    ticker.timestamp = batch_ts;
                     ticker_results.entry(exchange).or_default().push(ticker);
                 }
             }
@@ -1405,7 +1423,7 @@ async fn spawn_ticker_report_task(
                 }
             }
 
-            tracing::info!("Completed ticker report generation");
+            tracing::info!("Completed ticker report generation (batch_ts: {})", batch_ts);
         }
 
         tracing::info!("Ticker report task stopped");
