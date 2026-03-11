@@ -4,7 +4,7 @@ use clap::Args;
 use futures::StreamExt as _;
 use perps_aggregator::{Aggregator, IAggregator};
 use perps_core::streaming::StreamEvent;
-use perps_core::types::{FundingRate, Kline, Orderbook, Ticker, Trade};
+use perps_core::types::{FundingRate, Kline, LiquidityDepthStats, Orderbook, Slippage, Ticker, Trade};
 use perps_database::{PostgresRepository, Repository};
 use perps_exchanges::factory;
 use sqlx::postgres::PgPoolOptions;
@@ -38,7 +38,7 @@ pub struct StartArgs {
     pub klines_interval: u64,
 
     /// Report generation interval in seconds (applies to both liquidity depth and ticker reports)
-    #[arg(long, default_value = "30")]
+    #[arg(long, default_value = "60")]
     pub report_interval: u64,
 
     /// Klines intervals/timeframes for fetching (comma-separated, e.g., 5m,15m,1h). Defaults to 5m,15m,1h
@@ -1185,57 +1185,69 @@ async fn spawn_liquidity_report_task(
                 break;
             }
 
-            // Batch store liquidity + slippage
+            // Aggregate results by exchange for batch storage
+            let mut all_depth_stats: Vec<LiquidityDepthStats> = Vec::new();
+            let mut slippages_by_exchange: HashMap<String, Vec<Slippage>> = HashMap::new();
+            let mut orderbooks_by_exchange: HashMap<String, Vec<Orderbook>> = HashMap::new();
+
+            for (exchange, symbol, multi_ob, depth_result, slippages) in &all_results {
+                match depth_result {
+                    Ok(depth_stats) => {
+                        all_depth_stats.push(depth_stats.clone());
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            "Failed to calculate liquidity depth for {}/{}: {}",
+                            exchange, symbol, e
+                        );
+                    }
+                }
+
+                if !slippages.is_empty() {
+                    slippages_by_exchange
+                        .entry(exchange.clone())
+                        .or_default()
+                        .extend(slippages.iter().cloned());
+                }
+
+                if let Some(finest_book) = multi_ob.best_for_tight_spreads() {
+                    orderbooks_by_exchange
+                        .entry(exchange.clone())
+                        .or_default()
+                        .push(finest_book.clone());
+                }
+            }
+
+            // Batch store: 1 query per table for all exchanges
             {
                 let repo = repository.lock().await;
-                for (exchange, symbol, _multi_ob, depth_result, slippages) in &all_results {
-                    match depth_result {
-                        Ok(depth_stats) => {
-                            if let Err(e) =
-                                repo.store_liquidity_depth(std::slice::from_ref(depth_stats)).await
-                            {
-                                tracing::error!(
-                                    "Failed to store liquidity depth for {}/{}: {}",
-                                    exchange, symbol, e
-                                );
-                            }
-                        }
-                        Err(e) => {
-                            tracing::error!(
-                                "Failed to calculate liquidity depth for {}/{}: {}",
-                                exchange, symbol, e
-                            );
-                        }
+                if !all_depth_stats.is_empty() {
+                    if let Err(e) = repo.store_liquidity_depth(&all_depth_stats).await {
+                        tracing::error!("Failed to store liquidity depth batch: {}", e);
                     }
+                }
 
-                    if let Err(e) = repo.store_slippage_with_exchange(exchange, slippages).await {
-                        tracing::error!(
-                            "Failed to store slippage for {}/{}: {}", exchange, symbol, e
-                        );
+                if !slippages_by_exchange.is_empty() {
+                    if let Err(e) = repo.store_slippage_batch(&slippages_by_exchange).await {
+                        tracing::error!("Failed to store slippage batch: {}", e);
+                    }
+                }
+
+                if !orderbooks_by_exchange.is_empty() {
+                    if let Err(e) = repo.store_orderbooks_batch(&orderbooks_by_exchange).await {
+                        tracing::error!("Failed to store orderbooks batch: {}", e);
                     }
                 }
             }
 
-            // Batch store orderbooks (Parquet + SQL)
+            // Batch write Parquet
             {
                 let mut pw = parquet_writer.lock().await;
-                let repo = repository.lock().await;
                 for (exchange, symbol, multi_ob, _depth_result, _slippages) in &all_results {
                     if let Some(finest_book) = multi_ob.best_for_tight_spreads() {
                         if let Err(e) = pw.write_orderbook(exchange, symbol, finest_book) {
                             tracing::error!(
                                 "Failed to write orderbook to Parquet for {}/{}: {}",
-                                exchange, symbol, e
-                            );
-                        }
-                        if let Err(e) = repo
-                            .store_orderbooks_with_exchange(
-                                exchange, std::slice::from_ref(finest_book),
-                            )
-                            .await
-                        {
-                            tracing::error!(
-                                "Failed to store orderbook for {}/{}: {}",
                                 exchange, symbol, e
                             );
                         }
@@ -1388,21 +1400,8 @@ async fn spawn_ticker_report_task(
 
             if !ticker_results.is_empty() {
                 let repo = repository.lock().await;
-                for (exchange, tickers) in &ticker_results {
-                    match repo.store_tickers_with_exchange(exchange, tickers).await {
-                        Ok(_) => {
-                            tracing::debug!(
-                                "Stored {} tickers for exchange {}",
-                                tickers.len(), exchange
-                            );
-                        }
-                        Err(e) => {
-                            tracing::error!(
-                                "Failed to store tickers for exchange {}: {}",
-                                exchange, e
-                            );
-                        }
-                    }
+                if let Err(e) = repo.store_tickers_batch(&ticker_results).await {
+                    tracing::error!("Failed to store tickers batch: {}", e);
                 }
             }
 

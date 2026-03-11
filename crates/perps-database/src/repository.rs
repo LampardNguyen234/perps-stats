@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use async_trait::async_trait;
 use perps_core::*;
 use rust_decimal::{prelude::ToPrimitive, Decimal};
@@ -77,6 +79,24 @@ pub trait Repository: Send + Sync {
     async fn store_liquidity_depth(
         &self,
         depth_stats: &[LiquidityDepthStats],
+    ) -> anyhow::Result<()>;
+
+    /// Batch store tickers for multiple exchanges in a single query.
+    async fn store_tickers_batch(
+        &self,
+        tickers_by_exchange: &HashMap<String, Vec<Ticker>>,
+    ) -> anyhow::Result<()>;
+
+    /// Batch store orderbooks for multiple exchanges in a single query.
+    async fn store_orderbooks_batch(
+        &self,
+        orderbooks_by_exchange: &HashMap<String, Vec<Orderbook>>,
+    ) -> anyhow::Result<()>;
+
+    /// Batch store slippage for multiple exchanges in a single query.
+    async fn store_slippage_batch(
+        &self,
+        slippages_by_exchange: &HashMap<String, Vec<Slippage>>,
     ) -> anyhow::Result<()>;
 
     // Query methods
@@ -371,48 +391,85 @@ impl Repository for PostgresRepository {
         }
 
         let exchange_id = self.get_exchange_id(exchange).await?;
-        let mut tx = self.pool.begin().await?;
+
+        let mut symbols: Vec<String> = Vec::with_capacity(tickers.len());
+        let mut last_prices: Vec<Decimal> = Vec::with_capacity(tickers.len());
+        let mut mark_prices: Vec<Decimal> = Vec::with_capacity(tickers.len());
+        let mut index_prices: Vec<Decimal> = Vec::with_capacity(tickers.len());
+        let mut best_bid_prices: Vec<Decimal> = Vec::with_capacity(tickers.len());
+        let mut best_bid_qtys: Vec<Decimal> = Vec::with_capacity(tickers.len());
+        let mut best_ask_prices: Vec<Decimal> = Vec::with_capacity(tickers.len());
+        let mut best_ask_qtys: Vec<Decimal> = Vec::with_capacity(tickers.len());
+        let mut volume_24hs: Vec<Decimal> = Vec::with_capacity(tickers.len());
+        let mut turnover_24hs: Vec<Decimal> = Vec::with_capacity(tickers.len());
+        let mut open_interests: Vec<Decimal> = Vec::with_capacity(tickers.len());
+        let mut open_interest_notionals: Vec<Decimal> = Vec::with_capacity(tickers.len());
+        let mut price_change_24hs: Vec<Decimal> = Vec::with_capacity(tickers.len());
+        let mut price_change_pcts: Vec<Decimal> = Vec::with_capacity(tickers.len());
+        let mut high_24hs: Vec<Decimal> = Vec::with_capacity(tickers.len());
+        let mut low_24hs: Vec<Decimal> = Vec::with_capacity(tickers.len());
+        let mut timestamps: Vec<DateTime<Utc>> = Vec::with_capacity(tickers.len());
 
         for ticker in tickers {
-            // Normalize symbol to global format (e.g., BTCUSDT -> BTC)
-            let normalized_symbol = extract_base_symbol(&ticker.symbol);
-
-            sqlx::query(
-                r#"
-                INSERT INTO tickers (
-                    exchange_id, symbol, last_price, mark_price, index_price,
-                    best_bid_price, best_bid_qty, best_ask_price, best_ask_qty,
-                    volume_24h, turnover_24h, open_interest, open_interest_notional,
-                    price_change_24h, price_change_pct,
-                    high_24h, low_24h, ts
-                )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
-                ON CONFLICT DO NOTHING
-                "#
-            )
-            .bind(exchange_id)
-            .bind(&normalized_symbol)
-            .bind(ticker.last_price)
-            .bind(ticker.mark_price)
-            .bind(ticker.index_price)
-            .bind(ticker.best_bid_price)
-            .bind(ticker.best_bid_qty)
-            .bind(ticker.best_ask_price)
-            .bind(ticker.best_ask_qty)
-            .bind(ticker.volume_24h)
-            .bind(ticker.turnover_24h)
-            .bind(ticker.open_interest)
-            .bind(ticker.open_interest_notional)
-            .bind(ticker.price_change_24h)
-            .bind(ticker.price_change_pct)
-            .bind(ticker.high_price_24h)
-            .bind(ticker.low_price_24h)
-            .bind(ticker.timestamp)
-            .execute(&mut *tx)
-            .await?;
+            symbols.push(extract_base_symbol(&ticker.symbol));
+            last_prices.push(ticker.last_price);
+            mark_prices.push(ticker.mark_price);
+            index_prices.push(ticker.index_price);
+            best_bid_prices.push(ticker.best_bid_price);
+            best_bid_qtys.push(ticker.best_bid_qty);
+            best_ask_prices.push(ticker.best_ask_price);
+            best_ask_qtys.push(ticker.best_ask_qty);
+            volume_24hs.push(ticker.volume_24h);
+            turnover_24hs.push(ticker.turnover_24h);
+            open_interests.push(ticker.open_interest);
+            open_interest_notionals.push(ticker.open_interest_notional);
+            price_change_24hs.push(ticker.price_change_24h);
+            price_change_pcts.push(ticker.price_change_pct);
+            high_24hs.push(ticker.high_price_24h);
+            low_24hs.push(ticker.low_price_24h);
+            timestamps.push(ticker.timestamp);
         }
 
-        tx.commit().await?;
+        sqlx::query(
+            r#"
+            INSERT INTO tickers (
+                exchange_id, symbol, last_price, mark_price, index_price,
+                best_bid_price, best_bid_qty, best_ask_price, best_ask_qty,
+                volume_24h, turnover_24h, open_interest, open_interest_notional,
+                price_change_24h, price_change_pct,
+                high_24h, low_24h, ts
+            )
+            SELECT $1, * FROM UNNEST(
+                $2::text[], $3::numeric[], $4::numeric[], $5::numeric[],
+                $6::numeric[], $7::numeric[], $8::numeric[], $9::numeric[],
+                $10::numeric[], $11::numeric[], $12::numeric[], $13::numeric[],
+                $14::numeric[], $15::numeric[],
+                $16::numeric[], $17::numeric[], $18::timestamptz[]
+            )
+            ON CONFLICT DO NOTHING
+            "#
+        )
+        .bind(exchange_id)
+        .bind(&symbols)
+        .bind(&last_prices)
+        .bind(&mark_prices)
+        .bind(&index_prices)
+        .bind(&best_bid_prices)
+        .bind(&best_bid_qtys)
+        .bind(&best_ask_prices)
+        .bind(&best_ask_qtys)
+        .bind(&volume_24hs)
+        .bind(&turnover_24hs)
+        .bind(&open_interests)
+        .bind(&open_interest_notionals)
+        .bind(&price_change_24hs)
+        .bind(&price_change_pcts)
+        .bind(&high_24hs)
+        .bind(&low_24hs)
+        .bind(&timestamps)
+        .execute(&self.pool)
+        .await?;
+
         tracing::info!(
             "✓ Stored {} ticker records to database for exchange {}",
             tickers.len(),
@@ -436,57 +493,65 @@ impl Repository for PostgresRepository {
         }
 
         let exchange_id = self.get_exchange_id(exchange).await?;
-        let mut tx = self.pool.begin().await?;
+
+        let mut symbols: Vec<String> = Vec::with_capacity(orderbooks.len());
+        let mut bids_notionals: Vec<Decimal> = Vec::with_capacity(orderbooks.len());
+        let mut asks_notionals: Vec<Decimal> = Vec::with_capacity(orderbooks.len());
+        let mut bid_sizes: Vec<i32> = Vec::with_capacity(orderbooks.len());
+        let mut ask_sizes: Vec<i32> = Vec::with_capacity(orderbooks.len());
+        let mut best_bids: Vec<Option<Decimal>> = Vec::with_capacity(orderbooks.len());
+        let mut best_asks: Vec<Option<Decimal>> = Vec::with_capacity(orderbooks.len());
+        let mut best_bid_qtys: Vec<Option<Decimal>> = Vec::with_capacity(orderbooks.len());
+        let mut best_ask_qtys: Vec<Option<Decimal>> = Vec::with_capacity(orderbooks.len());
+        let mut spread_bpss: Vec<i32> = Vec::with_capacity(orderbooks.len());
+        let mut timestamps: Vec<DateTime<Utc>> = Vec::with_capacity(orderbooks.len());
 
         for orderbook in orderbooks {
-            // Normalize symbol to global format
-            let normalized_symbol = extract_base_symbol(&orderbook.symbol);
-
-            // Calculate spread in basis points using the new method
-            let spread_bps = orderbook.spread().and_then(|s| s.to_i32()).unwrap_or(0);
-
-            // Get orderbook sizes (number of bid and ask levels)
-            let (bid_size, ask_size) = orderbook.size();
-
-            // Calculate total notional values
-            let (bids_notional, asks_notional) = orderbook.total_notional();
-
-            // Get best bid/ask prices and quantities using the new helper methods
-            let best_bid = orderbook.best_bid();
-            let best_ask = orderbook.best_ask();
-            let best_bid_qty = orderbook.best_bid_qty();
-            let best_ask_qty = orderbook.best_ask_qty();
-
-            // NOTE: Full orderbook (bids/asks) is stored in Parquet files, not in SQL.
-            // Only derived summary columns are stored here.
-            sqlx::query(
-                r#"
-                INSERT INTO orderbooks (
-                    exchange_id, symbol, bids_notional, asks_notional,
-                    bid_size, ask_size, best_bid, best_ask, best_bid_qty, best_ask_qty,
-                    spread_bps, ts
-                )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-                ON CONFLICT DO NOTHING
-                "#,
-            )
-            .bind(exchange_id)
-            .bind(&normalized_symbol)
-            .bind(bids_notional)
-            .bind(asks_notional)
-            .bind(bid_size as i32)
-            .bind(ask_size as i32)
-            .bind(best_bid)
-            .bind(best_ask)
-            .bind(best_bid_qty)
-            .bind(best_ask_qty)
-            .bind(spread_bps)
-            .bind(orderbook.timestamp)
-            .execute(&mut *tx)
-            .await?;
+            symbols.push(extract_base_symbol(&orderbook.symbol));
+            let (bn, an) = orderbook.total_notional();
+            bids_notionals.push(bn);
+            asks_notionals.push(an);
+            let (bs, as_) = orderbook.size();
+            bid_sizes.push(bs as i32);
+            ask_sizes.push(as_ as i32);
+            best_bids.push(orderbook.best_bid());
+            best_asks.push(orderbook.best_ask());
+            best_bid_qtys.push(orderbook.best_bid_qty());
+            best_ask_qtys.push(orderbook.best_ask_qty());
+            spread_bpss.push(orderbook.spread().and_then(|s| s.to_i32()).unwrap_or(0));
+            timestamps.push(orderbook.timestamp);
         }
 
-        tx.commit().await?;
+        sqlx::query(
+            r#"
+            INSERT INTO orderbooks (
+                exchange_id, symbol, bids_notional, asks_notional,
+                bid_size, ask_size, best_bid, best_ask, best_bid_qty, best_ask_qty,
+                spread_bps, ts
+            )
+            SELECT $1, * FROM UNNEST(
+                $2::text[], $3::numeric[], $4::numeric[],
+                $5::int4[], $6::int4[], $7::numeric[], $8::numeric[], $9::numeric[], $10::numeric[],
+                $11::int4[], $12::timestamptz[]
+            )
+            ON CONFLICT DO NOTHING
+            "#,
+        )
+        .bind(exchange_id)
+        .bind(&symbols)
+        .bind(&bids_notionals)
+        .bind(&asks_notionals)
+        .bind(&bid_sizes)
+        .bind(&ask_sizes)
+        .bind(&best_bids)
+        .bind(&best_asks)
+        .bind(&best_bid_qtys)
+        .bind(&best_ask_qtys)
+        .bind(&spread_bpss)
+        .bind(&timestamps)
+        .execute(&self.pool)
+        .await?;
+
         tracing::info!(
             "Stored {} orderbook records to database for exchange {}",
             orderbooks.len(),
@@ -680,52 +745,86 @@ impl Repository for PostgresRepository {
             return Ok(());
         }
 
-        // Begin a transaction for batch insert
-        let mut tx = self.pool.begin().await?;
-
+        // Resolve exchange_ids once per unique exchange name
+        let mut exchange_id_cache: std::collections::HashMap<String, i32> = std::collections::HashMap::new();
         for stat in depth_stats {
-            // Get exchange_id from exchange name
-            let exchange_id = self.get_exchange_id(&stat.exchange).await?;
-
-            // Normalize symbol to global format
-            let normalized_symbol = extract_base_symbol(&stat.symbol);
-
-            // Insert liquidity depth data
-            // Using INSERT ... ON CONFLICT DO NOTHING for idempotency
-            sqlx::query(
-                r#"
-                INSERT INTO liquidity_depth (
-                    exchange_id, symbol, mid_price,
-                    bid_1bps, bid_2_5bps, bid_5bps, bid_10bps, bid_20bps,
-                    ask_1bps, ask_2_5bps, ask_5bps, ask_10bps, ask_20bps,
-                    max_ask_bps, max_bid_bps, ts
-                )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
-                ON CONFLICT DO NOTHING
-                "#,
-            )
-            .bind(exchange_id)
-            .bind(&normalized_symbol)
-            .bind(stat.mid_price)
-            .bind(stat.bid_1bps)
-            .bind(stat.bid_2_5bps)
-            .bind(stat.bid_5bps)
-            .bind(stat.bid_10bps)
-            .bind(stat.bid_20bps)
-            .bind(stat.ask_1bps)
-            .bind(stat.ask_2_5bps)
-            .bind(stat.ask_5bps)
-            .bind(stat.ask_10bps)
-            .bind(stat.ask_20bps)
-            .bind(stat.max_ask_bps)
-            .bind(stat.max_bid_bps)
-            .bind(stat.timestamp)
-            .execute(&mut *tx)
-            .await?;
+            if !exchange_id_cache.contains_key(&stat.exchange) {
+                let id = self.get_exchange_id(&stat.exchange).await?;
+                exchange_id_cache.insert(stat.exchange.clone(), id);
+            }
         }
 
-        // Commit the transaction
-        tx.commit().await?;
+        let mut exchange_ids: Vec<i32> = Vec::with_capacity(depth_stats.len());
+        let mut symbols: Vec<String> = Vec::with_capacity(depth_stats.len());
+        let mut mid_prices: Vec<Decimal> = Vec::with_capacity(depth_stats.len());
+        let mut bid_1bpss: Vec<Decimal> = Vec::with_capacity(depth_stats.len());
+        let mut bid_2_5bpss: Vec<Decimal> = Vec::with_capacity(depth_stats.len());
+        let mut bid_5bpss: Vec<Decimal> = Vec::with_capacity(depth_stats.len());
+        let mut bid_10bpss: Vec<Decimal> = Vec::with_capacity(depth_stats.len());
+        let mut bid_20bpss: Vec<Decimal> = Vec::with_capacity(depth_stats.len());
+        let mut ask_1bpss: Vec<Decimal> = Vec::with_capacity(depth_stats.len());
+        let mut ask_2_5bpss: Vec<Decimal> = Vec::with_capacity(depth_stats.len());
+        let mut ask_5bpss: Vec<Decimal> = Vec::with_capacity(depth_stats.len());
+        let mut ask_10bpss: Vec<Decimal> = Vec::with_capacity(depth_stats.len());
+        let mut ask_20bpss: Vec<Decimal> = Vec::with_capacity(depth_stats.len());
+        let mut max_ask_bpss: Vec<Option<Decimal>> = Vec::with_capacity(depth_stats.len());
+        let mut max_bid_bpss: Vec<Option<Decimal>> = Vec::with_capacity(depth_stats.len());
+        let mut timestamps: Vec<DateTime<Utc>> = Vec::with_capacity(depth_stats.len());
+
+        for stat in depth_stats {
+            exchange_ids.push(exchange_id_cache[&stat.exchange]);
+            symbols.push(extract_base_symbol(&stat.symbol));
+            mid_prices.push(stat.mid_price);
+            bid_1bpss.push(stat.bid_1bps);
+            bid_2_5bpss.push(stat.bid_2_5bps);
+            bid_5bpss.push(stat.bid_5bps);
+            bid_10bpss.push(stat.bid_10bps);
+            bid_20bpss.push(stat.bid_20bps);
+            ask_1bpss.push(stat.ask_1bps);
+            ask_2_5bpss.push(stat.ask_2_5bps);
+            ask_5bpss.push(stat.ask_5bps);
+            ask_10bpss.push(stat.ask_10bps);
+            ask_20bpss.push(stat.ask_20bps);
+            max_ask_bpss.push(stat.max_ask_bps);
+            max_bid_bpss.push(stat.max_bid_bps);
+            timestamps.push(stat.timestamp);
+        }
+
+        sqlx::query(
+            r#"
+            INSERT INTO liquidity_depth (
+                exchange_id, symbol, mid_price,
+                bid_1bps, bid_2_5bps, bid_5bps, bid_10bps, bid_20bps,
+                ask_1bps, ask_2_5bps, ask_5bps, ask_10bps, ask_20bps,
+                max_ask_bps, max_bid_bps, ts
+            )
+            SELECT * FROM UNNEST(
+                $1::int4[], $2::text[], $3::numeric[],
+                $4::numeric[], $5::numeric[], $6::numeric[], $7::numeric[], $8::numeric[],
+                $9::numeric[], $10::numeric[], $11::numeric[], $12::numeric[], $13::numeric[],
+                $14::numeric[], $15::numeric[], $16::timestamptz[]
+            )
+            ON CONFLICT DO NOTHING
+            "#,
+        )
+        .bind(&exchange_ids)
+        .bind(&symbols)
+        .bind(&mid_prices)
+        .bind(&bid_1bpss)
+        .bind(&bid_2_5bpss)
+        .bind(&bid_5bpss)
+        .bind(&bid_10bpss)
+        .bind(&bid_20bpss)
+        .bind(&ask_1bpss)
+        .bind(&ask_2_5bpss)
+        .bind(&ask_5bpss)
+        .bind(&ask_10bpss)
+        .bind(&ask_20bpss)
+        .bind(&max_ask_bpss)
+        .bind(&max_bid_bpss)
+        .bind(&timestamps)
+        .execute(&self.pool)
+        .await?;
 
         tracing::info!(
             "✓ Stored {} liquidity depth records to database",
@@ -1408,49 +1507,355 @@ impl Repository for PostgresRepository {
         }
 
         let exchange_id = self.get_exchange_id(exchange).await?;
-        let mut tx = self.pool.begin().await?;
+
+        let mut symbols: Vec<String> = Vec::with_capacity(slippages.len());
+        let mut mid_prices: Vec<Decimal> = Vec::with_capacity(slippages.len());
+        let mut trade_amounts: Vec<Decimal> = Vec::with_capacity(slippages.len());
+        let mut buy_avg_prices: Vec<Option<Decimal>> = Vec::with_capacity(slippages.len());
+        let mut buy_slippage_bpss: Vec<Option<Decimal>> = Vec::with_capacity(slippages.len());
+        let mut buy_slippage_pcts: Vec<Option<Decimal>> = Vec::with_capacity(slippages.len());
+        let mut buy_total_costs: Vec<Option<Decimal>> = Vec::with_capacity(slippages.len());
+        let mut buy_feasibles: Vec<bool> = Vec::with_capacity(slippages.len());
+        let mut sell_avg_prices: Vec<Option<Decimal>> = Vec::with_capacity(slippages.len());
+        let mut sell_slippage_bpss: Vec<Option<Decimal>> = Vec::with_capacity(slippages.len());
+        let mut sell_slippage_pcts: Vec<Option<Decimal>> = Vec::with_capacity(slippages.len());
+        let mut sell_total_costs: Vec<Option<Decimal>> = Vec::with_capacity(slippages.len());
+        let mut sell_feasibles: Vec<bool> = Vec::with_capacity(slippages.len());
+        let mut timestamps: Vec<DateTime<Utc>> = Vec::with_capacity(slippages.len());
 
         for slippage in slippages {
-            // Normalize symbol to global format
-            let normalized_symbol = extract_base_symbol(&slippage.symbol);
-
-            sqlx::query(
-                r#"
-                INSERT INTO slippage (
-                    exchange_id, symbol, mid_price, trade_amount,
-                    buy_avg_price, buy_slippage_bps, buy_slippage_pct, buy_total_cost, buy_feasible,
-                    sell_avg_price, sell_slippage_bps, sell_slippage_pct, sell_total_cost, sell_feasible,
-                    ts
-                )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
-                ON CONFLICT (exchange_id, symbol, ts, trade_amount) DO NOTHING
-                "#
-            )
-            .bind(exchange_id)
-            .bind(&normalized_symbol)
-            .bind(slippage.mid_price)
-            .bind(slippage.trade_amount)
-            .bind(slippage.buy_avg_price)
-            .bind(slippage.buy_slippage_bps)
-            .bind(slippage.buy_slippage_pct)
-            .bind(slippage.buy_total_cost)
-            .bind(slippage.buy_feasible)
-            .bind(slippage.sell_avg_price)
-            .bind(slippage.sell_slippage_bps)
-            .bind(slippage.sell_slippage_pct)
-            .bind(slippage.sell_total_cost)
-            .bind(slippage.sell_feasible)
-            .bind(slippage.timestamp)
-            .execute(&mut *tx)
-            .await?;
+            symbols.push(extract_base_symbol(&slippage.symbol));
+            mid_prices.push(slippage.mid_price);
+            trade_amounts.push(slippage.trade_amount);
+            buy_avg_prices.push(slippage.buy_avg_price);
+            buy_slippage_bpss.push(slippage.buy_slippage_bps);
+            buy_slippage_pcts.push(slippage.buy_slippage_pct);
+            buy_total_costs.push(slippage.buy_total_cost);
+            buy_feasibles.push(slippage.buy_feasible);
+            sell_avg_prices.push(slippage.sell_avg_price);
+            sell_slippage_bpss.push(slippage.sell_slippage_bps);
+            sell_slippage_pcts.push(slippage.sell_slippage_pct);
+            sell_total_costs.push(slippage.sell_total_cost);
+            sell_feasibles.push(slippage.sell_feasible);
+            timestamps.push(slippage.timestamp);
         }
 
-        tx.commit().await?;
+        sqlx::query(
+            r#"
+            INSERT INTO slippage (
+                exchange_id, symbol, mid_price, trade_amount,
+                buy_avg_price, buy_slippage_bps, buy_slippage_pct, buy_total_cost, buy_feasible,
+                sell_avg_price, sell_slippage_bps, sell_slippage_pct, sell_total_cost, sell_feasible,
+                ts
+            )
+            SELECT $1, * FROM UNNEST(
+                $2::text[], $3::numeric[], $4::numeric[],
+                $5::numeric[], $6::numeric[], $7::numeric[], $8::numeric[], $9::bool[],
+                $10::numeric[], $11::numeric[], $12::numeric[], $13::numeric[], $14::bool[],
+                $15::timestamptz[]
+            )
+            ON CONFLICT (exchange_id, symbol, ts, trade_amount) DO NOTHING
+            "#
+        )
+        .bind(exchange_id)
+        .bind(&symbols)
+        .bind(&mid_prices)
+        .bind(&trade_amounts)
+        .bind(&buy_avg_prices)
+        .bind(&buy_slippage_bpss)
+        .bind(&buy_slippage_pcts)
+        .bind(&buy_total_costs)
+        .bind(&buy_feasibles)
+        .bind(&sell_avg_prices)
+        .bind(&sell_slippage_bpss)
+        .bind(&sell_slippage_pcts)
+        .bind(&sell_total_costs)
+        .bind(&sell_feasibles)
+        .bind(&timestamps)
+        .execute(&self.pool)
+        .await?;
+
         tracing::info!(
             "✓ Stored {} slippage records to database for exchange {}",
             slippages.len(),
             exchange
         );
+        Ok(())
+    }
+
+    async fn store_tickers_batch(
+        &self,
+        tickers_by_exchange: &HashMap<String, Vec<Ticker>>,
+    ) -> anyhow::Result<()> {
+        let total: usize = tickers_by_exchange.values().map(|v| v.len()).sum();
+        if total == 0 {
+            return Ok(());
+        }
+
+        // Resolve all exchange IDs upfront
+        let mut exchange_id_cache: HashMap<String, i32> = HashMap::new();
+        for exchange in tickers_by_exchange.keys() {
+            let id = self.get_exchange_id(exchange).await?;
+            exchange_id_cache.insert(exchange.clone(), id);
+        }
+
+        let mut exchange_ids: Vec<i32> = Vec::with_capacity(total);
+        let mut symbols: Vec<String> = Vec::with_capacity(total);
+        let mut last_prices: Vec<Decimal> = Vec::with_capacity(total);
+        let mut mark_prices: Vec<Decimal> = Vec::with_capacity(total);
+        let mut index_prices: Vec<Decimal> = Vec::with_capacity(total);
+        let mut best_bid_prices: Vec<Decimal> = Vec::with_capacity(total);
+        let mut best_bid_qtys: Vec<Decimal> = Vec::with_capacity(total);
+        let mut best_ask_prices: Vec<Decimal> = Vec::with_capacity(total);
+        let mut best_ask_qtys: Vec<Decimal> = Vec::with_capacity(total);
+        let mut volume_24hs: Vec<Decimal> = Vec::with_capacity(total);
+        let mut turnover_24hs: Vec<Decimal> = Vec::with_capacity(total);
+        let mut open_interests: Vec<Decimal> = Vec::with_capacity(total);
+        let mut open_interest_notionals: Vec<Decimal> = Vec::with_capacity(total);
+        let mut price_change_24hs: Vec<Decimal> = Vec::with_capacity(total);
+        let mut price_change_pcts: Vec<Decimal> = Vec::with_capacity(total);
+        let mut high_24hs: Vec<Decimal> = Vec::with_capacity(total);
+        let mut low_24hs: Vec<Decimal> = Vec::with_capacity(total);
+        let mut timestamps: Vec<DateTime<Utc>> = Vec::with_capacity(total);
+
+        for (exchange, tickers) in tickers_by_exchange {
+            let eid = exchange_id_cache[exchange];
+            for ticker in tickers {
+                exchange_ids.push(eid);
+                symbols.push(extract_base_symbol(&ticker.symbol));
+                last_prices.push(ticker.last_price);
+                mark_prices.push(ticker.mark_price);
+                index_prices.push(ticker.index_price);
+                best_bid_prices.push(ticker.best_bid_price);
+                best_bid_qtys.push(ticker.best_bid_qty);
+                best_ask_prices.push(ticker.best_ask_price);
+                best_ask_qtys.push(ticker.best_ask_qty);
+                volume_24hs.push(ticker.volume_24h);
+                turnover_24hs.push(ticker.turnover_24h);
+                open_interests.push(ticker.open_interest);
+                open_interest_notionals.push(ticker.open_interest_notional);
+                price_change_24hs.push(ticker.price_change_24h);
+                price_change_pcts.push(ticker.price_change_pct);
+                high_24hs.push(ticker.high_price_24h);
+                low_24hs.push(ticker.low_price_24h);
+                timestamps.push(ticker.timestamp);
+            }
+        }
+
+        sqlx::query(
+            r#"
+            INSERT INTO tickers (
+                exchange_id, symbol, last_price, mark_price, index_price,
+                best_bid_price, best_bid_qty, best_ask_price, best_ask_qty,
+                volume_24h, turnover_24h, open_interest, open_interest_notional,
+                price_change_24h, price_change_pct,
+                high_24h, low_24h, ts
+            )
+            SELECT * FROM UNNEST(
+                $1::int4[], $2::text[], $3::numeric[], $4::numeric[], $5::numeric[],
+                $6::numeric[], $7::numeric[], $8::numeric[], $9::numeric[],
+                $10::numeric[], $11::numeric[], $12::numeric[], $13::numeric[],
+                $14::numeric[], $15::numeric[],
+                $16::numeric[], $17::numeric[], $18::timestamptz[]
+            )
+            ON CONFLICT DO NOTHING
+            "#
+        )
+        .bind(&exchange_ids)
+        .bind(&symbols)
+        .bind(&last_prices)
+        .bind(&mark_prices)
+        .bind(&index_prices)
+        .bind(&best_bid_prices)
+        .bind(&best_bid_qtys)
+        .bind(&best_ask_prices)
+        .bind(&best_ask_qtys)
+        .bind(&volume_24hs)
+        .bind(&turnover_24hs)
+        .bind(&open_interests)
+        .bind(&open_interest_notionals)
+        .bind(&price_change_24hs)
+        .bind(&price_change_pcts)
+        .bind(&high_24hs)
+        .bind(&low_24hs)
+        .bind(&timestamps)
+        .execute(&self.pool)
+        .await?;
+
+        tracing::info!("✓ Stored {} ticker records to database", total);
+        Ok(())
+    }
+
+    async fn store_orderbooks_batch(
+        &self,
+        orderbooks_by_exchange: &HashMap<String, Vec<Orderbook>>,
+    ) -> anyhow::Result<()> {
+        let total: usize = orderbooks_by_exchange.values().map(|v| v.len()).sum();
+        if total == 0 {
+            return Ok(());
+        }
+
+        let mut exchange_id_cache: HashMap<String, i32> = HashMap::new();
+        for exchange in orderbooks_by_exchange.keys() {
+            let id = self.get_exchange_id(exchange).await?;
+            exchange_id_cache.insert(exchange.clone(), id);
+        }
+
+        let mut exchange_ids: Vec<i32> = Vec::with_capacity(total);
+        let mut symbols: Vec<String> = Vec::with_capacity(total);
+        let mut bids_notionals: Vec<Decimal> = Vec::with_capacity(total);
+        let mut asks_notionals: Vec<Decimal> = Vec::with_capacity(total);
+        let mut bid_sizes: Vec<i32> = Vec::with_capacity(total);
+        let mut ask_sizes: Vec<i32> = Vec::with_capacity(total);
+        let mut best_bids: Vec<Option<Decimal>> = Vec::with_capacity(total);
+        let mut best_asks: Vec<Option<Decimal>> = Vec::with_capacity(total);
+        let mut best_bid_qtys: Vec<Option<Decimal>> = Vec::with_capacity(total);
+        let mut best_ask_qtys: Vec<Option<Decimal>> = Vec::with_capacity(total);
+        let mut spread_bpss: Vec<i32> = Vec::with_capacity(total);
+        let mut timestamps: Vec<DateTime<Utc>> = Vec::with_capacity(total);
+
+        for (exchange, orderbooks) in orderbooks_by_exchange {
+            let eid = exchange_id_cache[exchange];
+            for orderbook in orderbooks {
+                exchange_ids.push(eid);
+                symbols.push(extract_base_symbol(&orderbook.symbol));
+                let (bn, an) = orderbook.total_notional();
+                bids_notionals.push(bn);
+                asks_notionals.push(an);
+                let (bs, as_) = orderbook.size();
+                bid_sizes.push(bs as i32);
+                ask_sizes.push(as_ as i32);
+                best_bids.push(orderbook.best_bid());
+                best_asks.push(orderbook.best_ask());
+                best_bid_qtys.push(orderbook.best_bid_qty());
+                best_ask_qtys.push(orderbook.best_ask_qty());
+                spread_bpss.push(orderbook.spread().and_then(|s| s.to_i32()).unwrap_or(0));
+                timestamps.push(orderbook.timestamp);
+            }
+        }
+
+        sqlx::query(
+            r#"
+            INSERT INTO orderbooks (
+                exchange_id, symbol, bids_notional, asks_notional,
+                bid_size, ask_size, best_bid, best_ask, best_bid_qty, best_ask_qty,
+                spread_bps, ts
+            )
+            SELECT * FROM UNNEST(
+                $1::int4[], $2::text[], $3::numeric[], $4::numeric[],
+                $5::int4[], $6::int4[], $7::numeric[], $8::numeric[], $9::numeric[], $10::numeric[],
+                $11::int4[], $12::timestamptz[]
+            )
+            ON CONFLICT DO NOTHING
+            "#,
+        )
+        .bind(&exchange_ids)
+        .bind(&symbols)
+        .bind(&bids_notionals)
+        .bind(&asks_notionals)
+        .bind(&bid_sizes)
+        .bind(&ask_sizes)
+        .bind(&best_bids)
+        .bind(&best_asks)
+        .bind(&best_bid_qtys)
+        .bind(&best_ask_qtys)
+        .bind(&spread_bpss)
+        .bind(&timestamps)
+        .execute(&self.pool)
+        .await?;
+
+        tracing::info!("✓ Stored {} orderbook records to database", total);
+        Ok(())
+    }
+
+    async fn store_slippage_batch(
+        &self,
+        slippages_by_exchange: &HashMap<String, Vec<Slippage>>,
+    ) -> anyhow::Result<()> {
+        let total: usize = slippages_by_exchange.values().map(|v| v.len()).sum();
+        if total == 0 {
+            return Ok(());
+        }
+
+        let mut exchange_id_cache: HashMap<String, i32> = HashMap::new();
+        for exchange in slippages_by_exchange.keys() {
+            let id = self.get_exchange_id(exchange).await?;
+            exchange_id_cache.insert(exchange.clone(), id);
+        }
+
+        let mut exchange_ids: Vec<i32> = Vec::with_capacity(total);
+        let mut symbols: Vec<String> = Vec::with_capacity(total);
+        let mut mid_prices: Vec<Decimal> = Vec::with_capacity(total);
+        let mut trade_amounts: Vec<Decimal> = Vec::with_capacity(total);
+        let mut buy_avg_prices: Vec<Option<Decimal>> = Vec::with_capacity(total);
+        let mut buy_slippage_bpss: Vec<Option<Decimal>> = Vec::with_capacity(total);
+        let mut buy_slippage_pcts: Vec<Option<Decimal>> = Vec::with_capacity(total);
+        let mut buy_total_costs: Vec<Option<Decimal>> = Vec::with_capacity(total);
+        let mut buy_feasibles: Vec<bool> = Vec::with_capacity(total);
+        let mut sell_avg_prices: Vec<Option<Decimal>> = Vec::with_capacity(total);
+        let mut sell_slippage_bpss: Vec<Option<Decimal>> = Vec::with_capacity(total);
+        let mut sell_slippage_pcts: Vec<Option<Decimal>> = Vec::with_capacity(total);
+        let mut sell_total_costs: Vec<Option<Decimal>> = Vec::with_capacity(total);
+        let mut sell_feasibles: Vec<bool> = Vec::with_capacity(total);
+        let mut timestamps: Vec<DateTime<Utc>> = Vec::with_capacity(total);
+
+        for (exchange, slippages) in slippages_by_exchange {
+            let eid = exchange_id_cache[exchange];
+            for slippage in slippages {
+                exchange_ids.push(eid);
+                symbols.push(extract_base_symbol(&slippage.symbol));
+                mid_prices.push(slippage.mid_price);
+                trade_amounts.push(slippage.trade_amount);
+                buy_avg_prices.push(slippage.buy_avg_price);
+                buy_slippage_bpss.push(slippage.buy_slippage_bps);
+                buy_slippage_pcts.push(slippage.buy_slippage_pct);
+                buy_total_costs.push(slippage.buy_total_cost);
+                buy_feasibles.push(slippage.buy_feasible);
+                sell_avg_prices.push(slippage.sell_avg_price);
+                sell_slippage_bpss.push(slippage.sell_slippage_bps);
+                sell_slippage_pcts.push(slippage.sell_slippage_pct);
+                sell_total_costs.push(slippage.sell_total_cost);
+                sell_feasibles.push(slippage.sell_feasible);
+                timestamps.push(slippage.timestamp);
+            }
+        }
+
+        sqlx::query(
+            r#"
+            INSERT INTO slippage (
+                exchange_id, symbol, mid_price, trade_amount,
+                buy_avg_price, buy_slippage_bps, buy_slippage_pct, buy_total_cost, buy_feasible,
+                sell_avg_price, sell_slippage_bps, sell_slippage_pct, sell_total_cost, sell_feasible,
+                ts
+            )
+            SELECT * FROM UNNEST(
+                $1::int4[], $2::text[], $3::numeric[], $4::numeric[],
+                $5::numeric[], $6::numeric[], $7::numeric[], $8::numeric[], $9::bool[],
+                $10::numeric[], $11::numeric[], $12::numeric[], $13::numeric[], $14::bool[],
+                $15::timestamptz[]
+            )
+            ON CONFLICT (exchange_id, symbol, ts, trade_amount) DO NOTHING
+            "#
+        )
+        .bind(&exchange_ids)
+        .bind(&symbols)
+        .bind(&mid_prices)
+        .bind(&trade_amounts)
+        .bind(&buy_avg_prices)
+        .bind(&buy_slippage_bpss)
+        .bind(&buy_slippage_pcts)
+        .bind(&buy_total_costs)
+        .bind(&buy_feasibles)
+        .bind(&sell_avg_prices)
+        .bind(&sell_slippage_bpss)
+        .bind(&sell_slippage_pcts)
+        .bind(&sell_total_costs)
+        .bind(&sell_feasibles)
+        .bind(&timestamps)
+        .execute(&self.pool)
+        .await?;
+
+        tracing::info!("✓ Stored {} slippage records to database", total);
         Ok(())
     }
 
