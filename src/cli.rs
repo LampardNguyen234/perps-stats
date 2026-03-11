@@ -168,6 +168,9 @@ pub enum Commands {
     /// Export all database tables to CSV or Excel files
     Export(crate::commands::export::ExportArgs),
 
+    /// Import data from legacy dump files
+    Import(crate::commands::import::ImportArgs),
+
     /// Read, list, or export full orderbook data from Parquet files
     Orderbook(crate::commands::orderbook::OrderbookArgs),
 

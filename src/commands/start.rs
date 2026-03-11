@@ -1189,7 +1189,9 @@ async fn spawn_liquidity_report_task(
                                 // Write full orderbook to Parquet
                                 {
                                     let mut pw = parquet_writer.lock().await;
-                                    if let Err(e) = pw.write_orderbook(exchange, symbol, finest_book) {
+                                    if let Err(e) =
+                                        pw.write_orderbook(exchange, symbol, finest_book)
+                                    {
                                         tracing::error!(
                                             "Failed to write orderbook to Parquet for {}/{}: {}",
                                             exchange,

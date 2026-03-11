@@ -30,8 +30,37 @@ pub async fn create_partitions(pool: &PgPool, days: i32) -> Result<()> {
     Ok(())
 }
 
+/// Create daily partitions for a date range (inclusive).
+/// Safe to call concurrently — uses IF NOT EXISTS and existence checks.
+pub async fn create_partitions_for_range(
+    pool: &PgPool,
+    start_date: NaiveDate,
+    end_date: NaiveDate,
+) -> Result<()> {
+    tracing::info!(
+        "Creating partitions for date range {} to {}",
+        start_date,
+        end_date
+    );
+
+    let mut date = start_date;
+    while date <= end_date {
+        for table in PARTITIONED_TABLES {
+            create_partition_for_date(pool, table, date).await?;
+        }
+        date += chrono::Duration::days(1);
+    }
+
+    tracing::info!(
+        "Partitions created successfully for range {} to {}",
+        start_date,
+        end_date
+    );
+    Ok(())
+}
+
 /// Create a partition for a specific table and date
-async fn create_partition_for_date(pool: &PgPool, table: &str, date: NaiveDate) -> Result<()> {
+pub async fn create_partition_for_date(pool: &PgPool, table: &str, date: NaiveDate) -> Result<()> {
     let partition_name = format!("{}_{}", table, date.format("%Y_%m_%d"));
     let start_date = date.format("%Y-%m-%d").to_string();
     let end_date = (date + chrono::Duration::days(1))
