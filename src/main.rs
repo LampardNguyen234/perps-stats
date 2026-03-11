@@ -149,6 +149,9 @@ async fn main() -> Result<()> {
         Commands::Export(args) => {
             commands::export::execute(args).await?;
         }
+        Commands::Import(args) => {
+            commands::import::execute(args).await?;
+        }
         Commands::Orderbook(args) => {
             commands::orderbook::execute(args).await?;
         }

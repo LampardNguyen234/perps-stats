@@ -99,7 +99,14 @@ pub async fn execute(args: OrderbookArgs) -> Result<()> {
             time,
             format,
             parquet_dir,
-        } => execute_read(&exchange, &symbol, &date, time.as_deref(), &format, &parquet_dir),
+        } => execute_read(
+            &exchange,
+            &symbol,
+            &date,
+            time.as_deref(),
+            &format,
+            &parquet_dir,
+        ),
         OrderbookCommands::List {
             exchange,
             symbol,
@@ -139,9 +146,7 @@ fn execute_read(
     let orderbooks = if let Some(time_s) = time_str {
         let time = NaiveTime::parse_from_str(time_s, "%H:%M:%S")
             .with_context(|| format!("invalid time: {}", time_s))?;
-        let dt = date
-            .and_time(time)
-            .and_utc();
+        let dt = date.and_time(time).and_utc();
         match reader.read_orderbook_at(exchange, symbol, dt)? {
             Some(ob) => vec![ob],
             None => {
@@ -154,7 +159,10 @@ fn execute_read(
     };
 
     if orderbooks.is_empty() {
-        println!("No orderbook data found for {}/{} on {}", exchange, symbol, date);
+        println!(
+            "No orderbook data found for {}/{} on {}",
+            exchange, symbol, date
+        );
         return Ok(());
     }
 
@@ -297,10 +305,12 @@ fn execute_export(
     output: &str,
     parquet_dir: &str,
 ) -> Result<()> {
-    use perps_database::parquet::schema::{orderbook_to_rows, rows_to_record_batch, orderbook_arrow_schema};
     use parquet::arrow::ArrowWriter;
     use parquet::basic::Compression;
     use parquet::file::properties::WriterProperties;
+    use perps_database::parquet::schema::{
+        orderbook_arrow_schema, orderbook_to_rows, rows_to_record_batch,
+    };
     use std::sync::Arc;
 
     let reader = OrderbookParquetReader::new(parquet_dir);
@@ -338,8 +348,8 @@ fn execute_export(
 
     let file = std::fs::File::create(&output_path)
         .with_context(|| format!("failed to create output file: {}", output))?;
-    let mut writer = ArrowWriter::try_new(file, schema, Some(props))
-        .context("failed to create ArrowWriter")?;
+    let mut writer =
+        ArrowWriter::try_new(file, schema, Some(props)).context("failed to create ArrowWriter")?;
 
     let mut total_snapshots = 0usize;
     for date in &filtered_dates {

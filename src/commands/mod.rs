@@ -2,6 +2,7 @@ pub mod backfill;
 pub mod common;
 pub mod db;
 pub mod export;
+pub mod import;
 pub mod liquidity;
 pub mod market;
 pub mod orderbook;
