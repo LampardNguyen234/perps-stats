@@ -211,6 +211,16 @@ impl RateLimiter {
         Self::new(vec![RateLimit::per_second(20), RateLimit::per_minute(1200)])
     }
 
+    /// Create preset rate limiter for Hotstuff Exchange
+    /// - 5000 requests per minute (~83 req/s documented limit)
+    /// - Using conservative 80 requests per second to stay under limit
+    pub fn hotstuff() -> Self {
+        Self::new(vec![
+            RateLimit::per_second(80),
+            RateLimit::per_minute(4800),
+        ])
+    }
+
     /// Create preset rate limiter for Gravity Dex
     /// Conservative rate limit based on market data API:
     /// - No explicit rate limit documented in Gravity API

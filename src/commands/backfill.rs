@@ -423,6 +423,7 @@ pub async fn execute(args: BackfillArgs) -> Result<()> {
         "binance",
         "extended",
         "gravity",
+        "hotstuff",
         "hyperliquid",
         "bybit",
         "kucoin",
