@@ -1500,6 +1500,7 @@ pub async fn execute(args: StartArgs) -> Result<()> {
         "binance",
         "extended",
         "gravity",
+        "hotstuff",
         "hyperliquid",
         "bybit",
         "kucoin",
