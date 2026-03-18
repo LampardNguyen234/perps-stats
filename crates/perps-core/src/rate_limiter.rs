@@ -215,10 +215,13 @@ impl RateLimiter {
     /// - 5000 requests per minute (~83 req/s documented limit)
     /// - Using conservative 80 requests per second to stay under limit
     pub fn hotstuff() -> Self {
-        Self::new(vec![
-            RateLimit::per_second(80),
-            RateLimit::per_minute(4800),
-        ])
+        Self::new(vec![RateLimit::per_second(80), RateLimit::per_minute(4800)])
+    }
+
+    /// Create preset rate limiter for Hibachi Exchange
+    /// - 300 requests per 10-second sliding window (documented limit)
+    pub fn hibachi() -> Self {
+        Self::new(vec![RateLimit::new(300, Duration::from_secs(10))])
     }
 
     /// Create preset rate limiter for Gravity Dex
