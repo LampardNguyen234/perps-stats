@@ -3,6 +3,7 @@ use crate::binance::BinanceClient;
 use crate::bybit::BybitClient;
 use crate::extended::ExtendedClient;
 use crate::gravity::GravityClient;
+use crate::hibachi::HibachiClient;
 use crate::hotstuff::HotstuffClient;
 use crate::hyperliquid::HyperliquidClient;
 use crate::kucoin::KucoinClient;
@@ -25,6 +26,10 @@ pub async fn all_exchanges() -> Vec<(String, Box<dyn IPerps + Send + Sync>)> {
         (
             "gravity".to_string(),
             Box::new(GravityClient::new()) as Box<dyn IPerps + Send + Sync>,
+        ),
+        (
+            "hibachi".to_string(),
+            Box::new(HibachiClient::new()) as Box<dyn IPerps + Send + Sync>,
         ),
         (
             "hotstuff".to_string(),
@@ -113,6 +118,7 @@ pub async fn get_exchange(name: &str) -> anyhow::Result<Box<dyn IPerps + Send + 
             Ok(Box::new(client))
         }
         "gravity" => Ok(Box::new(GravityClient::new())),
+        "hibachi" => Ok(Box::new(HibachiClient::new())),
         "hotstuff" => Ok(Box::new(HotstuffClient::new())),
         "hyperliquid" => Ok(Box::new(HyperliquidClient::new())),
         "kucoin" => {
@@ -124,7 +130,7 @@ pub async fn get_exchange(name: &str) -> anyhow::Result<Box<dyn IPerps + Send + 
         "01" => Ok(Box::new(O1Client::new())),
         "pacifica" => Ok(Box::new(PacificaClient::new())),
         "paradex" => Ok(Box::new(ParadexClient::new())),
-        _ => anyhow::bail!("Unsupported exchange: {}. Currently supported: 01, aster, binance, bybit, extended, gravity, hotstuff, hyperliquid, kucoin, lighter, nado, pacifica, paradex", name),
+        _ => anyhow::bail!("Unsupported exchange: {}. Currently supported: 01, aster, binance, bybit, extended, gravity, hibachi, hotstuff, hyperliquid, kucoin, lighter, nado, pacifica, paradex", name),
     }
 }
 

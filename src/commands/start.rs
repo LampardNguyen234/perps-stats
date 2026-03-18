@@ -4,7 +4,9 @@ use clap::Args;
 use futures::StreamExt as _;
 use perps_aggregator::{Aggregator, IAggregator};
 use perps_core::streaming::StreamEvent;
-use perps_core::types::{FundingRate, Kline, LiquidityDepthStats, Orderbook, Slippage, Ticker, Trade};
+use perps_core::types::{
+    FundingRate, Kline, LiquidityDepthStats, Orderbook, Slippage, Ticker, Trade,
+};
 use perps_database::{PostgresRepository, Repository};
 use perps_exchanges::factory;
 use sqlx::postgres::PgPoolOptions;
@@ -1038,7 +1040,9 @@ async fn spawn_klines_task(
 }
 
 /// Build symbol → exchanges mapping (inverse of exchange → symbols).
-fn build_symbol_exchanges(exchange_symbols: &HashMap<String, Vec<String>>) -> (Vec<String>, HashMap<String, Vec<String>>) {
+fn build_symbol_exchanges(
+    exchange_symbols: &HashMap<String, Vec<String>>,
+) -> (Vec<String>, HashMap<String, Vec<String>>) {
     let mut symbol_exchanges: HashMap<String, Vec<String>> = HashMap::new();
     for (exchange, symbols) in exchange_symbols {
         for symbol in symbols {
@@ -1139,13 +1143,15 @@ async fn spawn_liquidity_report_task(
                         Some(async move {
                             match client.get_orderbook(&symbol, 1000).await {
                                 Ok(multi_orderbook) => {
-                                    let is_empty = multi_orderbook.best_for_tight_spreads()
+                                    let is_empty = multi_orderbook
+                                        .best_for_tight_spreads()
                                         .map(|ob| ob.bids.is_empty() || ob.asks.is_empty())
                                         .unwrap_or(true);
                                     if is_empty {
                                         tracing::warn!(
                                             "Empty orderbook for {}/{}, skipping",
-                                            exchange, symbol
+                                            exchange,
+                                            symbol
                                         );
                                         return None;
                                     }
@@ -1158,12 +1164,20 @@ async fn spawn_liquidity_report_task(
                                         .await;
                                     let slippages =
                                         aggregator.calculate_all_slippages(&multi_orderbook);
-                                    Some((exchange, symbol, multi_orderbook, depth_result, slippages))
+                                    Some((
+                                        exchange,
+                                        symbol,
+                                        multi_orderbook,
+                                        depth_result,
+                                        slippages,
+                                    ))
                                 }
                                 Err(e) => {
                                     tracing::error!(
                                         "Failed to fetch orderbook for {}/{}: {}",
-                                        exchange, symbol, e
+                                        exchange,
+                                        symbol,
+                                        e
                                     );
                                     None
                                 }
@@ -1172,17 +1186,25 @@ async fn spawn_liquidity_report_task(
                     });
 
                     let results: Vec<_> = futures::future::join_all(exchange_futures)
-                        .await.into_iter().flatten().collect();
+                        .await
+                        .into_iter()
+                        .flatten()
+                        .collect();
                     tracing::info!(
                         "Completed liquidity for {} ({}/{} exchanges)",
-                        symbol, results.len(), exchanges.len(),
+                        symbol,
+                        results.len(),
+                        exchanges.len(),
                     );
                     results
                 }
             });
 
             let all_results: Vec<_> = futures::future::join_all(symbol_futures)
-                .await.into_iter().flatten().collect();
+                .await
+                .into_iter()
+                .flatten()
+                .collect();
 
             if shutdown.load(Ordering::Relaxed) {
                 tracing::info!("Shutdown signal received for liquidity report task");
@@ -1204,7 +1226,9 @@ async fn spawn_liquidity_report_task(
                     Err(e) => {
                         tracing::error!(
                             "Failed to calculate liquidity depth for {}/{}: {}",
-                            exchange, symbol, e
+                            exchange,
+                            symbol,
+                            e
                         );
                     }
                 }
@@ -1260,7 +1284,9 @@ async fn spawn_liquidity_report_task(
                         if let Err(e) = pw.write_orderbook(exchange, &ob.symbol, ob) {
                             tracing::error!(
                                 "Failed to write orderbook to Parquet for {}/{}: {}",
-                                exchange, ob.symbol, e
+                                exchange,
+                                ob.symbol,
+                                e
                             );
                         }
                     }
@@ -1271,7 +1297,10 @@ async fn spawn_liquidity_report_task(
                 }
             }
 
-            tracing::info!("Completed liquidity report generation (batch_ts: {})", batch_ts);
+            tracing::info!(
+                "Completed liquidity report generation (batch_ts: {})",
+                batch_ts
+            );
         }
 
         // Final flush on task exit
@@ -1374,7 +1403,8 @@ async fn spawn_ticker_report_task(
                                     } else {
                                         tracing::warn!(
                                             "Empty ticker for {}/{}, skipping",
-                                            exchange, symbol
+                                            exchange,
+                                            symbol
                                         );
                                         None
                                     }
@@ -1382,7 +1412,9 @@ async fn spawn_ticker_report_task(
                                 Err(e) => {
                                     tracing::error!(
                                         "Failed to fetch ticker for {}/{}: {}",
-                                        exchange, symbol, e
+                                        exchange,
+                                        symbol,
+                                        e
                                     );
                                     None
                                 }
@@ -1391,10 +1423,15 @@ async fn spawn_ticker_report_task(
                     });
 
                     let results: Vec<_> = futures::future::join_all(exchange_futures)
-                        .await.into_iter().flatten().collect();
+                        .await
+                        .into_iter()
+                        .flatten()
+                        .collect();
                     tracing::info!(
                         "Completed ticker for {} ({}/{} exchanges)",
-                        symbol, results.len(), exchanges.len(),
+                        symbol,
+                        results.len(),
+                        exchanges.len(),
                     );
                     results
                 }
@@ -1423,7 +1460,10 @@ async fn spawn_ticker_report_task(
                 }
             }
 
-            tracing::info!("Completed ticker report generation (batch_ts: {})", batch_ts);
+            tracing::info!(
+                "Completed ticker report generation (batch_ts: {})",
+                batch_ts
+            );
         }
 
         tracing::info!("Ticker report task stopped");
@@ -1500,6 +1540,7 @@ pub async fn execute(args: StartArgs) -> Result<()> {
         "binance",
         "extended",
         "gravity",
+        "hibachi",
         "hotstuff",
         "hyperliquid",
         "bybit",
