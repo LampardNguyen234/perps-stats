@@ -94,10 +94,10 @@ pub fn prices_stats_oi_ob_to_ticker(
         .and_then(|l| parse_decimal(&l.quantity, "ask.quantity").ok())
         .unwrap_or(Decimal::ZERO);
 
-    // volume_24h from /stats is base volume; compute turnover as base × last
-    let volume_24h = parse_decimal_opt(&stats.volume_24h, "volume_24h");
-    let turnover_24h = if last_price > Decimal::ZERO {
-        volume_24h * last_price
+    // volume_24h from /stats is already USD turnover; derive base volume as turnover / last_price
+    let turnover_24h = parse_decimal_opt(&stats.volume_24h, "volume_24h");
+    let volume_24h = if last_price > Decimal::ZERO {
+        turnover_24h / last_price
     } else {
         Decimal::ZERO
     };
@@ -363,9 +363,10 @@ pub fn prices_stats_oi_to_market_stats(
     let last_price = parse_decimal_opt(&prices.trade_price, "trade_price");
     let mark_price = parse_decimal_opt(&prices.mark_price, "mark_price");
     let index_price = parse_decimal_opt(&prices.spot_price, "spot_price");
-    let volume_24h = parse_decimal_opt(&stats.volume_24h, "volume_24h");
-    let turnover_24h = if last_price > Decimal::ZERO {
-        volume_24h * last_price
+    // volume_24h from /stats is already USD turnover; derive base volume as turnover / last_price
+    let turnover_24h = parse_decimal_opt(&stats.volume_24h, "volume_24h");
+    let volume_24h = if last_price > Decimal::ZERO {
+        turnover_24h / last_price
     } else {
         Decimal::ZERO
     };
@@ -478,8 +479,9 @@ mod tests {
         );
         assert_eq!(ticker.best_bid_qty, Decimal::from_str_exact("1.5").unwrap());
         assert_eq!(ticker.best_ask_qty, Decimal::from_str_exact("0.8").unwrap());
-        // turnover = 100 * 95000
+        // volume_24h from /stats is turnover (USD); volume_24h (base) = 100 / 95000
         assert!(ticker.turnover_24h > Decimal::ZERO);
+        assert!(ticker.volume_24h > Decimal::ZERO);
     }
 
     #[test]
