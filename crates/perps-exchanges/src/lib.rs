@@ -14,6 +14,7 @@ pub mod nado;
 pub mod o1;
 pub mod pacifica;
 pub mod paradex;
+pub mod qfex;
 
 pub use aster::AsterClient;
 pub use binance::BinanceClient;
@@ -31,5 +32,6 @@ pub use nado::NadoClient;
 pub use o1::O1Client;
 pub use pacifica::PacificaClient;
 pub use paradex::ParadexClient;
+pub use qfex::QfexClient;
 
 pub use perps_core::IPerps;

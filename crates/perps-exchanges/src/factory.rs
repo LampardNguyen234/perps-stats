@@ -12,6 +12,7 @@ use crate::nado::NadoClient;
 use crate::o1::O1Client;
 use crate::pacifica::PacificaClient;
 use crate::paradex::ParadexClient;
+use crate::qfex::QfexClient;
 use perps_core::traits::IPerps;
 
 /// Returns a vector of all available exchange clients.
@@ -30,6 +31,10 @@ pub async fn all_exchanges() -> Vec<(String, Box<dyn IPerps + Send + Sync>)> {
         (
             "hibachi".to_string(),
             Box::new(HibachiClient::new()) as Box<dyn IPerps + Send + Sync>,
+        ),
+        (
+            "qfex".to_string(),
+            Box::new(QfexClient::new()) as Box<dyn IPerps + Send + Sync>,
         ),
         (
             "hotstuff".to_string(),
@@ -130,7 +135,8 @@ pub async fn get_exchange(name: &str) -> anyhow::Result<Box<dyn IPerps + Send + 
         "01" => Ok(Box::new(O1Client::new())),
         "pacifica" => Ok(Box::new(PacificaClient::new())),
         "paradex" => Ok(Box::new(ParadexClient::new())),
-        _ => anyhow::bail!("Unsupported exchange: {}. Currently supported: 01, aster, binance, bybit, extended, gravity, hibachi, hotstuff, hyperliquid, kucoin, lighter, nado, pacifica, paradex", name),
+        "qfex" => Ok(Box::new(QfexClient::new())),
+        _ => anyhow::bail!("Unsupported exchange: {}. Currently supported: 01, aster, binance, bybit, extended, gravity, hibachi, hotstuff, hyperliquid, kucoin, lighter, nado, pacifica, paradex, qfex", name),
     }
 }
 
@@ -219,5 +225,33 @@ mod tests {
             names.contains(&"gravity"),
             "gravity should be in all_exchanges()"
         );
+    }
+
+    /// Test that QFEX exchange can be created via factory
+    #[tokio::test]
+    async fn test_get_exchange_qfex() {
+        let result = get_exchange("qfex").await;
+        assert!(result.is_ok(), "get_exchange(\"qfex\") should succeed");
+        let client = result.unwrap();
+        assert_eq!(client.get_name(), "qfex");
+    }
+
+    /// Test that QFEX exchange respects case-insensitive exchange names
+    #[tokio::test]
+    async fn test_get_exchange_qfex_case_insensitive() {
+        let lowercase = get_exchange("qfex").await;
+        let uppercase = get_exchange("QFEX").await;
+        assert!(lowercase.is_ok());
+        assert!(uppercase.is_ok());
+        assert_eq!(lowercase.unwrap().get_name(), "qfex");
+        assert_eq!(uppercase.unwrap().get_name(), "qfex");
+    }
+
+    /// Test that QFEX is included in all_exchanges()
+    #[tokio::test]
+    async fn test_all_exchanges_includes_qfex() {
+        let exchanges = all_exchanges().await;
+        let qfex_found = exchanges.iter().any(|(name, _)| name == "qfex");
+        assert!(qfex_found, "QFEX should be included in all_exchanges()");
     }
 }

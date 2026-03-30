@@ -197,6 +197,12 @@ fn get_supported_data_types(exchange: &str) -> Vec<perps_core::streaming::Stream
             StreamDataType::Orderbook,
             StreamDataType::FundingRate,
         ],
+        "qfex" => vec![
+            // Note: Ticker excluded - use ticker report task for complete data via REST API
+            // Note: get_recent_trades has no REST endpoint; trades available via WS only
+            StreamDataType::Orderbook,
+            StreamDataType::FundingRate,
+        ],
         _ => vec![],
     }
 }
@@ -290,6 +296,7 @@ async fn spawn_streaming_task(
                 "kucoin" => Box::new(perps_exchanges::kucoin::KuCoinWsClient::new()),
                 "lighter" => Box::new(perps_exchanges::lighter::LighterWsClient::new()),
                 "paradex" => Box::new(perps_exchanges::paradex::ParadexWsClient::new()),
+                "qfex" => Box::new(perps_exchanges::qfex::QfexWsClient::new()),
                 _ => anyhow::bail!("Unsupported exchange for streaming: {}", exchange),
             };
 
@@ -1549,6 +1556,7 @@ pub async fn execute(args: StartArgs) -> Result<()> {
         "nado",
         "pacifica",
         "paradex",
+        "qfex",
     ];
     let exchanges = match args.exchanges {
         Some(ref exs) if !exs.is_empty() => {

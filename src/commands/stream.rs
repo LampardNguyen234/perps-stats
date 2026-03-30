@@ -11,7 +11,7 @@ use tokio::sync::Mutex;
 
 #[derive(Args)]
 pub struct StreamArgs {
-    /// Exchange to stream from (supported: aster, binance, hyperliquid, bybit, kucoin, lighter, paradex)
+    /// Exchange to stream from (supported: aster, binance, hyperliquid, bybit, kucoin, lighter, paradex, qfex)
     #[arg(short, long, default_value = "binance")]
     pub exchange: String,
 
@@ -51,9 +51,9 @@ pub async fn execute(args: StreamArgs) -> Result<()> {
     // Validate exchange
     if !matches!(
         args.exchange.as_str(),
-        "aster" | "binance" | "hyperliquid" | "bybit" | "kucoin" | "lighter" | "paradex"
+        "aster" | "binance" | "hyperliquid" | "bybit" | "kucoin" | "lighter" | "paradex" | "qfex"
     ) {
-        anyhow::bail!("Only 'aster', 'binance', 'hyperliquid', 'bybit', 'kucoin', 'lighter', and 'paradex' exchanges are currently supported for streaming");
+        anyhow::bail!("Only 'aster', 'binance', 'hyperliquid', 'bybit', 'kucoin', 'lighter', 'paradex', and 'qfex' exchanges are currently supported for streaming");
     }
 
     // Parse data types
@@ -237,6 +237,10 @@ pub async fn execute(args: StreamArgs) -> Result<()> {
             }
             "paradex" => {
                 let ws_client = perps_exchanges::paradex::ParadexWsClient::new();
+                Box::new(ws_client.stream_multi(config).await?)
+            }
+            "qfex" => {
+                let ws_client = perps_exchanges::qfex::QfexWsClient::new();
                 Box::new(ws_client.stream_multi(config).await?)
             }
             _ => anyhow::bail!("Unsupported exchange for streaming: {}", args.exchange),
