@@ -38,9 +38,10 @@ impl NadoClient {
         self.symbols_cache
             .get_or_init(|| async {
                 let markets = self.get_markets().await?;
-                Ok(markets.into_iter().map(|m| {
-                    self.parse_symbol(&m.symbol)
-                }).collect())
+                Ok(markets
+                    .into_iter()
+                    .map(|m| self.parse_symbol(&m.symbol))
+                    .collect())
             })
             .await
     }
@@ -325,7 +326,10 @@ impl IPerps for NadoClient {
 
     async fn is_supported(&self, symbol: &str) -> Result<bool> {
         self.ensure_cache_initialized().await?;
-        Ok(self.symbols_cache.contains(&self.parse_symbol(symbol)).await)
+        Ok(self
+            .symbols_cache
+            .contains(&self.parse_symbol(symbol))
+            .await)
     }
 }
 

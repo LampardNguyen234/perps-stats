@@ -47,9 +47,10 @@ impl HotstuffClient {
         self.symbols_cache
             .get_or_init(|| async {
                 let instruments = self.fetch_instruments().await?;
-                Ok(instruments.iter().map(|i| {
-                    self.parse_symbol(&i.name)
-                }).collect())
+                Ok(instruments
+                    .iter()
+                    .map(|i| self.parse_symbol(&i.name))
+                    .collect())
             })
             .await
     }
@@ -455,7 +456,10 @@ impl IPerps for HotstuffClient {
 
     async fn is_supported(&self, symbol: &str) -> Result<bool> {
         self.ensure_cache_initialized().await?;
-        Ok(self.symbols_cache.contains(&self.parse_symbol(symbol)).await)
+        Ok(self
+            .symbols_cache
+            .contains(&self.parse_symbol(symbol))
+            .await)
     }
 }
 

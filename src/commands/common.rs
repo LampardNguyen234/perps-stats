@@ -8,6 +8,29 @@ use std::future::Future;
 use std::path::Path;
 use tokio::time::{interval, Duration};
 
+/// Returns the list of all supported exchanges.
+/// This is the single source of truth for CLI commands and should be kept in sync with the factory.
+pub fn get_supported_exchanges() -> Vec<&'static str> {
+    vec![
+        "01",
+        "aster",
+        "binance",
+        "bybit",
+        "extended",
+        "gravity",
+        "hibachi",
+        "hotstuff",
+        "hyperliquid",
+        "kucoin",
+        "lighter",
+        "nado",
+        "pacifica",
+        "paradex",
+        "qfex",
+        "tradexyz",
+    ]
+}
+
 /// Configuration for periodic fetcher output
 pub enum OutputConfig {
     File {

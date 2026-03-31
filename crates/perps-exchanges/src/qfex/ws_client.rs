@@ -73,7 +73,6 @@ fn clip_orderbook(ob: &MultiResolutionOrderbook, depth: usize) -> MultiResolutio
     }
 }
 
-
 fn build_subscribe_msg(
     channels: Vec<String>,
     symbols: Vec<String>,

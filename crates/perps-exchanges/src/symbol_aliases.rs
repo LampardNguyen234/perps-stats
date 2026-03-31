@@ -181,4 +181,3 @@ mod tests {
         assert_eq!(aliases.unresolve("QFEX", "GOLD"), "XAU");
     }
 }
-

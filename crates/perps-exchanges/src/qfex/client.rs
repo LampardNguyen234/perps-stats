@@ -486,7 +486,9 @@ impl IPerps for QfexClient {
     async fn is_supported(&self, symbol: &str) -> Result<bool> {
         let markets = self.get_markets().await?;
         let qfex_sym = self.parse_symbol(symbol);
-        Ok(markets.iter().any(|m| self.parse_symbol(&m.symbol) == qfex_sym))
+        Ok(markets
+            .iter()
+            .any(|m| self.parse_symbol(&m.symbol) == qfex_sym))
     }
 }
 

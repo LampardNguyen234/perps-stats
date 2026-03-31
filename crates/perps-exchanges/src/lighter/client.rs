@@ -34,7 +34,10 @@ impl LighterClient {
         self.symbols_cache
             .get_or_init(|| async {
                 let markets = self.get_markets().await?;
-                Ok(markets.into_iter().map(|m| self.parse_symbol(&m.symbol)).collect())
+                Ok(markets
+                    .into_iter()
+                    .map(|m| self.parse_symbol(&m.symbol))
+                    .collect())
             })
             .await
     }

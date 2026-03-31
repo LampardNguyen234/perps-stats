@@ -51,19 +51,15 @@ XCU = "COPPER"
 [paradex]
 XAU = "PAXG"
 
-
 [qfex]
 XAU = "GOLD"
 XAG = "SILVER"
 XCU = "COPPER"
 
-
-
 [tradexyz]
 XAU = "GOLD"
 XAG = "SILVER"
 XCU = "COPPER"
-CL = "WTIOIL"
 
 
 

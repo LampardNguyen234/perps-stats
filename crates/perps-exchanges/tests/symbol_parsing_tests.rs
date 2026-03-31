@@ -51,8 +51,8 @@ mod binance {
     #[test]
     fn alias_copper_roundtrip() {
         // [binance] XCU = "COPPER" — requires init_aliases
-        let aliases_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../symbol_aliases.toml");
+        let aliases_path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../symbol_aliases.toml");
         perps_exchanges::init_aliases(&aliases_path);
         let c = client();
         assert_eq!(c.parse_symbol("XCU"), "COPPER-USDT");
@@ -206,8 +206,8 @@ mod lighter {
     #[test]
     fn alias_cl_roundtrip() {
         // [lighter] CL = "WTI" — requires init_aliases
-        let aliases_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../symbol_aliases.toml");
+        let aliases_path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../symbol_aliases.toml");
         perps_exchanges::init_aliases(&aliases_path);
         let c = client();
         assert_eq!(c.parse_symbol("CL"), "WTI");
@@ -251,8 +251,8 @@ mod qfex {
     #[tokio::test]
     async fn alias_xau_roundtrip() {
         // [qfex] XAU = "GOLD" — requires init_aliases
-        let aliases_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../symbol_aliases.toml");
+        let aliases_path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../symbol_aliases.toml");
         perps_exchanges::init_aliases(&aliases_path);
         let c = QfexClient::new();
         assert_eq!(c.parse_symbol("XAU"), "GOLD-USD");
@@ -261,8 +261,8 @@ mod qfex {
 
     #[tokio::test]
     async fn alias_xag_roundtrip() {
-        let aliases_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../symbol_aliases.toml");
+        let aliases_path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../symbol_aliases.toml");
         perps_exchanges::init_aliases(&aliases_path);
         let c = QfexClient::new();
         assert_eq!(c.parse_symbol("XAG"), "SILVER-USD");
@@ -303,8 +303,8 @@ mod extended {
     #[test]
     fn alias_googl_roundtrip() {
         // [extended] GOOGL = "GOOG" — requires init_aliases
-        let aliases_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../symbol_aliases.toml");
+        let aliases_path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../symbol_aliases.toml");
         perps_exchanges::init_aliases(&aliases_path);
         let c = client();
         assert_eq!(c.parse_symbol("GOOGL"), "GOOG-USD");

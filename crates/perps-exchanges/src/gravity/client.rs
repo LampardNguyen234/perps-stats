@@ -49,8 +49,10 @@ impl GravityClient {
             .get_or_init(|| async {
                 match self.fetch_all_instruments().await {
                     Ok(instruments) => {
-                        let symbols: std::collections::HashSet<String> =
-                            instruments.iter().map(|i| self.parse_symbol(&i.instrument)).collect();
+                        let symbols: std::collections::HashSet<String> = instruments
+                            .iter()
+                            .map(|i| self.parse_symbol(&i.instrument))
+                            .collect();
                         tracing::debug!("Cached {} Gravity instruments", symbols.len());
                         Ok(symbols)
                     }
@@ -65,7 +67,6 @@ impl GravityClient {
             })
             .await
     }
-
 
     /// Helper method to make rate-limited POST requests with retry
     async fn post<T: serde::de::DeserializeOwned>(
@@ -513,7 +514,10 @@ impl IPerps for GravityClient {
 
     async fn is_supported(&self, symbol: &str) -> Result<bool> {
         self.ensure_cache_initialized().await?;
-        Ok(self.symbols_cache.contains(&self.parse_symbol(symbol)).await)
+        Ok(self
+            .symbols_cache
+            .contains(&self.parse_symbol(symbol))
+            .await)
     }
 }
 

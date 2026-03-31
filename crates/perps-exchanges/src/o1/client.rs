@@ -132,10 +132,11 @@ impl O1Client {
                 let data = guard
                     .as_ref()
                     .context("markets not initialized after ensure_markets")?;
-                let symbols: std::collections::HashSet<String> =
-                    data.entries.iter().map(|(e, _)| {
-                        self.parse_symbol(e)
-                    }).collect();
+                let symbols: std::collections::HashSet<String> = data
+                    .entries
+                    .iter()
+                    .map(|(e, _)| self.parse_symbol(e))
+                    .collect();
                 tracing::debug!("Cached {} o1 instruments", symbols.len());
                 Ok(symbols)
             })

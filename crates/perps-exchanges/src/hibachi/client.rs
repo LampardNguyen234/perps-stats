@@ -54,7 +54,10 @@ impl HibachiClient {
         self.symbols_cache
             .get_or_init(|| async {
                 let contracts = self.fetch_exchange_info().await?;
-                Ok(contracts.iter().map(|c| self.parse_symbol(&c.symbol)).collect())
+                Ok(contracts
+                    .iter()
+                    .map(|c| self.parse_symbol(&c.symbol))
+                    .collect())
             })
             .await
     }
@@ -633,7 +636,10 @@ impl IPerps for HibachiClient {
 
     async fn is_supported(&self, symbol: &str) -> Result<bool> {
         self.ensure_cache_initialized().await?;
-        Ok(self.symbols_cache.contains(&self.parse_symbol(symbol)).await)
+        Ok(self
+            .symbols_cache
+            .contains(&self.parse_symbol(symbol))
+            .await)
     }
 }
 

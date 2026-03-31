@@ -136,9 +136,7 @@ impl KucoinClient {
                 // Build HashMap: symbol -> contract
                 let contract_map: HashMap<String, KucoinContract> = contracts
                     .into_iter()
-                    .map(|contract| {
-                        (self.parse_symbol(&contract.symbol), contract)
-                    })
+                    .map(|contract| (self.parse_symbol(&contract.symbol), contract))
                     .collect();
 
                 tracing::info!(

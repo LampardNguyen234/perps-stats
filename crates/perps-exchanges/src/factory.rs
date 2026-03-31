@@ -13,6 +13,7 @@ use crate::o1::O1Client;
 use crate::pacifica::PacificaClient;
 use crate::paradex::ParadexClient;
 use crate::qfex::QfexClient;
+use crate::tradexyz::TradexyzClient;
 use perps_core::traits::IPerps;
 
 /// Returns a vector of all available exchange clients.
@@ -43,6 +44,10 @@ pub async fn all_exchanges() -> Vec<(String, Box<dyn IPerps + Send + Sync>)> {
         (
             "hyperliquid".to_string(),
             Box::new(HyperliquidClient::new()) as Box<dyn IPerps + Send + Sync>,
+        ),
+        (
+            "tradexyz".to_string(),
+            Box::new(TradexyzClient::new()) as Box<dyn IPerps + Send + Sync>,
         ),
         (
             "lighter".to_string(),
@@ -136,7 +141,8 @@ pub async fn get_exchange(name: &str) -> anyhow::Result<Box<dyn IPerps + Send + 
         "pacifica" => Ok(Box::new(PacificaClient::new())),
         "paradex" => Ok(Box::new(ParadexClient::new())),
         "qfex" => Ok(Box::new(QfexClient::new())),
-        _ => anyhow::bail!("Unsupported exchange: {}. Currently supported: 01, aster, binance, bybit, extended, gravity, hibachi, hotstuff, hyperliquid, kucoin, lighter, nado, pacifica, paradex, qfex", name),
+        "tradexyz" => Ok(Box::new(TradexyzClient::new())),
+        _ => anyhow::bail!("Unsupported exchange: {}. Currently supported: 01, aster, binance, bybit, extended, gravity, hibachi, hotstuff, hyperliquid, kucoin, lighter, nado, pacifica, paradex, qfex, tradexyz", name),
     }
 }
 

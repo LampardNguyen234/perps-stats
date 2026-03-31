@@ -385,7 +385,10 @@ impl IPerps for BybitClient {
 
     async fn is_supported(&self, symbol: &str) -> Result<bool> {
         self.ensure_cache_initialized().await?;
-        Ok(self.symbols_cache.contains(&self.parse_symbol(symbol)).await)
+        Ok(self
+            .symbols_cache
+            .contains(&self.parse_symbol(symbol))
+            .await)
     }
 
     async fn get_ticker(&self, symbol: &str) -> Result<Ticker> {

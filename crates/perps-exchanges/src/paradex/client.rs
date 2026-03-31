@@ -35,9 +35,7 @@ impl ParadexClient {
         self.symbols_cache
             .get_or_init(|| async {
                 let markets = self.get_markets().await?;
-                Ok(markets.into_iter().map(|m| {
-                    m.symbol
-                }).collect())
+                Ok(markets.into_iter().map(|m| m.symbol).collect())
             })
             .await
     }

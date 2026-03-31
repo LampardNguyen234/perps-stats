@@ -17,6 +17,8 @@ use tokio::signal;
 use tokio::sync::Mutex;
 use tokio::time::{interval, Duration};
 
+use super::common::get_supported_exchanges;
+
 #[derive(Args)]
 pub struct StartArgs {
     /// Exchanges to stream from (comma-separated: aster,binance,extended,gravity,hyperliquid,bybit,kucoin,lighter,nado,pacifica,paradex). If not specified, uses all supported exchanges.
@@ -1539,23 +1541,7 @@ pub async fn execute(args: StartArgs) -> Result<()> {
     tracing::info!("Starting unified data collection service");
 
     // Determine which exchanges to use
-    let supported_exchanges = vec![
-        "01",
-        "aster",
-        "binance",
-        "extended",
-        "gravity",
-        "hibachi",
-        "hotstuff",
-        "hyperliquid",
-        "bybit",
-        "kucoin",
-        "lighter",
-        "nado",
-        "pacifica",
-        "paradex",
-        "qfex",
-    ];
+    let supported_exchanges = get_supported_exchanges();
     let exchanges = match args.exchanges {
         Some(ref exs) if !exs.is_empty() => {
             // Validate provided exchanges
@@ -1619,10 +1605,7 @@ pub async fn execute(args: StartArgs) -> Result<()> {
     }
 
     // Initialize database connection with configurable pool size
-    tracing::info!(
-        "Connecting to database (pool size: {})",
-        args.pool_size
-    );
+    tracing::info!("Connecting to database (pool size: {})", args.pool_size);
     let pool = PgPoolOptions::new()
         .max_connections(args.pool_size)
         .connect(&args.database_url)
