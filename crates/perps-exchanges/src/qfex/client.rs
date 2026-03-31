@@ -50,7 +50,7 @@ impl QfexClient {
             base_url: BASE_URL.to_string(),
             rate_limiter: Arc::new(RateLimiter::new(vec![RateLimit::per_second(20)])),
             metrics_cache: Arc::new(RwLock::new(None)),
-            orderbook_manager: Arc::new(OrderbookManager::new(vec![0,1,2])),
+            orderbook_manager: Arc::new(OrderbookManager::new(vec![0, 1, 2])),
         }
     }
 
@@ -155,7 +155,14 @@ impl IPerps for QfexClient {
     ///
     /// The conversion is idempotent: passing `"NVDA-USD"` returns `"NVDA-USD"` unchanged.
     fn parse_symbol(&self, symbol: &str) -> String {
-        to_qfex_symbol(symbol)
+        to_qfex_symbol(crate::symbol_aliases::resolve_alias("qfex", symbol))
+    }
+
+    fn normalize_symbol(&self, exchange_symbol: &str) -> String {
+        // "NVDA-USD" -> "NVDA", "GOLD-USD" -> "GOLD" -> unresolve -> "XAU"
+        let upper = exchange_symbol.to_uppercase();
+        let base = upper.strip_suffix("-USD").unwrap_or(&upper);
+        crate::symbol_aliases::unresolve_alias("qfex", base).to_string()
     }
 
     /// Fetch all active markets from `GET /refdata`.
@@ -190,7 +197,7 @@ impl IPerps for QfexClient {
 
     /// Fetch metadata for a single symbol via `GET /refdata?ticker={symbol}`.
     async fn get_market(&self, symbol: &str) -> Result<Market> {
-        let qfex_sym = to_qfex_symbol(symbol);
+        let qfex_sym = self.parse_symbol(symbol);
         tracing::debug!("QFEX: fetching market for {}", qfex_sym);
 
         let resp: RefdataResponse = self
@@ -210,7 +217,7 @@ impl IPerps for QfexClient {
 
     /// Fetch the current ticker for a single symbol using the shared metrics cache.
     async fn get_ticker(&self, symbol: &str) -> Result<Ticker> {
-        let qfex_sym = to_qfex_symbol(symbol);
+        let qfex_sym = self.parse_symbol(symbol);
         tracing::debug!("QFEX: fetching ticker for {}", qfex_sym);
 
         let metrics = self.get_cached_metrics().await?;
@@ -247,7 +254,11 @@ impl IPerps for QfexClient {
                             Some(ticker)
                         }
                         Err(e) => {
-                            tracing::warn!("QFEX: failed to convert ticker for {}: {}", m.symbol, e);
+                            tracing::warn!(
+                                "QFEX: failed to convert ticker for {}: {}",
+                                m.symbol,
+                                e
+                            );
                             None
                         }
                     }
@@ -261,7 +272,7 @@ impl IPerps for QfexClient {
 
     /// Fetch the L2 orderbook for a symbol via the WebSocket orderbook manager.
     async fn get_orderbook(&self, symbol: &str, depth: u32) -> Result<MultiResolutionOrderbook> {
-        let qfex_sym = to_qfex_symbol(symbol);
+        let qfex_sym = self.parse_symbol(symbol);
         tracing::debug!("QFEX: fetching orderbook for {} depth={}", qfex_sym, depth);
 
         self.orderbook_manager
@@ -272,7 +283,7 @@ impl IPerps for QfexClient {
 
     /// Fetch the current funding rate for a symbol using the shared metrics cache.
     async fn get_funding_rate(&self, symbol: &str) -> Result<FundingRate> {
-        let qfex_sym = to_qfex_symbol(symbol);
+        let qfex_sym = self.parse_symbol(symbol);
         tracing::debug!("QFEX: fetching funding rate for {}", qfex_sym);
 
         let metrics = self.get_cached_metrics().await?;
@@ -296,7 +307,7 @@ impl IPerps for QfexClient {
         end_time: Option<DateTime<Utc>>,
         limit: Option<u32>,
     ) -> Result<Vec<FundingRate>> {
-        let qfex_sym = to_qfex_symbol(symbol);
+        let qfex_sym = self.parse_symbol(symbol);
         tracing::debug!("QFEX: fetching funding rate history for {}", qfex_sym);
 
         let path = format!("/funding/{}", qfex_sym);
@@ -343,7 +354,7 @@ impl IPerps for QfexClient {
 
     /// Fetch the current open interest for a symbol using the shared metrics cache.
     async fn get_open_interest(&self, symbol: &str) -> Result<OpenInterest> {
-        let qfex_sym = to_qfex_symbol(symbol);
+        let qfex_sym = self.parse_symbol(symbol);
         tracing::debug!("QFEX: fetching open interest for {}", qfex_sym);
 
         let metrics = self.get_cached_metrics().await?;
@@ -368,7 +379,7 @@ impl IPerps for QfexClient {
         end_time: Option<DateTime<Utc>>,
         limit: Option<u32>,
     ) -> Result<Vec<Kline>> {
-        let qfex_sym = to_qfex_symbol(symbol);
+        let qfex_sym = self.parse_symbol(symbol);
         tracing::debug!(
             "QFEX: fetching klines for {} interval={}",
             qfex_sym,
@@ -427,7 +438,7 @@ impl IPerps for QfexClient {
 
     /// Fetch aggregated market stats for a single symbol using the shared metrics cache.
     async fn get_market_stats(&self, symbol: &str) -> Result<MarketStats> {
-        let qfex_sym = to_qfex_symbol(symbol);
+        let qfex_sym = self.parse_symbol(symbol);
         tracing::debug!("QFEX: fetching market stats for {}", qfex_sym);
 
         let metrics = self.get_cached_metrics().await?;
@@ -472,17 +483,10 @@ impl IPerps for QfexClient {
         Ok(results.into_iter().flatten().collect())
     }
 
-    /// Check whether a symbol is currently listed on QFEX by querying `/refdata`.
     async fn is_supported(&self, symbol: &str) -> Result<bool> {
-        let qfex_sym = to_qfex_symbol(symbol);
-        tracing::debug!("QFEX: checking support for {}", qfex_sym);
-
-        let resp: RefdataResponse = self
-            .get("/refdata", &[])
-            .await
-            .context("failed to fetch /refdata for is_supported")?;
-
-        Ok(resp.data.iter().any(|item| item.symbol == qfex_sym))
+        let markets = self.get_markets().await?;
+        let qfex_sym = self.parse_symbol(symbol);
+        Ok(markets.iter().any(|m| self.parse_symbol(&m.symbol) == qfex_sym))
     }
 }
 

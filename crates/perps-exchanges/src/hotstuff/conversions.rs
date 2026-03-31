@@ -1,14 +1,16 @@
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, TimeZone, Utc};
 use perps_core::{
-    FundingRate, Kline, Market, MarketStats, OpenInterest, Orderbook, OrderbookLevel, OrderSide,
+    FundingRate, Kline, Market, MarketStats, OpenInterest, OrderSide, Orderbook, OrderbookLevel,
     Ticker, Trade,
 };
 use rust_decimal::prelude::FromPrimitive;
 use rust_decimal::Decimal;
 
-use super::types::{HotstuffInstrument, HotstuffKline, HotstuffLevel, HotstuffOrderbook,
-    HotstuffTicker, HotstuffTrade};
+use super::types::{
+    HotstuffInstrument, HotstuffKline, HotstuffLevel, HotstuffOrderbook, HotstuffTicker,
+    HotstuffTrade,
+};
 
 // ---- helpers ----
 
@@ -24,7 +26,12 @@ fn decimal_scale(d: Decimal) -> Option<i32> {
 
 fn parse_decimal(s: &str, field: &str) -> Result<Decimal> {
     Decimal::from_str_exact(s)
-        .or_else(|_| s.parse::<f64>().ok().and_then(Decimal::from_f64).ok_or_else(|| anyhow!("")))
+        .or_else(|_| {
+            s.parse::<f64>()
+                .ok()
+                .and_then(Decimal::from_f64)
+                .ok_or_else(|| anyhow!(""))
+        })
         .with_context(|| format!("Failed to parse {} as decimal: {:?}", field, s))
 }
 
@@ -35,7 +42,9 @@ fn parse_decimal_opt(opt: &Option<String>, field: &str) -> Decimal {
 }
 
 fn unix_ms_to_datetime(ms: i64) -> DateTime<Utc> {
-    Utc.timestamp_millis_opt(ms).single().unwrap_or_else(Utc::now)
+    Utc.timestamp_millis_opt(ms)
+        .single()
+        .unwrap_or_else(Utc::now)
 }
 
 fn f64_to_decimal(v: f64, field: &str) -> Result<Decimal> {
@@ -251,11 +260,31 @@ pub fn ticker_to_open_interest(t: &HotstuffTicker, symbol: String) -> Result<Ope
 /// Convert a `HotstuffKline` to a core `Kline`.
 /// `symbol` is the global symbol, `interval` is the human-readable interval string (e.g. "1h").
 pub fn kline_to_kline(k: &HotstuffKline, symbol: String, interval: String) -> Result<Kline> {
-    let open = k.open.map(|v| f64_to_decimal(v, "open")).transpose()?.unwrap_or(Decimal::ZERO);
-    let high = k.high.map(|v| f64_to_decimal(v, "high")).transpose()?.unwrap_or(Decimal::ZERO);
-    let low = k.low.map(|v| f64_to_decimal(v, "low")).transpose()?.unwrap_or(Decimal::ZERO);
-    let close = k.close.map(|v| f64_to_decimal(v, "close")).transpose()?.unwrap_or(Decimal::ZERO);
-    let volume = k.volume.map(|v| f64_to_decimal(v, "volume")).transpose()?.unwrap_or(Decimal::ZERO);
+    let open = k
+        .open
+        .map(|v| f64_to_decimal(v, "open"))
+        .transpose()?
+        .unwrap_or(Decimal::ZERO);
+    let high = k
+        .high
+        .map(|v| f64_to_decimal(v, "high"))
+        .transpose()?
+        .unwrap_or(Decimal::ZERO);
+    let low = k
+        .low
+        .map(|v| f64_to_decimal(v, "low"))
+        .transpose()?
+        .unwrap_or(Decimal::ZERO);
+    let close = k
+        .close
+        .map(|v| f64_to_decimal(v, "close"))
+        .transpose()?
+        .unwrap_or(Decimal::ZERO);
+    let volume = k
+        .volume
+        .map(|v| f64_to_decimal(v, "volume"))
+        .transpose()?
+        .unwrap_or(Decimal::ZERO);
 
     let open_time = k.time.map(unix_ms_to_datetime).unwrap_or_else(Utc::now);
     // close_time is not provided; approximate by open_time (or leave as open_time)
@@ -411,10 +440,22 @@ mod tests {
         let ticker = ticker_to_ticker(&ht, "BTC".to_string()).unwrap();
 
         assert_eq!(ticker.symbol, "BTC");
-        assert_eq!(ticker.last_price, Decimal::from_str_exact("49998.0").unwrap());
-        assert_eq!(ticker.best_bid_price, Decimal::from_str_exact("49998.0").unwrap());
-        assert_eq!(ticker.best_ask_price, Decimal::from_str_exact("50004.0").unwrap());
-        assert_eq!(ticker.high_price_24h, Decimal::from_str_exact("51000.0").unwrap());
+        assert_eq!(
+            ticker.last_price,
+            Decimal::from_str_exact("49998.0").unwrap()
+        );
+        assert_eq!(
+            ticker.best_bid_price,
+            Decimal::from_str_exact("49998.0").unwrap()
+        );
+        assert_eq!(
+            ticker.best_ask_price,
+            Decimal::from_str_exact("50004.0").unwrap()
+        );
+        assert_eq!(
+            ticker.high_price_24h,
+            Decimal::from_str_exact("51000.0").unwrap()
+        );
     }
 
     #[test]

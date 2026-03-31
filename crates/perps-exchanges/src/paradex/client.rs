@@ -35,7 +35,9 @@ impl ParadexClient {
         self.symbols_cache
             .get_or_init(|| async {
                 let markets = self.get_markets().await?;
-                Ok(markets.into_iter().map(|m| m.symbol).collect())
+                Ok(markets.into_iter().map(|m| {
+                    m.symbol
+                }).collect())
             })
             .await
     }
@@ -89,6 +91,7 @@ impl IPerps for ParadexClient {
     }
 
     fn parse_symbol(&self, symbol: &str) -> String {
+        let symbol = crate::symbol_aliases::resolve_alias("paradex", symbol);
         // Paradex uses format: BTC -> BTC-USD-PERP
         // Idempotent: if already in exchange format (ends with -USD-PERP), return as-is
         let upper = symbol.to_uppercase();
@@ -97,6 +100,12 @@ impl IPerps for ParadexClient {
         } else {
             format!("{}-USD-PERP", upper)
         }
+    }
+
+    fn normalize_symbol(&self, exchange_symbol: &str) -> String {
+        // "BTC-USD-PERP" -> "BTC" -> unresolve alias
+        let base = exchange_symbol.split('-').next().unwrap_or(exchange_symbol);
+        crate::symbol_aliases::unresolve_alias("paradex", base).to_string()
     }
 
     async fn get_markets(&self) -> Result<Vec<Market>> {
@@ -284,7 +293,10 @@ impl IPerps for ParadexClient {
 
     async fn is_supported(&self, symbol: &str) -> Result<bool> {
         self.ensure_cache_initialized().await?;
-        Ok(self.symbols_cache.contains(symbol).await)
+        Ok(self
+            .symbols_cache
+            .contains(&self.parse_symbol(symbol))
+            .await)
     }
 
     // --- Partial Implementations using BBO ---

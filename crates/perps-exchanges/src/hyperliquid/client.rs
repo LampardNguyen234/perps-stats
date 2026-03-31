@@ -36,7 +36,7 @@ impl HyperliquidClient {
         self.symbols_cache
             .get_or_init(|| async {
                 let markets = self.get_markets().await?;
-                Ok(markets.into_iter().map(|m| m.symbol).collect())
+                Ok(markets.into_iter().map(|m| self.parse_symbol(&m.symbol)).collect())
             })
             .await
     }
@@ -201,8 +201,14 @@ impl IPerps for HyperliquidClient {
     }
 
     fn parse_symbol(&self, symbol: &str) -> String {
+        let symbol = crate::symbol_aliases::resolve_alias("hyperliquid", symbol);
         // Hyperliquid uses uppercase symbols like "BTC"
         symbol.to_uppercase()
+    }
+
+    fn normalize_symbol(&self, exchange_symbol: &str) -> String {
+        // Hyperliquid uses global-style symbols already
+        crate::symbol_aliases::unresolve_alias("hyperliquid", exchange_symbol).to_string()
     }
 
     async fn get_markets(&self) -> Result<Vec<Market>> {
@@ -227,6 +233,7 @@ impl IPerps for HyperliquidClient {
     }
 
     async fn get_market(&self, symbol: &str) -> Result<Market> {
+        let symbol = self.parse_symbol(symbol);
         let markets = self.get_markets().await?;
         markets
             .into_iter()
@@ -235,6 +242,7 @@ impl IPerps for HyperliquidClient {
     }
 
     async fn get_ticker(&self, symbol: &str) -> Result<Ticker> {
+        let symbol = self.parse_symbol(symbol);
         let data = self.get_meta_and_asset_ctxs().await?;
 
         // Find the index of the symbol in the universe
@@ -251,7 +259,7 @@ impl IPerps for HyperliquidClient {
 
         // Get orderbook for best bid/ask with quantities
         // Use best available resolution (fine → medium → coarse)
-        let multi_orderbook = self.get_orderbook(symbol, 1).await?;
+        let multi_orderbook = self.get_orderbook(&symbol, 1).await?;
         let orderbook = multi_orderbook
             .best_for_tight_spreads()
             .ok_or_else(|| anyhow!("No orderbook available for {}", symbol))?;
@@ -279,7 +287,7 @@ impl IPerps for HyperliquidClient {
         };
 
         // Fetch 24h high/low from 1-day candle
-        let (high_price_24h, low_price_24h) = self.get_24h_high_low(symbol).await?;
+        let (high_price_24h, low_price_24h) = self.get_24h_high_low(&symbol).await?;
 
         let open_interest = Decimal::from_str(&asset_ctx.open_interest).unwrap_or(Decimal::ZERO);
 
@@ -355,17 +363,18 @@ impl IPerps for HyperliquidClient {
     }
 
     async fn get_orderbook(&self, symbol: &str, _depth: u32) -> Result<MultiResolutionOrderbook> {
+        let symbol = self.parse_symbol(symbol);
         // Fetch all 3 resolutions in parallel for optimal performance
-        let (fine_result, medium_result, coarse_result) = match symbol {
+        let (fine_result, medium_result, coarse_result) = match symbol.as_str() {
             "BTC" => tokio::join!(
-                self.fetch_orderbook_at_resolution(symbol, 0),
-                self.fetch_orderbook_at_resolution(symbol, 5),
-                self.fetch_orderbook_at_resolution(symbol, 4),
+                self.fetch_orderbook_at_resolution(&symbol, 0),
+                self.fetch_orderbook_at_resolution(&symbol, 5),
+                self.fetch_orderbook_at_resolution(&symbol, 4),
             ),
             _ => tokio::join!(
-                self.fetch_orderbook_at_resolution(symbol, 5),
-                self.fetch_orderbook_at_resolution(symbol, 4),
-                self.fetch_orderbook_at_resolution(symbol, 2),
+                self.fetch_orderbook_at_resolution(&symbol, 5),
+                self.fetch_orderbook_at_resolution(&symbol, 4),
+                self.fetch_orderbook_at_resolution(&symbol, 2),
             ),
         };
 
@@ -451,6 +460,7 @@ impl IPerps for HyperliquidClient {
     }
 
     async fn get_funding_rate(&self, symbol: &str) -> Result<FundingRate> {
+        let symbol = self.parse_symbol(symbol);
         let body = serde_json::json!({ "type": "fundingHistory", "coin": symbol, "startTime": Utc::now().timestamp_millis() - 1000 * 60 * 60 * 8 });
         let history: Vec<FundingHistory> = self.post(body).await?;
         let last_rate = history
@@ -474,6 +484,7 @@ impl IPerps for HyperliquidClient {
         end_time: Option<DateTime<Utc>>,
         _limit: Option<u32>,
     ) -> Result<Vec<FundingRate>> {
+        let symbol = self.parse_symbol(symbol);
         let start = start_time.unwrap_or_else(|| Utc::now() - chrono::Duration::days(7));
         let end = end_time.unwrap_or_else(Utc::now);
         let body = serde_json::json!({ "type": "fundingHistory", "coin": symbol, "startTime": start.timestamp_millis(), "endTime": end.timestamp_millis() });
@@ -496,6 +507,7 @@ impl IPerps for HyperliquidClient {
     }
 
     async fn get_open_interest(&self, symbol: &str) -> Result<OpenInterest> {
+        let symbol = self.parse_symbol(symbol);
         let data = self.get_meta_and_asset_ctxs().await?;
 
         // Find the index of the symbol in the universe
@@ -530,6 +542,7 @@ impl IPerps for HyperliquidClient {
         _end_time: Option<DateTime<Utc>>,
         _limit: Option<u32>,
     ) -> Result<Vec<Kline>> {
+        let symbol = self.parse_symbol(symbol);
         let body = serde_json::json!({ "type": "candleSnapshot", "req": { "coin": symbol, "interval": interval, "startTime": start_time.unwrap_or_else(Utc::now).timestamp_millis() } });
         let klines: Vec<CandleSnapshot> = self.post(body).await?;
         let klines = klines
@@ -626,7 +639,10 @@ impl IPerps for HyperliquidClient {
 
     async fn is_supported(&self, symbol: &str) -> Result<bool> {
         self.ensure_cache_initialized().await?;
-        Ok(self.symbols_cache.contains(symbol).await)
+        Ok(self
+            .symbols_cache
+            .contains(&self.parse_symbol(symbol))
+            .await)
     }
 }
 

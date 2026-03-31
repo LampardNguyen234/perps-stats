@@ -136,7 +136,9 @@ impl KucoinClient {
                 // Build HashMap: symbol -> contract
                 let contract_map: HashMap<String, KucoinContract> = contracts
                     .into_iter()
-                    .map(|contract| (contract.symbol.clone(), contract))
+                    .map(|contract| {
+                        (self.parse_symbol(&contract.symbol), contract)
+                    })
                     .collect();
 
                 tracing::info!(
@@ -267,6 +269,7 @@ impl IPerps for KucoinClient {
     }
 
     fn parse_symbol(&self, symbol: &str) -> String {
+        let symbol = crate::symbol_aliases::resolve_alias("kucoin", symbol);
         // Convert BTC -> XBTUSDTM, ETH -> ETHUSDTM
         let upper = symbol.to_uppercase();
         if upper.contains("USDTM") {
@@ -278,6 +281,16 @@ impl IPerps for KucoinClient {
         } else {
             format!("{}USDTM", upper)
         }
+    }
+
+    fn normalize_symbol(&self, exchange_symbol: &str) -> String {
+        let upper = exchange_symbol.to_uppercase();
+        let base = if upper == "XBTUSDTM" {
+            "BTC".to_string()
+        } else {
+            upper.strip_suffix("USDTM").unwrap_or(&upper).to_string()
+        };
+        crate::symbol_aliases::unresolve_alias("kucoin", &base).to_string()
     }
 
     async fn get_markets(&self) -> Result<Vec<Market>> {
@@ -310,6 +323,7 @@ impl IPerps for KucoinClient {
     }
 
     async fn get_market(&self, symbol: &str) -> Result<Market> {
+        let symbol = self.parse_symbol(symbol);
         let contracts: Vec<KucoinContractDetail> = self.get("/api/v1/contracts/active").await?;
         let contract = contracts
             .into_iter()
@@ -360,8 +374,9 @@ impl IPerps for KucoinClient {
         }
 
         // Fallback: direct REST API call with quantity conversion
+        let kucoin_symbol = self.parse_symbol(symbol);
         let response: KucoinOrderbook = self
-            .get(&format!("/api/v1/level2/snapshot?symbol={}", symbol))
+            .get(&format!("/api/v1/level2/snapshot?symbol={}", kucoin_symbol))
             .await?;
 
         // Get contract info for quantity conversion
@@ -402,6 +417,7 @@ impl IPerps for KucoinClient {
     }
 
     async fn get_recent_trades(&self, symbol: &str, _limit: u32) -> Result<Vec<Trade>> {
+        let symbol = self.parse_symbol(symbol);
         let trades: Vec<KucoinTrade> = self
             .get(&format!("/api/v1/trade/history?symbol={}", symbol))
             .await?;
@@ -427,6 +443,7 @@ impl IPerps for KucoinClient {
     }
 
     async fn get_funding_rate(&self, symbol: &str) -> Result<FundingRate> {
+        let symbol = self.parse_symbol(symbol);
         let rate: KucoinFundingRate = self
             .get(&format!("/api/v1/funding-rate/{}/current", symbol))
             .await?;
@@ -472,6 +489,7 @@ impl IPerps for KucoinClient {
             _ => return Err(anyhow!("Unsupported interval '{}' for KuCoin. Supported: 15m, 30m, 1h, 2h, 4h, 8h, 12h, 1d, 1w", interval)),
         };
 
+        let symbol = self.parse_symbol(symbol);
         // Build query parameters
         let mut params = vec![
             ("symbol", symbol.to_string()),
@@ -541,10 +559,14 @@ impl IPerps for KucoinClient {
 
     async fn is_supported(&self, symbol: &str) -> Result<bool> {
         self.ensure_cache_initialized().await?;
-        Ok(self.contract_cache.contains(symbol).await)
+        Ok(self
+            .contract_cache
+            .contains(&self.parse_symbol(symbol))
+            .await)
     }
 
     async fn get_ticker(&self, symbol: &str) -> Result<Ticker> {
+        let symbol = self.parse_symbol(symbol);
         // Get detailed contract info for this specific symbol (includes 24h stats)
         let contract: KucoinContractDetail =
             self.get(&format!("/api/v1/contracts/{}", symbol)).await?;

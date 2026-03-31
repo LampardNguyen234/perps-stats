@@ -9,7 +9,9 @@ use parquet::basic::Compression;
 use parquet::file::properties::WriterProperties;
 use perps_core::Orderbook;
 
-use super::schema::{orderbook_arrow_schema, orderbook_to_rows, rows_to_record_batch, OrderbookRow};
+use super::schema::{
+    orderbook_arrow_schema, orderbook_to_rows, rows_to_record_batch, OrderbookRow,
+};
 
 /// Key for grouping rows by exchange/symbol/date (maps to one Parquet file).
 #[derive(Hash, Eq, PartialEq, Clone, Debug)]
@@ -56,7 +58,12 @@ impl OrderbookParquetWriter {
     /// `symbol` is the global/normalized symbol (e.g., "BTC") used for the
     /// file path. This may differ from `orderbook.symbol` which can contain
     /// exchange-specific formats (e.g., "BTCUSDT", "BTC-USD-PERP").
-    pub fn write_orderbook(&mut self, exchange: &str, symbol: &str, orderbook: &Orderbook) -> anyhow::Result<()> {
+    pub fn write_orderbook(
+        &mut self,
+        exchange: &str,
+        symbol: &str,
+        orderbook: &Orderbook,
+    ) -> anyhow::Result<()> {
         let rows = orderbook_to_rows(exchange, orderbook);
         if rows.is_empty() {
             return Ok(());
@@ -156,7 +163,10 @@ impl OrderbookParquetWriter {
     }
 
     /// Read all RecordBatches from an existing Parquet file.
-    fn read_existing_file(&self, path: &Path) -> anyhow::Result<Vec<arrow::record_batch::RecordBatch>> {
+    fn read_existing_file(
+        &self,
+        path: &Path,
+    ) -> anyhow::Result<Vec<arrow::record_batch::RecordBatch>> {
         use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
         let file = fs::File::open(path)
@@ -178,9 +188,7 @@ impl OrderbookParquetWriter {
 
     /// Directory for a given file key.
     fn file_dir(&self, key: &FileKey) -> PathBuf {
-        self.base_dir
-            .join(&key.exchange)
-            .join(&key.symbol)
+        self.base_dir.join(&key.exchange).join(&key.symbol)
     }
 
     /// Full file path for a given file key.
@@ -244,7 +252,11 @@ mod tests {
             .path()
             .join("binance/BTC")
             .join(format!("{}.parquet", today));
-        assert!(path.exists(), "Parquet file should exist at {}", path.display());
+        assert!(
+            path.exists(),
+            "Parquet file should exist at {}",
+            path.display()
+        );
     }
 
     #[test]
@@ -317,12 +329,8 @@ mod tests {
         let today = Utc::now().date_naive();
         let base = tmp_dir.path();
 
-        assert!(base
-            .join(format!("binance/BTC/{}.parquet", today))
-            .exists());
-        assert!(base
-            .join(format!("binance/ETH/{}.parquet", today))
-            .exists());
+        assert!(base.join(format!("binance/BTC/{}.parquet", today)).exists());
+        assert!(base.join(format!("binance/ETH/{}.parquet", today)).exists());
         assert!(base
             .join(format!("hyperliquid/BTC/{}.parquet", today))
             .exists());

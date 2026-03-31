@@ -1,6 +1,8 @@
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
-use perps_core::{FundingRate, Kline, Market, MarketStats, MultiResolutionOrderbook, OpenInterest, Ticker};
+use perps_core::{
+    FundingRate, Kline, Market, MarketStats, MultiResolutionOrderbook, OpenInterest, Ticker,
+};
 use rust_decimal::prelude::FromPrimitive;
 use rust_decimal::Decimal;
 
@@ -118,14 +120,14 @@ pub fn metrics_to_ticker(m: &SymbolMetrics, ob: &MultiResolutionOrderbook) -> Re
         Decimal::ZERO
     };
 
-    let (best_bid_price, best_bid_qty) = ob
-        .orderbooks[0].bids
+    let (best_bid_price, best_bid_qty) = ob.orderbooks[0]
+        .bids
         .first()
         .and_then(|l| Option::from((l.price, l.quantity)))
         .unwrap_or((Decimal::ZERO, Decimal::ZERO));
 
-    let (best_ask_price, best_ask_qty) = ob
-        .orderbooks[0].asks
+    let (best_ask_price, best_ask_qty) = ob.orderbooks[0]
+        .asks
         .first()
         .and_then(|l| Option::from((l.price, l.quantity)))
         .unwrap_or((Decimal::ZERO, Decimal::ZERO));

@@ -124,6 +124,24 @@ impl O1Client {
         }
     }
 
+    async fn ensure_cache_initialized(&self) -> Result<()> {
+        self.symbols_cache
+            .get_or_init(|| async {
+                self.ensure_markets().await?;
+                let guard = self.markets.read().await;
+                let data = guard
+                    .as_ref()
+                    .context("markets not initialized after ensure_markets")?;
+                let symbols: std::collections::HashSet<String> =
+                    data.entries.iter().map(|(e, _)| {
+                        self.parse_symbol(e)
+                    }).collect();
+                tracing::debug!("Cached {} o1 instruments", symbols.len());
+                Ok(symbols)
+            })
+            .await
+    }
+
     /// Convert a global symbol to the Nord API symbol format (idempotent).
     ///
     /// - `"BTC"` -> `"BTCUSD"`
@@ -230,7 +248,7 @@ impl O1Client {
     /// Resolve a symbol (global or API format) to its market_id.
     async fn resolve_market_id(&self, symbol: &str) -> Result<u32> {
         self.ensure_markets().await?;
-        let api_symbol = self.to_api_symbol(symbol);
+        let api_symbol = self.parse_symbol(symbol);
 
         let guard = self.markets.read().await;
         let data = guard.as_ref().context("markets not initialized")?;
@@ -281,7 +299,13 @@ impl IPerps for O1Client {
     }
 
     fn parse_symbol(&self, symbol: &str) -> String {
-        self.to_api_symbol(symbol)
+        self.to_api_symbol(crate::symbol_aliases::resolve_alias("01", symbol))
+    }
+
+    fn normalize_symbol(&self, exchange_symbol: &str) -> String {
+        // "BTCUSD" -> "BTC" -> unresolve alias
+        let base = Self::denormalize_symbol(exchange_symbol);
+        crate::symbol_aliases::unresolve_alias("01", &base).to_string()
     }
 
     async fn get_markets(&self) -> Result<Vec<Market>> {
@@ -294,7 +318,7 @@ impl IPerps for O1Client {
 
     async fn get_market(&self, symbol: &str) -> Result<Market> {
         self.ensure_markets().await?;
-        let api_symbol = self.to_api_symbol(symbol);
+        let api_symbol = self.parse_symbol(symbol);
 
         let guard = self.markets.read().await;
         let data = guard.as_ref().context("markets not initialized")?;
@@ -308,7 +332,7 @@ impl IPerps for O1Client {
 
     async fn get_ticker(&self, symbol: &str) -> Result<Ticker> {
         let market_id = self.resolve_market_id(symbol).await?;
-        let global_symbol = Self::denormalize_symbol(&self.to_api_symbol(symbol));
+        let global_symbol = Self::denormalize_symbol(&self.parse_symbol(symbol));
 
         let stats = self.fetch_market_stats_cached(market_id).await?;
         let ob = self.fetch_orderbook_cached(market_id).await?;
@@ -438,7 +462,7 @@ impl IPerps for O1Client {
 
     async fn get_orderbook(&self, symbol: &str, _depth: u32) -> Result<MultiResolutionOrderbook> {
         let market_id = self.resolve_market_id(symbol).await?;
-        let global_symbol = Self::denormalize_symbol(&self.to_api_symbol(symbol));
+        let global_symbol = Self::denormalize_symbol(&self.parse_symbol(symbol));
 
         let ob = self.fetch_orderbook_cached(market_id).await?;
         let orderbook = nord_orderbook_to_orderbook(&ob, global_symbol.clone());
@@ -453,7 +477,7 @@ impl IPerps for O1Client {
 
     async fn get_funding_rate(&self, symbol: &str) -> Result<FundingRate> {
         let market_id = self.resolve_market_id(symbol).await?;
-        let global_symbol = Self::denormalize_symbol(&self.to_api_symbol(symbol));
+        let global_symbol = Self::denormalize_symbol(&self.parse_symbol(symbol));
 
         let stats = self.fetch_market_stats_cached(market_id).await?;
         nord_stats_to_funding_rate(&stats, global_symbol)
@@ -474,7 +498,7 @@ impl IPerps for O1Client {
 
     async fn get_open_interest(&self, symbol: &str) -> Result<OpenInterest> {
         let market_id = self.resolve_market_id(symbol).await?;
-        let global_symbol = Self::denormalize_symbol(&self.to_api_symbol(symbol));
+        let global_symbol = Self::denormalize_symbol(&self.parse_symbol(symbol));
 
         let stats = self.fetch_market_stats_cached(market_id).await?;
         nord_stats_to_open_interest(&stats, global_symbol)
@@ -497,12 +521,11 @@ impl IPerps for O1Client {
         }
 
         let market_id = self.resolve_market_id(symbol).await?;
-        let global_symbol = Self::denormalize_symbol(&self.to_api_symbol(symbol));
+        let global_symbol = Self::denormalize_symbol(&self.parse_symbol(symbol));
 
         let page_size = limit.unwrap_or(24);
         let path = format!("/market/{}/history/PT1H?pageSize={}", market_id, page_size);
-        let page_result: NordPageResult<NordMarketHistoryInfo> =
-            self.get_request(&path).await?;
+        let page_result: NordPageResult<NordMarketHistoryInfo> = self.get_request(&path).await?;
 
         page_result
             .items
@@ -513,7 +536,7 @@ impl IPerps for O1Client {
 
     async fn get_recent_trades(&self, symbol: &str, limit: u32) -> Result<Vec<Trade>> {
         let market_id = self.resolve_market_id(symbol).await?;
-        let global_symbol = Self::denormalize_symbol(&self.to_api_symbol(symbol));
+        let global_symbol = Self::denormalize_symbol(&self.parse_symbol(symbol));
 
         let effective_limit = std::cmp::min(limit, 50);
         let path = format!(
@@ -531,7 +554,7 @@ impl IPerps for O1Client {
 
     async fn get_market_stats(&self, symbol: &str) -> Result<MarketStats> {
         let market_id = self.resolve_market_id(symbol).await?;
-        let global_symbol = Self::denormalize_symbol(&self.to_api_symbol(symbol));
+        let global_symbol = Self::denormalize_symbol(&self.parse_symbol(symbol));
 
         let stats = self.fetch_market_stats_cached(market_id).await?;
         nord_stats_to_market_stats(&stats, global_symbol)
@@ -617,34 +640,11 @@ impl IPerps for O1Client {
     }
 
     async fn is_supported(&self, symbol: &str) -> Result<bool> {
-        let api_symbol = self.to_api_symbol(symbol);
-        tracing::debug!(
-            "Checking if symbol {} (normalized to {}) is supported on 01",
-            symbol,
-            api_symbol
-        );
-
-        self.symbols_cache
-            .get_or_init(|| async {
-                self.ensure_markets().await?;
-                let guard = self.markets.read().await;
-                let data = guard
-                    .as_ref()
-                    .context("markets not initialized after ensure_markets")?;
-                let symbols: std::collections::HashSet<String> =
-                    data.entries.keys().cloned().collect();
-                tracing::debug!("Cached {} 01 instruments", symbols.len());
-                Ok(symbols)
-            })
-            .await?;
-
-        let is_cached = self.symbols_cache.contains(&api_symbol).await;
-        if is_cached {
-            tracing::debug!("Symbol {} ({}) is supported on 01", symbol, api_symbol);
-        } else {
-            tracing::warn!("Symbol {} ({}) not found on 01", symbol, api_symbol);
-        }
-        Ok(is_cached)
+        self.ensure_cache_initialized().await?;
+        Ok(self
+            .symbols_cache
+            .contains(&self.parse_symbol(symbol))
+            .await)
     }
 }
 

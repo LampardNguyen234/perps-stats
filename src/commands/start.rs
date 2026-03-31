@@ -134,10 +134,8 @@ async fn validate_symbols(exchange: &str, symbols: &[String]) -> Result<Vec<Stri
     let mut valid_symbols = Vec::new();
 
     for symbol in symbols {
-        // Parse symbol to exchange-specific format first
-        let parsed_symbol = client.parse_symbol(symbol);
-        if client.is_supported(&parsed_symbol).await? {
-            valid_symbols.push(symbol.clone()); // Store the global format
+        if client.is_supported(symbol).await? {
+            valid_symbols.push(symbol.clone());
         } else {
             tracing::warn!("Symbol {} not supported on exchange {}", symbol, exchange);
         }
@@ -1622,8 +1620,7 @@ pub async fn execute(args: StartArgs) -> Result<()> {
 
     // Initialize database connection with configurable pool size
     tracing::info!(
-        "Connecting to database: {} (pool size: {})",
-        args.database_url,
+        "Connecting to database (pool size: {})",
         args.pool_size
     );
     let pool = PgPoolOptions::new()

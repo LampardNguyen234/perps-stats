@@ -78,11 +78,7 @@ impl OrderbookParquetReader {
     }
 
     /// List available dates for a given exchange/symbol.
-    pub fn list_dates(
-        &self,
-        exchange: &str,
-        symbol: &str,
-    ) -> anyhow::Result<Vec<NaiveDate>> {
+    pub fn list_dates(&self, exchange: &str, symbol: &str) -> anyhow::Result<Vec<NaiveDate>> {
         let dir = self.symbol_dir(exchange, symbol);
         if !dir.exists() {
             return Ok(Vec::new());
@@ -161,9 +157,7 @@ impl OrderbookParquetReader {
     }
 
     fn symbol_dir(&self, exchange: &str, symbol: &str) -> PathBuf {
-        self.base_dir
-            .join(exchange)
-            .join(symbol)
+        self.base_dir.join(exchange).join(symbol)
     }
 
     fn file_path(&self, exchange: &str, symbol: &str, date: NaiveDate) -> PathBuf {
@@ -290,7 +284,9 @@ mod tests {
         writer.flush_all().unwrap();
 
         let reader = OrderbookParquetReader::new(tmp_dir.path());
-        let result = reader.read_orderbook_at("binance", "BTC", Utc::now()).unwrap();
+        let result = reader
+            .read_orderbook_at("binance", "BTC", Utc::now())
+            .unwrap();
         assert!(result.is_some());
         assert_eq!(result.unwrap().symbol, "BTC");
     }

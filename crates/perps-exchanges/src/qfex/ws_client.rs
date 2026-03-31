@@ -10,7 +10,6 @@ use rust_decimal::Decimal;
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use std::sync::Arc;
-use std::thread::sleep;
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, Mutex, Notify, RwLock};
 use tokio::time;
@@ -22,8 +21,6 @@ const FIRST_DATA_TIMEOUT_SECS: u64 = 10;
 const RECONNECT_DELAY_SECS: u64 = 1;
 const INACTIVITY_TIMEOUT_SECS: u64 = 30;
 const WATCHDOG_TICK_SECS: u64 = 10;
-
-// ─── Helper: parse [price, qty] arrays ────────────────────────────────────────
 
 fn parse_levels(raw: &[[String; 2]]) -> Result<Vec<OrderbookLevel>> {
     raw.iter()
@@ -38,8 +35,6 @@ fn parse_levels(raw: &[[String; 2]]) -> Result<Vec<OrderbookLevel>> {
         .collect()
 }
 
-// ─── Helper: L2 → Orderbook ───────────────────────────────────────────────────
-
 fn ws_l2_to_orderbook(msg: &WsL2Message) -> Result<Orderbook> {
     let bids = parse_levels(&msg.bid)?;
     let asks = parse_levels(&msg.ask)?;
@@ -51,92 +46,6 @@ fn ws_l2_to_orderbook(msg: &WsL2Message) -> Result<Orderbook> {
         timestamp: Utc::now(),
     })
 }
-
-// ─── Helper: BBO → Ticker ─────────────────────────────────────────────────────
-
-fn bbo_to_ticker(bbo: &WsBboMessage) -> Option<Ticker> {
-    let symbol_raw = bbo.symbol.as_deref().unwrap_or("");
-    if symbol_raw.is_empty() {
-        return None;
-    }
-    let symbol = to_global_symbol(symbol_raw);
-
-    let best_bid_price = bbo
-        .bid
-        .first()
-        .and_then(|pair| Decimal::from_str(&pair[0]).ok())
-        .unwrap_or(Decimal::ZERO);
-    let best_bid_qty = bbo
-        .bid
-        .first()
-        .and_then(|pair| Decimal::from_str(&pair[1]).ok())
-        .unwrap_or(Decimal::ZERO);
-    let best_ask_price = bbo
-        .ask
-        .first()
-        .and_then(|pair| Decimal::from_str(&pair[0]).ok())
-        .unwrap_or(Decimal::ZERO);
-    let best_ask_qty = bbo
-        .ask
-        .first()
-        .and_then(|pair| Decimal::from_str(&pair[1]).ok())
-        .unwrap_or(Decimal::ZERO);
-
-    // Use mid-price as last/mark/index price since BBO only carries bid/ask
-    let mid_price = if best_bid_price > Decimal::ZERO && best_ask_price > Decimal::ZERO {
-        (best_bid_price + best_ask_price) / Decimal::TWO
-    } else {
-        Decimal::ZERO
-    };
-
-    Some(Ticker {
-        symbol,
-        last_price: mid_price,
-        mark_price: mid_price,
-        index_price: mid_price,
-        best_bid_price,
-        best_bid_qty,
-        best_ask_price,
-        best_ask_qty,
-        volume_24h: Decimal::ZERO,
-        turnover_24h: Decimal::ZERO,
-        open_interest: Decimal::ZERO,
-        open_interest_notional: Decimal::ZERO,
-        price_change_24h: Decimal::ZERO,
-        price_change_pct: Decimal::ZERO,
-        high_price_24h: Decimal::ZERO,
-        low_price_24h: Decimal::ZERO,
-        timestamp: Utc::now(),
-    })
-}
-
-// ─── Helper: WsTrade → Trade ──────────────────────────────────────────────────
-
-fn ws_trade_to_trade(msg: &WsTradeMessage) -> Option<Trade> {
-    let symbol_raw = msg.symbol.as_deref().unwrap_or("");
-    if symbol_raw.is_empty() {
-        return None;
-    }
-    let symbol = to_global_symbol(symbol_raw);
-    let price = Decimal::from_str(msg.price.as_deref().unwrap_or("0")).ok()?;
-    let quantity = Decimal::from_str(msg.size.as_deref().unwrap_or("0")).ok()?;
-    let side = match msg.side.as_deref().unwrap_or("") {
-        "buy" | "Buy" | "BUY" => OrderSide::Buy,
-        "sell" | "Sell" | "SELL" => OrderSide::Sell,
-        _ => OrderSide::Buy,
-    };
-
-    Some(Trade {
-        id: msg.trade_id.clone().unwrap_or_default(),
-        symbol,
-        price,
-        quantity,
-        side,
-        timestamp: Utc::now(),
-    })
-}
-
-// ─── Helper: clip MultiResolutionOrderbook to depth ──────────────────────────
 
 fn clip_orderbook(ob: &MultiResolutionOrderbook, depth: usize) -> MultiResolutionOrderbook {
     if depth == 0 {
@@ -164,7 +73,6 @@ fn clip_orderbook(ob: &MultiResolutionOrderbook, depth: usize) -> MultiResolutio
     }
 }
 
-// ─── Helper: build subscribe message ─────────────────────────────────────────
 
 fn build_subscribe_msg(
     channels: Vec<String>,
@@ -180,14 +88,10 @@ fn build_subscribe_msg(
     Ok(serde_json::to_string(&req)?)
 }
 
-// ─── SnapshotEntry ────────────────────────────────────────────────────────────
-
 struct SnapshotEntry {
     orderbook: MultiResolutionOrderbook,
     updated_at: Instant,
 }
-
-// ─── OrderbookManager ─────────────────────────────────────────────────────────
 
 /// Persistent WS connection that maintains per-symbol L2 orderbook snapshots.
 pub struct OrderbookManager {
@@ -270,7 +174,6 @@ impl OrderbookManager {
                 .map_err(|e| anyhow!("subscribe_tx send error: {}", e))?;
         }
 
-
         // Create the notified future *before* the snapshot check to avoid a TOCTOU race:
         // if a notification fires between the check and the await, it would be lost otherwise.
         let notified_fut = notifier.notified();
@@ -314,7 +217,7 @@ async fn run_background_task(
     sig_figs: Vec<u8>,
 ) {
     loop {
-        tracing::info!("OrderbookManager: connecting to {}", WS_BASE_URL);
+        tracing::debug!("OrderbookManager: connecting to {}", WS_BASE_URL);
 
         let ws_result = connect_async(WS_BASE_URL).await;
         let (ws_stream, _) = match ws_result {
@@ -516,7 +419,7 @@ async fn run_background_task(
                                         );
                                         break 'connection;
                                     } else {
-                                        tracing::info!(
+                                        tracing::debug!(
                                             "OrderbookManager: subscribed to {:?}, sig_figs {:?}",
                                             all_new, sig_figs
                                         );
@@ -528,8 +431,7 @@ async fn run_background_task(
                             }
                         }
                         None => {
-                            // Manager dropped — exit entirely
-                            tracing::info!("OrderbookManager: subscribe_rx closed, shutting down");
+                            tracing::debug!("OrderbookManager: subscribe_rx closed, shutting down");
                             return;
                         }
                     }
@@ -594,22 +496,22 @@ impl IPerpsStream for QfexWsClient {
     }
 
     /// Stream BBO tickers. Opens a fresh WS connection per call.
-    async fn stream_tickers(&self, symbols: Vec<String>) -> Result<DataStream<Ticker>> {
+    async fn stream_tickers(&self, _symbols: Vec<String>) -> Result<DataStream<Ticker>> {
         unimplemented!()
     }
 
     /// Stream raw orderbook updates. Opens a fresh WS connection per call.
-    async fn stream_orderbooks(&self, symbols: Vec<String>) -> Result<DataStream<Orderbook>> {
+    async fn stream_orderbooks(&self, _symbols: Vec<String>) -> Result<DataStream<Orderbook>> {
         unimplemented!()
     }
 
     /// Stream public trades. Opens a fresh WS connection per call.
-    async fn stream_trades(&self, symbols: Vec<String>) -> Result<DataStream<Trade>> {
+    async fn stream_trades(&self, _symbols: Vec<String>) -> Result<DataStream<Trade>> {
         unimplemented!()
     }
 
     /// Subscribe to multiple data types. Opens a fresh WS connection per call.
-    async fn stream_multi(&self, config: StreamConfig) -> Result<DataStream<StreamEvent>> {
-       unimplemented!()
+    async fn stream_multi(&self, _config: StreamConfig) -> Result<DataStream<StreamEvent>> {
+        unimplemented!()
     }
 }

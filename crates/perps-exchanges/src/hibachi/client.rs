@@ -49,6 +49,16 @@ impl HibachiClient {
         }
     }
 
+    async fn ensure_cache_initialized(&self) -> Result<()> {
+        // Initialize cache with all instruments if not already cached
+        self.symbols_cache
+            .get_or_init(|| async {
+                let contracts = self.fetch_exchange_info().await?;
+                Ok(contracts.iter().map(|c| self.parse_symbol(&c.symbol)).collect())
+            })
+            .await
+    }
+
     // ---- symbol conversion ----
 
     /// Convert a global symbol (e.g. `"BTC"`) to Hibachi format (e.g. `"BTC/USDT-P"`).
@@ -80,8 +90,10 @@ impl HibachiClient {
         let url = format!("{}{}", self.base_url, path);
         let http = self.http.clone();
         let rate_limiter = self.rate_limiter.clone();
-        let query: Vec<(String, String)> =
-            query.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        let query: Vec<(String, String)> = query
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
 
         execute_with_retry(&config, || {
             let url = url.clone();
@@ -247,7 +259,13 @@ impl IPerps for HibachiClient {
 
     /// Convert global symbol to Hibachi format: `"BTC"` → `"BTC/USDT-P"`.
     fn parse_symbol(&self, symbol: &str) -> String {
-        Self::to_hibachi_symbol(symbol)
+        Self::to_hibachi_symbol(crate::symbol_aliases::resolve_alias("hibachi", symbol))
+    }
+
+    fn normalize_symbol(&self, exchange_symbol: &str) -> String {
+        // "BTC/USDT-P" -> "BTC" -> unresolve alias
+        let base = exchange_symbol.split('/').next().unwrap_or(exchange_symbol);
+        crate::symbol_aliases::unresolve_alias("hibachi", base).to_string()
     }
 
     async fn get_markets(&self) -> Result<Vec<Market>> {
@@ -614,16 +632,8 @@ impl IPerps for HibachiClient {
     }
 
     async fn is_supported(&self, symbol: &str) -> Result<bool> {
-        let hibachi_symbol = self.parse_symbol(symbol);
-
-        self.symbols_cache
-            .get_or_init(|| async {
-                let contracts = self.fetch_exchange_info().await?;
-                Ok(contracts.iter().map(|c| c.symbol.clone()).collect())
-            })
-            .await?;
-
-        Ok(self.symbols_cache.contains(&hibachi_symbol).await)
+        self.ensure_cache_initialized().await?;
+        Ok(self.symbols_cache.contains(&self.parse_symbol(symbol)).await)
     }
 }
 

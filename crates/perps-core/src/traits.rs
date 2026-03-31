@@ -11,8 +11,13 @@ pub trait IPerps: Send + Sync {
     fn get_name(&self) -> &str;
 
     /// Parses a global symbol into an exchange-specific symbol.
-    /// For example, on Binance, "BTC" might become "BTCUSDT".
+    /// Idempotent: already-valid exchange symbols pass through unchanged.
+    /// For example, on Binance: "BTC" → "BTCUSDT", "BTCUSDT" → "BTCUSDT".
     fn parse_symbol(&self, symbol: &str) -> String;
+
+    /// Converts an exchange-specific symbol back to global format.
+    /// For example, on Binance: "BTCUSDT" → "BTC", on QFEX: "GOLD-USD" → "XAU".
+    fn normalize_symbol(&self, exchange_symbol: &str) -> String;
 
     /// GetMarkets returns all available perpetual markets on the exchange.
     async fn get_markets(&self) -> anyhow::Result<Vec<Market>>;

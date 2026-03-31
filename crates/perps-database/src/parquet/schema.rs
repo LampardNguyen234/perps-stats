@@ -1,8 +1,6 @@
 use std::sync::Arc;
 
-use arrow::array::{
-    Float64Array, Int64Array, StringArray, StringBuilder, UInt16Array,
-};
+use arrow::array::{Float64Array, Int64Array, StringArray, StringBuilder, UInt16Array};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 use perps_core::{Orderbook, OrderbookLevel};
@@ -201,10 +199,8 @@ pub fn record_batch_to_orderbooks(
             bids.sort_by(|a, b| b.price.cmp(&a.price));
             asks.sort_by(|a, b| a.price.cmp(&b.price));
 
-            let timestamp: DateTime<Utc> = Utc
-                .timestamp_opt(ts, 0)
-                .single()
-                .unwrap_or_else(Utc::now);
+            let timestamp: DateTime<Utc> =
+                Utc.timestamp_opt(ts, 0).single().unwrap_or_else(Utc::now);
 
             Orderbook {
                 symbol,

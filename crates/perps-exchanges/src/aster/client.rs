@@ -221,6 +221,7 @@ impl IPerps for AsterClient {
     }
 
     fn parse_symbol(&self, symbol: &str) -> String {
+        let symbol = crate::symbol_aliases::resolve_alias("aster", symbol);
         // Aster uses Binance-compatible format: BTC -> BTCUSDT
         // Idempotent: if already in exchange format (ends with USDT), return as-is
         let upper = symbol.to_uppercase();
@@ -229,6 +230,13 @@ impl IPerps for AsterClient {
         } else {
             format!("{}USDT", upper)
         }
+    }
+
+    fn normalize_symbol(&self, exchange_symbol: &str) -> String {
+        // "BTCUSDT" -> "BTC", "COPPERUSDT" -> "COPPER" -> unresolve -> "XCU"
+        let upper = exchange_symbol.to_uppercase();
+        let base = upper.strip_suffix("USDT").unwrap_or(&upper);
+        crate::symbol_aliases::unresolve_alias("aster", base).to_string()
     }
 
     async fn get_markets(&self) -> Result<Vec<Market>> {
@@ -615,7 +623,10 @@ impl IPerps for AsterClient {
 
     async fn is_supported(&self, symbol: &str) -> Result<bool> {
         self.ensure_cache_initialized().await?;
-        Ok(self.symbols_cache.contains(symbol).await)
+        Ok(self
+            .symbols_cache
+            .contains(&self.parse_symbol(symbol))
+            .await)
     }
 
     async fn get_market_stats(&self, symbol: &str) -> Result<MarketStats> {

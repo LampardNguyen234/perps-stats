@@ -42,6 +42,18 @@ impl HotstuffClient {
         }
     }
 
+    async fn ensure_cache_initialized(&self) -> Result<()> {
+        // Initialize cache with all instruments if not already cached
+        self.symbols_cache
+            .get_or_init(|| async {
+                let instruments = self.fetch_instruments().await?;
+                Ok(instruments.iter().map(|i| {
+                    self.parse_symbol(&i.name)
+                }).collect())
+            })
+            .await
+    }
+
     // ---- symbol conversion ----
 
     /// Convert a global symbol (e.g. "BTC") to Hotstuff format (e.g. "BTC-PERP").
@@ -209,7 +221,14 @@ impl IPerps for HotstuffClient {
 
     /// Convert global symbol to Hotstuff format: "BTC" → "BTC-PERP".
     fn parse_symbol(&self, symbol: &str) -> String {
-        Self::to_hotstuff_symbol(symbol)
+        Self::to_hotstuff_symbol(crate::symbol_aliases::resolve_alias("hotstuff", symbol))
+    }
+
+    fn normalize_symbol(&self, exchange_symbol: &str) -> String {
+        // "BTC-PERP" -> "BTC" -> unresolve alias
+        let upper = exchange_symbol.to_uppercase();
+        let base = upper.strip_suffix("-PERP").unwrap_or(&upper);
+        crate::symbol_aliases::unresolve_alias("hotstuff", base).to_string()
     }
 
     async fn get_markets(&self) -> Result<Vec<Market>> {
@@ -338,7 +357,11 @@ impl IPerps for HotstuffClient {
 
         tracing::debug!(
             "Hotstuff: fetching klines for {} (id={}) interval={} from={} to={}",
-            hotstuff_symbol, instrument_id, resolution, from_secs, to_ms
+            hotstuff_symbol,
+            instrument_id,
+            resolution,
+            from_secs,
+            to_ms
         );
 
         let klines: Vec<HotstuffKline> = self
@@ -357,7 +380,9 @@ impl IPerps for HotstuffClient {
         let interval_str = interval.to_string();
         let result: Vec<Kline> = klines
             .iter()
-            .map(|k| super::conversions::kline_to_kline(k, symbol.to_string(), interval_str.clone()))
+            .map(|k| {
+                super::conversions::kline_to_kline(k, symbol.to_string(), interval_str.clone())
+            })
             .collect::<Result<Vec<_>>>()?;
 
         // Apply limit (take last N if more than requested)
@@ -416,7 +441,11 @@ impl IPerps for HotstuffClient {
             match super::conversions::ticker_to_market_stats(ht, global) {
                 Ok(s) => result.push(s),
                 Err(e) => {
-                    tracing::warn!("Hotstuff: failed to convert market stats {}: {}", ht.symbol, e)
+                    tracing::warn!(
+                        "Hotstuff: failed to convert market stats {}: {}",
+                        ht.symbol,
+                        e
+                    )
                 }
             }
         }
@@ -425,16 +454,8 @@ impl IPerps for HotstuffClient {
     }
 
     async fn is_supported(&self, symbol: &str) -> Result<bool> {
-        let hotstuff_symbol = self.parse_symbol(symbol);
-
-        self.symbols_cache
-            .get_or_init(|| async {
-                let instruments = self.fetch_instruments().await?;
-                Ok(instruments.iter().map(|i| i.name.clone()).collect())
-            })
-            .await?;
-
-        Ok(self.symbols_cache.contains(&hotstuff_symbol).await)
+        self.ensure_cache_initialized().await?;
+        Ok(self.symbols_cache.contains(&self.parse_symbol(symbol)).await)
     }
 }
 

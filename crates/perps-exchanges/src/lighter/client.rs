@@ -34,7 +34,7 @@ impl LighterClient {
         self.symbols_cache
             .get_or_init(|| async {
                 let markets = self.get_markets().await?;
-                Ok(markets.into_iter().map(|m| m.symbol).collect())
+                Ok(markets.into_iter().map(|m| self.parse_symbol(&m.symbol)).collect())
             })
             .await
     }
@@ -148,7 +148,13 @@ impl IPerps for LighterClient {
         "lighter"
     }
 
+    fn normalize_symbol(&self, exchange_symbol: &str) -> String {
+        // Lighter uses global-style symbols (BTC, ETH, WTI for CL alias)
+        crate::symbol_aliases::unresolve_alias("lighter", exchange_symbol).to_string()
+    }
+
     fn parse_symbol(&self, symbol: &str) -> String {
+        let symbol = crate::symbol_aliases::resolve_alias("lighter", symbol);
         // Lighter uses simple symbol names like "BTC", "ETH"
         // Handle special cases
         match symbol.to_uppercase().as_str() {
@@ -189,6 +195,7 @@ impl IPerps for LighterClient {
     }
 
     async fn get_market(&self, symbol: &str) -> Result<Market> {
+        let symbol = self.parse_symbol(symbol);
         let url = format!("{}/orderBooks", self.base_url);
         tracing::debug!("Fetching market {} from Lighter: {}", symbol, url);
 
@@ -209,14 +216,15 @@ impl IPerps for LighterClient {
     }
 
     async fn get_ticker(&self, symbol: &str) -> Result<Ticker> {
+        let symbol = self.parse_symbol(symbol);
         tracing::debug!("Fetching ticker for {} from Lighter", symbol);
 
-        let detail = self.fetch_orderbook_detail(symbol).await?;
+        let detail = self.fetch_orderbook_detail(&symbol).await?;
         tracing::debug!("get_ticker detail: {:?}", detail);
 
         // Also fetch orderbook to get best bid/ask quantities
         // Use a small depth (5) to minimize API load
-        let multi_orderbook = self.get_orderbook(symbol, 5).await?;
+        let multi_orderbook = self.get_orderbook(&symbol, 5).await?;
         let orderbook = multi_orderbook
             .best_for_tight_spreads()
             .ok_or_else(|| anyhow!("No orderbook available for {}", symbol))?;
@@ -245,6 +253,7 @@ impl IPerps for LighterClient {
     }
 
     async fn get_orderbook(&self, symbol: &str, depth: u32) -> Result<MultiResolutionOrderbook> {
+        let symbol = self.parse_symbol(symbol);
         // Lighter API has a maximum limit of 100
         let capped_depth = depth.min(100);
         tracing::debug!(
@@ -255,7 +264,7 @@ impl IPerps for LighterClient {
         );
 
         // Need to get market_id first
-        let market_id = self.clone().get_market_id(symbol).await?;
+        let market_id = self.clone().get_market_id(&symbol).await?;
 
         let url = format!(
             "{}/orderBookOrders?market_id={}&limit={}",
@@ -269,11 +278,12 @@ impl IPerps for LighterClient {
         }
 
         let orderbook =
-            conversions::to_orderbook(symbol, &response.data.bids, &response.data.asks)?;
+            conversions::to_orderbook(&symbol, &response.data.bids, &response.data.asks)?;
         Ok(MultiResolutionOrderbook::from_single(orderbook))
     }
 
     async fn get_funding_rate(&self, symbol: &str) -> Result<FundingRate> {
+        let symbol = self.parse_symbol(symbol);
         let url = format!("{}/funding-rates", self.base_url);
         tracing::debug!("Fetching funding rate for {} from Lighter: {}", symbol, url);
 
@@ -308,9 +318,10 @@ impl IPerps for LighterClient {
     }
 
     async fn get_open_interest(&self, symbol: &str) -> Result<OpenInterest> {
+        let symbol = self.parse_symbol(symbol);
         tracing::debug!("Fetching open interest for {} from Lighter", symbol);
 
-        let detail = self.fetch_orderbook_detail(symbol).await?;
+        let detail = self.fetch_orderbook_detail(&symbol).await?;
 
         Ok(OpenInterest {
             symbol: symbol.to_string(),
@@ -338,8 +349,9 @@ impl IPerps for LighterClient {
             interval
         );
 
+        let symbol = self.parse_symbol(symbol);
         // Get market_id for the symbol
-        let market_id = self.clone().get_market_id(symbol).await?;
+        let market_id = self.clone().get_market_id(&symbol).await?;
 
         // Lighter API requires start_timestamp, end_timestamp, AND count_back
         // If not provided, use sensible defaults
@@ -372,7 +384,7 @@ impl IPerps for LighterClient {
             .data
             .candlesticks
             .iter()
-            .map(|cs| conversions::to_kline(symbol, interval, cs))
+            .map(|cs| conversions::to_kline(&symbol, interval, cs))
             .collect();
 
         klines
@@ -384,9 +396,10 @@ impl IPerps for LighterClient {
     }
 
     async fn get_market_stats(&self, symbol: &str) -> Result<MarketStats> {
+        let symbol = self.parse_symbol(symbol);
         tracing::debug!("Fetching market stats for {} from Lighter", symbol);
 
-        let detail = self.fetch_orderbook_detail(symbol).await?;
+        let detail = self.fetch_orderbook_detail(&symbol).await?;
 
         let last_price = rust_decimal::Decimal::from_f64(detail.last_trade_price)
             .unwrap_or_else(|| rust_decimal::Decimal::from(0));
@@ -484,7 +497,10 @@ impl IPerps for LighterClient {
 
     async fn is_supported(&self, symbol: &str) -> Result<bool> {
         self.ensure_cache_initialized().await?;
-        Ok(self.symbols_cache.contains(symbol).await)
+        Ok(self
+            .symbols_cache
+            .contains(&self.parse_symbol(symbol))
+            .await)
     }
 }
 

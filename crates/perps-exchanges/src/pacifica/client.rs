@@ -67,7 +67,9 @@ impl PacificaClient {
         self.symbols_cache
             .get_or_init(|| async {
                 let markets = self.get_markets().await?;
-                Ok(markets.into_iter().map(|m| m.symbol).collect())
+                Ok(markets.into_iter().map(|m| {
+                    m.symbol
+                }).collect())
             })
             .await
     }
@@ -205,8 +207,14 @@ impl IPerps for PacificaClient {
     }
 
     fn parse_symbol(&self, symbol: &str) -> String {
+        let symbol = crate::symbol_aliases::resolve_alias("pacifica", symbol);
         // Pacifica uses uppercase symbols like "BTC", "ETH"
         symbol.to_uppercase()
+    }
+
+    fn normalize_symbol(&self, exchange_symbol: &str) -> String {
+        // Pacifica uses global-style uppercase symbols
+        crate::symbol_aliases::unresolve_alias("pacifica", exchange_symbol).to_string()
     }
 
     async fn get_markets(&self) -> Result<Vec<Market>> {
@@ -253,6 +261,7 @@ impl IPerps for PacificaClient {
     }
 
     async fn get_ticker(&self, symbol: &str) -> Result<Ticker> {
+        let symbol = self.parse_symbol(symbol);
         // Get all prices and filter for the symbol
         let prices: Vec<PacificaPrice> = self.get("/info/prices").await?;
 
@@ -276,7 +285,7 @@ impl IPerps for PacificaClient {
         };
 
         // Get orderbook for best bid/ask with quantities
-        let multi_orderbook = self.get_orderbook(symbol, 1).await?;
+        let multi_orderbook = self.get_orderbook(&symbol, 1).await?;
         let orderbook = multi_orderbook
             .best_for_tight_spreads()
             .ok_or_else(|| anyhow::anyhow!("No orderbook available for {}", symbol))?;
@@ -510,6 +519,7 @@ impl IPerps for PacificaClient {
     }
 
     async fn get_funding_rate(&self, symbol: &str) -> Result<FundingRate> {
+        let symbol = self.parse_symbol(symbol);
         // Funding rate is included in the prices endpoint
         let prices: Vec<PacificaPrice> = self.get("/info/prices").await?;
 
@@ -621,7 +631,10 @@ impl IPerps for PacificaClient {
 
     async fn is_supported(&self, symbol: &str) -> Result<bool> {
         self.ensure_cache_initialized().await?;
-        Ok(self.symbols_cache.contains(symbol).await)
+        Ok(self
+            .symbols_cache
+            .contains(&self.parse_symbol(symbol))
+            .await)
     }
 
     async fn get_market_stats(&self, symbol: &str) -> Result<MarketStats> {

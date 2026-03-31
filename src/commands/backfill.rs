@@ -478,7 +478,7 @@ pub async fn execute(args: BackfillArgs) -> Result<()> {
     }
 
     // Initialize database once for all exchanges
-    tracing::info!("Connecting to database: {}", args.database_url);
+    tracing::info!("Connecting to database");
     let pool = PgPool::connect(&args.database_url).await?;
     let repository = Arc::new(Mutex::new(PostgresRepository::new(pool)));
 

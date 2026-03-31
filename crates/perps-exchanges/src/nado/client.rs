@@ -38,7 +38,9 @@ impl NadoClient {
         self.symbols_cache
             .get_or_init(|| async {
                 let markets = self.get_markets().await?;
-                Ok(markets.into_iter().map(|m| m.symbol).collect())
+                Ok(markets.into_iter().map(|m| {
+                    self.parse_symbol(&m.symbol)
+                }).collect())
             })
             .await
     }
@@ -111,7 +113,15 @@ impl IPerps for NadoClient {
         "nano"
     }
 
+    fn normalize_symbol(&self, exchange_symbol: &str) -> String {
+        // "BTC-PERP_USDT0" -> "BTC" -> unresolve alias
+        let upper = exchange_symbol.to_uppercase();
+        let base = upper.split("-PERP").next().unwrap_or(&upper);
+        crate::symbol_aliases::unresolve_alias("nado", base).to_string()
+    }
+
     fn parse_symbol(&self, symbol: &str) -> String {
+        let symbol = crate::symbol_aliases::resolve_alias("nado", symbol);
         // Nado uses ticker_id format: "BTC-PERP_USDT0"
         // If already in correct format, return as-is
         if symbol.contains("-PERP_USDT0") {
@@ -315,8 +325,7 @@ impl IPerps for NadoClient {
 
     async fn is_supported(&self, symbol: &str) -> Result<bool> {
         self.ensure_cache_initialized().await?;
-        let ticker_id = self.parse_symbol(symbol);
-        Ok(self.symbols_cache.contains(&ticker_id).await)
+        Ok(self.symbols_cache.contains(&self.parse_symbol(symbol)).await)
     }
 }
 
