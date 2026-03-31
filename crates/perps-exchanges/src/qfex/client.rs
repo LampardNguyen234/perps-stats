@@ -191,7 +191,7 @@ impl IPerps for QfexClient {
             })
             .collect();
 
-        tracing::info!("QFEX: found {} active markets", markets.len());
+        tracing::debug!("QFEX: found {} active markets", markets.len());
         Ok(markets)
     }
 
