@@ -305,7 +305,7 @@ impl IPerps for KucoinClient {
                 let quantity_scale = if c.lot_size > 0 { 0 } else { 3 };
 
                 Market {
-                    symbol: c.symbol.clone(),
+                    symbol: self.normalize_symbol(&c.symbol),
                     contract: c.symbol,
                     price_scale,
                     quantity_scale,
@@ -336,7 +336,7 @@ impl IPerps for KucoinClient {
         let quantity_scale = if contract.lot_size > 0 { 0 } else { 3 };
 
         Ok(Market {
-            symbol: contract.symbol.clone(),
+            symbol: self.normalize_symbol(&contract.symbol),
             contract: contract.symbol,
             price_scale,
             quantity_scale,
@@ -368,6 +368,8 @@ impl IPerps for KucoinClient {
                 })
                 .await?;
 
+            let mut orderbook = orderbook;
+            orderbook.symbol = self.normalize_symbol(&orderbook.symbol);
             return Ok(MultiResolutionOrderbook::from_single(orderbook));
         }
 
@@ -405,7 +407,7 @@ impl IPerps for KucoinClient {
             .collect::<Result<Vec<_>>>()?;
 
         let orderbook = Orderbook {
-            symbol: response.symbol,
+            symbol: self.normalize_symbol(&response.symbol),
             bids,
             asks,
             timestamp: Utc.timestamp_nanos(response.timestamp),
@@ -425,7 +427,7 @@ impl IPerps for KucoinClient {
             .map(|t| {
                 Ok(Trade {
                     id: t.trade_id,
-                    symbol: symbol.to_string(),
+                    symbol: self.normalize_symbol(&symbol),
                     price: Decimal::from_str(&t.price)?,
                     quantity: Decimal::from(t.size),
                     side: if t.side == "buy" {
@@ -447,7 +449,7 @@ impl IPerps for KucoinClient {
             .await?;
 
         Ok(FundingRate {
-            symbol: rate.symbol.clone(),
+            symbol: self.normalize_symbol(&rate.symbol),
             funding_rate: Decimal::from_f64(rate.value).unwrap_or(Decimal::ZERO),
             funding_time: Utc.timestamp_millis_opt(rate.time_point).unwrap(),
             predicted_rate: rate
@@ -538,7 +540,7 @@ impl IPerps for KucoinClient {
                 let close_time = open_time + chrono::Duration::minutes(granularity as i64);
 
                 Some(Kline {
-                    symbol: symbol.to_string(),
+                    symbol: self.normalize_symbol(&symbol),
                     interval: interval.to_string(),
                     open_time,
                     close_time,
@@ -655,7 +657,7 @@ impl IPerps for KucoinClient {
         open_interest *= Decimal::from_f64(contract.multiplier).unwrap_or(Decimal::ZERO);
 
         Ok(Ticker {
-            symbol: contract.symbol,
+            symbol: self.normalize_symbol(&contract.symbol),
             last_price,
             mark_price,
             index_price,
@@ -701,16 +703,17 @@ impl IPerps for KucoinClient {
 
     async fn get_open_interest(&self, symbol: &str) -> Result<OpenInterest> {
         // Try to get from active contracts list
+        let exchange_symbol = self.parse_symbol(symbol);
         let contracts: Vec<KucoinContractDetail> = self.get("/api/v1/contracts/active").await?;
         let contract = contracts
             .into_iter()
-            .find(|c| c.symbol == symbol)
+            .find(|c| c.symbol == exchange_symbol)
             .ok_or_else(|| anyhow!("Contract {} not found", symbol))?;
 
         let open_interest = Decimal::from_str(&contract.open_interest).unwrap_or(Decimal::ZERO);
 
         Ok(OpenInterest {
-            symbol: symbol.to_string(),
+            symbol: self.normalize_symbol(symbol),
             open_interest,
             open_value: Decimal::ZERO,
             timestamp: Utc::now(),

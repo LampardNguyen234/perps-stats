@@ -130,7 +130,7 @@ impl IPerps for ParadexClient {
                 };
 
                 Market {
-                    symbol: m.symbol.clone(),
+                    symbol: self.normalize_symbol(&m.symbol),
                     contract: m.symbol,
                     price_scale,
                     quantity_scale,
@@ -148,9 +148,10 @@ impl IPerps for ParadexClient {
 
     async fn get_market(&self, symbol: &str) -> Result<Market> {
         let markets = self.get_markets().await?;
+        let normalized = self.normalize_symbol(symbol);
         markets
             .into_iter()
-            .find(|m| m.symbol == symbol)
+            .find(|m| m.symbol == normalized)
             .ok_or_else(|| anyhow!("Market {} not found", symbol))
     }
 
@@ -181,7 +182,7 @@ impl IPerps for ParadexClient {
             .collect::<Result<Vec<_>>>()?;
 
         let orderbook = Orderbook {
-            symbol: response.market,
+            symbol: self.normalize_symbol(&response.market),
             bids,
             asks,
             timestamp: Utc
@@ -203,7 +204,7 @@ impl IPerps for ParadexClient {
             .map(|t| {
                 Ok(Trade {
                     id: t.timestamp.to_string(), // No unique trade ID provided
-                    symbol: symbol.to_string(),
+                    symbol: self.normalize_symbol(symbol),
                     price: Decimal::from_str(&t.price)?,
                     quantity: Decimal::from_str(&t.size)?,
                     side: if t.side == "buy" {
@@ -228,7 +229,7 @@ impl IPerps for ParadexClient {
             .first()
             .ok_or_else(|| anyhow!("No funding rate data found for {}", symbol))?;
         Ok(FundingRate {
-            symbol: rate.market.clone(),
+            symbol: self.normalize_symbol(&rate.market),
             funding_rate: Decimal::from_str(&rate.funding_rate)?,
             funding_time: Utc.timestamp_millis_opt(rate.created_at as i64).unwrap(),
             // Fields not provided by the API
@@ -271,7 +272,7 @@ impl IPerps for ParadexClient {
             .into_iter()
             .map(|k| {
                 Ok(Kline {
-                    symbol: symbol.to_string(),
+                    symbol: self.normalize_symbol(symbol),
                     interval: interval.to_string(),
                     open_time: Utc.timestamp_millis_opt(k.0 as i64).unwrap(),
                     close_time: Utc
@@ -293,7 +294,7 @@ impl IPerps for ParadexClient {
         self.ensure_cache_initialized().await?;
         Ok(self
             .symbols_cache
-            .contains(&self.parse_symbol(symbol))
+            .contains(&self.normalize_symbol(symbol))
             .await)
     }
 
@@ -346,7 +347,7 @@ impl IPerps for ParadexClient {
         let open_interest = Decimal::from_str(&summary.open_interest).unwrap_or(Decimal::ZERO);
 
         Ok(Ticker {
-            symbol: summary.symbol.clone(),
+            symbol: self.normalize_symbol(&summary.symbol),
             last_price,
             mark_price,
             index_price,
@@ -392,7 +393,7 @@ impl IPerps for ParadexClient {
         // Paradex doesn't provide open interest via public endpoints
         // Return zero values to maintain compatibility
         Ok(OpenInterest {
-            symbol: symbol.to_string(),
+            symbol: self.normalize_symbol(symbol),
             open_interest: Decimal::ZERO,
             open_value: Decimal::ZERO,
             timestamp: Utc::now(),

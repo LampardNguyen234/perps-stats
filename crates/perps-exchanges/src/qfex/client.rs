@@ -183,7 +183,10 @@ impl IPerps for QfexClient {
             .iter()
             .filter(|item| item.status.as_deref() == Some("ACTIVE"))
             .filter_map(|item| match refdata_item_to_market(item) {
-                Ok(m) => Some(m),
+                Ok(mut m) => {
+                    m.symbol = self.normalize_symbol(&item.symbol);
+                    Some(m)
+                }
                 Err(e) => {
                     tracing::warn!("QFEX: skipping market {}: {}", item.symbol, e);
                     None
@@ -211,8 +214,10 @@ impl IPerps for QfexClient {
             .find(|item| item.symbol == qfex_sym)
             .ok_or_else(|| anyhow!("Market not found: {}", qfex_sym))?;
 
-        refdata_item_to_market(item)
-            .with_context(|| format!("failed to convert market data for {}", qfex_sym))
+        let mut market = refdata_item_to_market(item)
+            .with_context(|| format!("failed to convert market data for {}", qfex_sym))?;
+        market.symbol = self.normalize_symbol(&qfex_sym);
+        Ok(market)
     }
 
     /// Fetch the current ticker for a single symbol using the shared metrics cache.
@@ -230,8 +235,7 @@ impl IPerps for QfexClient {
 
         let mut ticker = metrics_to_ticker(m, &ob)
             .with_context(|| format!("failed to convert ticker for {}", qfex_sym))?;
-        // Overwrite symbol with the global (non-exchange-specific) form.
-        ticker.symbol = to_global_symbol(&qfex_sym);
+        ticker.symbol = self.normalize_symbol(&qfex_sym);
         Ok(ticker)
     }
 
@@ -249,10 +253,7 @@ impl IPerps for QfexClient {
                 let m = m.clone();
                 async move {
                     match self.get_ticker(&m.symbol).await {
-                        Ok(mut ticker) => {
-                            ticker.symbol = to_global_symbol(&m.symbol);
-                            Some(ticker)
-                        }
+                        Ok(ticker) => Some(ticker),
                         Err(e) => {
                             tracing::warn!(
                                 "QFEX: failed to convert ticker for {}: {}",
@@ -275,10 +276,16 @@ impl IPerps for QfexClient {
         let qfex_sym = self.parse_symbol(symbol);
         tracing::debug!("QFEX: fetching orderbook for {} depth={}", qfex_sym, depth);
 
-        self.orderbook_manager
+        let mut ob = self
+            .orderbook_manager
             .get_orderbook(&qfex_sym, depth as usize)
             .await
-            .with_context(|| format!("failed to get orderbook for {}", qfex_sym))
+            .with_context(|| format!("failed to get orderbook for {}", qfex_sym))?;
+        ob.symbol = self.normalize_symbol(&qfex_sym);
+        for book in &mut ob.orderbooks {
+            book.symbol = ob.symbol.clone();
+        }
+        Ok(ob)
     }
 
     /// Fetch the current funding rate for a symbol using the shared metrics cache.
@@ -292,8 +299,10 @@ impl IPerps for QfexClient {
             .find(|m| m.symbol == qfex_sym)
             .ok_or_else(|| anyhow!("No metrics found for symbol: {}", qfex_sym))?;
 
-        metrics_to_funding_rate(m)
-            .with_context(|| format!("failed to convert funding rate for {}", qfex_sym))
+        let mut fr = metrics_to_funding_rate(m)
+            .with_context(|| format!("failed to convert funding rate for {}", qfex_sym))?;
+        fr.symbol = self.normalize_symbol(&qfex_sym);
+        Ok(fr)
     }
 
     /// Fetch historical funding rates from `GET /funding/{symbol}`.
@@ -330,11 +339,15 @@ impl IPerps for QfexClient {
             .await
             .with_context(|| format!("failed to fetch funding history for {}", qfex_sym))?;
 
+        let normalized_sym = self.normalize_symbol(&qfex_sym);
         let mut rates: Vec<FundingRate> = resp
             .data
             .iter()
             .filter_map(|p| match funding_point_to_funding_rate(p, &qfex_sym) {
-                Ok(r) => Some(r),
+                Ok(mut r) => {
+                    r.symbol = normalized_sym.clone();
+                    Some(r)
+                }
                 Err(e) => {
                     tracing::warn!("QFEX: skipping funding point for {}: {}", qfex_sym, e);
                     None
@@ -363,8 +376,10 @@ impl IPerps for QfexClient {
             .find(|m| m.symbol == qfex_sym)
             .ok_or_else(|| anyhow!("No metrics found for symbol: {}", qfex_sym))?;
 
-        metrics_to_open_interest(m)
-            .with_context(|| format!("failed to convert open interest for {}", qfex_sym))
+        let mut oi = metrics_to_open_interest(m)
+            .with_context(|| format!("failed to convert open interest for {}", qfex_sym))?;
+        oi.symbol = self.normalize_symbol(&qfex_sym);
+        Ok(oi)
     }
 
     /// Fetch OHLCV candles from `GET /candles/{symbol}`.
@@ -408,11 +423,15 @@ impl IPerps for QfexClient {
             .await
             .with_context(|| format!("failed to fetch candles for {}", qfex_sym))?;
 
+        let normalized_sym = self.normalize_symbol(&qfex_sym);
         let mut klines: Vec<Kline> = resp
             .candles
             .iter()
             .filter_map(|c| match candle_to_kline(c, &qfex_sym, interval) {
-                Ok(k) => Some(k),
+                Ok(mut k) => {
+                    k.symbol = normalized_sym.clone();
+                    Some(k)
+                }
                 Err(e) => {
                     tracing::warn!("QFEX: skipping candle for {}: {}", qfex_sym, e);
                     None
@@ -447,8 +466,10 @@ impl IPerps for QfexClient {
             .find(|m| m.symbol == qfex_sym)
             .ok_or_else(|| anyhow!("No metrics found for symbol: {}", qfex_sym))?;
 
-        metrics_to_market_stats(m, None)
-            .with_context(|| format!("failed to convert market stats for {}", qfex_sym))
+        let mut ms = metrics_to_market_stats(m, None)
+            .with_context(|| format!("failed to convert market stats for {}", qfex_sym))?;
+        ms.symbol = self.normalize_symbol(&qfex_sym);
+        Ok(ms)
     }
 
     /// Fetch aggregated market stats for all symbols using the shared metrics cache.
@@ -463,9 +484,13 @@ impl IPerps for QfexClient {
             .iter()
             .map(|m| {
                 let m = m.clone();
+                let normalized = self.normalize_symbol(&m.symbol);
                 async move {
                     match metrics_to_market_stats(&m, None) {
-                        Ok(ms) => Some(ms),
+                        Ok(mut ms) => {
+                            ms.symbol = normalized;
+                            Some(ms)
+                        }
                         Err(e) => {
                             tracing::warn!(
                                 "QFEX: failed to convert market stats for {}: {}",
@@ -485,10 +510,8 @@ impl IPerps for QfexClient {
 
     async fn is_supported(&self, symbol: &str) -> Result<bool> {
         let markets = self.get_markets().await?;
-        let qfex_sym = self.parse_symbol(symbol);
-        Ok(markets
-            .iter()
-            .any(|m| self.parse_symbol(&m.symbol) == qfex_sym))
+        let normalized = self.normalize_symbol(symbol);
+        Ok(markets.iter().any(|m| m.symbol == normalized))
     }
 }
 

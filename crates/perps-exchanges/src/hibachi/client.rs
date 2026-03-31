@@ -276,7 +276,11 @@ impl IPerps for HibachiClient {
         contracts
             .iter()
             .filter(|c| c.live)
-            .map(super::conversions::future_contract_to_market)
+            .map(|c| {
+                let mut m = super::conversions::future_contract_to_market(c)?;
+                m.symbol = self.normalize_symbol(&c.symbol);
+                Ok(m)
+            })
             .collect()
     }
 
@@ -289,7 +293,9 @@ impl IPerps for HibachiClient {
             .find(|c| c.symbol == hibachi_symbol)
             .ok_or_else(|| anyhow!("Market not found: {}", hibachi_symbol))?;
 
-        super::conversions::future_contract_to_market(contract)
+        let mut m = super::conversions::future_contract_to_market(contract)?;
+        m.symbol = self.normalize_symbol(&hibachi_symbol);
+        Ok(m)
     }
 
     /// Fetches ticker using 4 parallel API calls:
@@ -304,7 +310,7 @@ impl IPerps for HibachiClient {
             &stats,
             &oi,
             &ob,
-            symbol.to_string(),
+            self.normalize_symbol(symbol),
         )
     }
 
@@ -319,7 +325,6 @@ impl IPerps for HibachiClient {
             .filter(|c| c.live)
             .map(|c| {
                 let hibachi_symbol = c.symbol.clone();
-                let global_symbol = c.underlying_symbol.clone();
                 async move {
                     match self.fetch_full_ticker_data(&hibachi_symbol).await {
                         Ok((prices, stats, oi, ob)) => {
@@ -328,7 +333,7 @@ impl IPerps for HibachiClient {
                                 &stats,
                                 &oi,
                                 &ob,
-                                global_symbol.clone(),
+                                self.normalize_symbol(&hibachi_symbol),
                             ) {
                                 Ok(t) => Some(t),
                                 Err(e) => {
@@ -400,11 +405,12 @@ impl IPerps for HibachiClient {
                 self.get::<OrderbookResponse>("/market/data/orderbook", &query_coarse),
             )?;
 
+            let normalized = self.normalize_symbol(symbol);
             let fine =
-                super::conversions::orderbook_to_orderbook_truncated(ob_fine, symbol, depth_usize)?;
+                super::conversions::orderbook_to_orderbook_truncated(ob_fine, &normalized, depth_usize)?;
             let coarse = super::conversions::orderbook_to_orderbook_truncated(
                 ob_coarse,
-                symbol,
+                &normalized,
                 depth_usize,
             )?;
 
@@ -416,7 +422,7 @@ impl IPerps for HibachiClient {
             );
 
             Ok(MultiResolutionOrderbook::from_multiple(
-                symbol.to_string(),
+                normalized,
                 Utc::now(),
                 vec![fine, coarse],
             ))
@@ -428,8 +434,9 @@ impl IPerps for HibachiClient {
                 query.push(("granularity", gran_arg));
             }
             let ob: OrderbookResponse = self.get("/market/data/orderbook", &query).await?;
+            let normalized = self.normalize_symbol(symbol);
             let orderbook =
-                super::conversions::orderbook_to_orderbook_truncated(ob, symbol, depth_usize)?;
+                super::conversions::orderbook_to_orderbook_truncated(ob, &normalized, depth_usize)?;
             Ok(MultiResolutionOrderbook::from_single(orderbook))
         }
     }
@@ -439,7 +446,7 @@ impl IPerps for HibachiClient {
         tracing::debug!("Hibachi: fetching funding rate for {}", hibachi_symbol);
 
         let prices = self.fetch_prices(&hibachi_symbol).await?;
-        super::conversions::prices_to_funding_rate(&prices, symbol.to_string())
+        super::conversions::prices_to_funding_rate(&prices, self.normalize_symbol(symbol))
     }
 
     async fn get_funding_rate_history(
@@ -476,9 +483,10 @@ impl IPerps for HibachiClient {
 
         let resp: FundingRatesResponse = self.get("/market/data/funding-rates", &query).await?;
 
+        let normalized = self.normalize_symbol(symbol);
         resp.data
             .iter()
-            .map(|e| super::conversions::funding_rate_entry_to_funding_rate(e, symbol.to_string()))
+            .map(|e| super::conversions::funding_rate_entry_to_funding_rate(e, normalized.clone()))
             .collect()
     }
 
@@ -497,7 +505,7 @@ impl IPerps for HibachiClient {
             .and_then(|s| s.parse::<rust_decimal::Decimal>().ok())
             .unwrap_or(rust_decimal::Decimal::ZERO);
 
-        super::conversions::oi_response_to_open_interest(&oi, mark_price, symbol.to_string())
+        super::conversions::oi_response_to_open_interest(&oi, mark_price, self.normalize_symbol(symbol))
     }
 
     async fn get_klines(
@@ -535,11 +543,12 @@ impl IPerps for HibachiClient {
             .await?;
 
         let interval_str = interval.to_string();
+        let normalized = self.normalize_symbol(symbol);
         let mut klines: Vec<Kline> = resp
             .klines
             .iter()
             .map(|k| {
-                super::conversions::kline_to_kline(k, symbol.to_string(), interval_str.clone())
+                super::conversions::kline_to_kline(k, normalized.clone(), interval_str.clone())
             })
             .collect::<Result<Vec<_>>>()?;
 
@@ -561,10 +570,11 @@ impl IPerps for HibachiClient {
             .get("/market/data/trades", &[("symbol", &hibachi_symbol)])
             .await?;
 
+        let normalized = self.normalize_symbol(symbol);
         let mut trades: Vec<Trade> = resp
             .trades
             .iter()
-            .map(|t| super::conversions::trade_entry_to_trade(t, symbol.to_string()))
+            .map(|t| super::conversions::trade_entry_to_trade(t, normalized.clone()))
             .collect::<Result<Vec<_>>>()?;
 
         trades.truncate(limit as usize);
@@ -581,7 +591,7 @@ impl IPerps for HibachiClient {
             &prices,
             &stats,
             &oi,
-            symbol.to_string(),
+            self.normalize_symbol(symbol),
         )
     }
 
@@ -596,7 +606,6 @@ impl IPerps for HibachiClient {
             .filter(|c| c.live)
             .map(|c| {
                 let hibachi_symbol = c.symbol.clone();
-                let global_symbol = c.underlying_symbol.clone();
                 async move {
                     match self.fetch_ticker_data(&hibachi_symbol).await {
                         Ok((prices, stats, oi)) => {
@@ -604,7 +613,7 @@ impl IPerps for HibachiClient {
                                 &prices,
                                 &stats,
                                 &oi,
-                                global_symbol.clone(),
+                                self.normalize_symbol(&hibachi_symbol),
                             ) {
                                 Ok(ms) => Some(ms),
                                 Err(e) => {

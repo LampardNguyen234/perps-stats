@@ -143,7 +143,7 @@ impl IPerps for BybitClient {
                 };
 
                 Market {
-                    symbol: self.parse_symbol(&i.symbol),
+                    symbol: self.normalize_symbol(&i.symbol),
                     contract: i.symbol,
                     price_scale,
                     quantity_scale,
@@ -194,7 +194,7 @@ impl IPerps for BybitClient {
         };
 
         Ok(Market {
-            symbol: instrument.symbol.clone(),
+            symbol: self.normalize_symbol(&instrument.symbol),
             contract: instrument.symbol,
             price_scale,
             quantity_scale,
@@ -242,7 +242,7 @@ impl IPerps for BybitClient {
             .collect::<Result<Vec<_>>>()?;
 
         let orderbook = Orderbook {
-            symbol: result.s,
+            symbol: self.normalize_symbol(&result.s),
             bids,
             asks,
             timestamp: Utc.timestamp_millis_opt(result.ts).unwrap(),
@@ -266,7 +266,7 @@ impl IPerps for BybitClient {
             .map(|t| {
                 Ok(Trade {
                     id: t.exec_id,
-                    symbol: t.symbol.clone(),
+                    symbol: self.normalize_symbol(&t.symbol),
                     price: Decimal::from_str(&t.price)?,
                     quantity: Decimal::from_str(&t.size)?,
                     side: if t.side == "Buy" {
@@ -314,7 +314,7 @@ impl IPerps for BybitClient {
             .ok_or_else(|| anyhow!("Instrument {} not found", symbol))?;
 
         Ok(FundingRate {
-            symbol: symbol.to_string(),
+            symbol: self.normalize_symbol(&symbol),
             funding_rate,
             funding_time: Utc::now(),
             predicted_rate: Decimal::ZERO,
@@ -365,7 +365,7 @@ impl IPerps for BybitClient {
             .into_iter()
             .map(|k| {
                 Ok(Kline {
-                    symbol: symbol.to_string(),
+                    symbol: self.normalize_symbol(&symbol),
                     interval: interval.to_string(),
                     open_time: Utc.timestamp_millis_opt(k[0].parse::<i64>()?).unwrap(),
                     close_time: Utc
@@ -387,7 +387,7 @@ impl IPerps for BybitClient {
         self.ensure_cache_initialized().await?;
         Ok(self
             .symbols_cache
-            .contains(&self.parse_symbol(symbol))
+            .contains(&self.normalize_symbol(symbol))
             .await)
     }
 
@@ -423,7 +423,7 @@ impl IPerps for BybitClient {
         let open_interest = Decimal::from_str(&ticker.open_interest)?;
 
         Ok(Ticker {
-            symbol: ticker.symbol,
+            symbol: self.normalize_symbol(&ticker.symbol),
             last_price,
             mark_price,
             index_price,
@@ -466,7 +466,7 @@ impl IPerps for BybitClient {
                 let low_price_24h = Decimal::from_str(&ticker.low_price_24h).ok()?;
 
                 Some(Ticker {
-                    symbol: ticker.symbol,
+                    symbol: self.normalize_symbol(&ticker.symbol),
                     last_price,
                     mark_price,
                     index_price,
@@ -519,7 +519,7 @@ impl IPerps for BybitClient {
             .into_iter()
             .map(|fr| {
                 Ok(FundingRate {
-                    symbol: fr.symbol.clone(),
+                    symbol: self.normalize_symbol(&fr.symbol),
                     funding_rate: Decimal::from_str(&fr.funding_rate)?,
                     funding_time: Utc
                         .timestamp_millis_opt(fr.funding_rate_timestamp.parse::<i64>()?)
@@ -554,7 +554,7 @@ impl IPerps for BybitClient {
         let open_value = Decimal::from_str(&ticker.open_interest_value)?;
 
         Ok(OpenInterest {
-            symbol: symbol.to_string(),
+            symbol: self.normalize_symbol(&symbol),
             open_interest,
             open_value,
             timestamp: Utc::now(),
@@ -567,7 +567,7 @@ impl IPerps for BybitClient {
         let funding = self.get_funding_rate(symbol).await?;
 
         Ok(MarketStats {
-            symbol: symbol.to_string(),
+            symbol: self.normalize_symbol(symbol),
             last_price: ticker.last_price,
             mark_price: ticker.mark_price,
             index_price: ticker.index_price,

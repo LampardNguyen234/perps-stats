@@ -224,7 +224,7 @@ impl O1Client {
         let mut symbol_set = std::collections::HashSet::new();
 
         for m in &info.markets {
-            let global_symbol = Self::denormalize_symbol(&m.symbol);
+            let global_symbol = self.normalize_symbol(&m.symbol);
             let entry = MarketEntry {
                 market_id: m.market_id,
                 symbol: m.symbol.clone(),
@@ -314,7 +314,15 @@ impl IPerps for O1Client {
         let guard = self.markets.read().await;
         let data = guard.as_ref().context("markets not initialized")?;
 
-        Ok(data.raw_markets.iter().map(nord_market_to_market).collect())
+        Ok(data
+            .raw_markets
+            .iter()
+            .map(|m| {
+                let mut market = nord_market_to_market(m);
+                market.symbol = self.normalize_symbol(&m.symbol);
+                market
+            })
+            .collect())
     }
 
     async fn get_market(&self, symbol: &str) -> Result<Market> {
@@ -327,13 +335,17 @@ impl IPerps for O1Client {
         data.raw_markets
             .iter()
             .find(|m| m.symbol == api_symbol)
-            .map(nord_market_to_market)
+            .map(|m| {
+                let mut market = nord_market_to_market(m);
+                market.symbol = self.normalize_symbol(&m.symbol);
+                market
+            })
             .ok_or_else(|| anyhow::anyhow!("Market not found: {}", api_symbol))
     }
 
     async fn get_ticker(&self, symbol: &str) -> Result<Ticker> {
         let market_id = self.resolve_market_id(symbol).await?;
-        let global_symbol = Self::denormalize_symbol(&self.parse_symbol(symbol));
+        let global_symbol = self.normalize_symbol(&self.parse_symbol(symbol));
 
         let stats = self.fetch_market_stats_cached(market_id).await?;
         let ob = self.fetch_orderbook_cached(market_id).await?;
@@ -463,7 +475,7 @@ impl IPerps for O1Client {
 
     async fn get_orderbook(&self, symbol: &str, _depth: u32) -> Result<MultiResolutionOrderbook> {
         let market_id = self.resolve_market_id(symbol).await?;
-        let global_symbol = Self::denormalize_symbol(&self.parse_symbol(symbol));
+        let global_symbol = self.normalize_symbol(&self.parse_symbol(symbol));
 
         let ob = self.fetch_orderbook_cached(market_id).await?;
         let orderbook = nord_orderbook_to_orderbook(&ob, global_symbol.clone());
@@ -478,7 +490,7 @@ impl IPerps for O1Client {
 
     async fn get_funding_rate(&self, symbol: &str) -> Result<FundingRate> {
         let market_id = self.resolve_market_id(symbol).await?;
-        let global_symbol = Self::denormalize_symbol(&self.parse_symbol(symbol));
+        let global_symbol = self.normalize_symbol(&self.parse_symbol(symbol));
 
         let stats = self.fetch_market_stats_cached(market_id).await?;
         nord_stats_to_funding_rate(&stats, global_symbol)
@@ -499,7 +511,7 @@ impl IPerps for O1Client {
 
     async fn get_open_interest(&self, symbol: &str) -> Result<OpenInterest> {
         let market_id = self.resolve_market_id(symbol).await?;
-        let global_symbol = Self::denormalize_symbol(&self.parse_symbol(symbol));
+        let global_symbol = self.normalize_symbol(&self.parse_symbol(symbol));
 
         let stats = self.fetch_market_stats_cached(market_id).await?;
         nord_stats_to_open_interest(&stats, global_symbol)
@@ -522,7 +534,7 @@ impl IPerps for O1Client {
         }
 
         let market_id = self.resolve_market_id(symbol).await?;
-        let global_symbol = Self::denormalize_symbol(&self.parse_symbol(symbol));
+        let global_symbol = self.normalize_symbol(&self.parse_symbol(symbol));
 
         let page_size = limit.unwrap_or(24);
         let path = format!("/market/{}/history/PT1H?pageSize={}", market_id, page_size);
@@ -537,7 +549,7 @@ impl IPerps for O1Client {
 
     async fn get_recent_trades(&self, symbol: &str, limit: u32) -> Result<Vec<Trade>> {
         let market_id = self.resolve_market_id(symbol).await?;
-        let global_symbol = Self::denormalize_symbol(&self.parse_symbol(symbol));
+        let global_symbol = self.normalize_symbol(&self.parse_symbol(symbol));
 
         let effective_limit = std::cmp::min(limit, 50);
         let path = format!(
@@ -555,7 +567,7 @@ impl IPerps for O1Client {
 
     async fn get_market_stats(&self, symbol: &str) -> Result<MarketStats> {
         let market_id = self.resolve_market_id(symbol).await?;
-        let global_symbol = Self::denormalize_symbol(&self.parse_symbol(symbol));
+        let global_symbol = self.normalize_symbol(&self.parse_symbol(symbol));
 
         let stats = self.fetch_market_stats_cached(market_id).await?;
         nord_stats_to_market_stats(&stats, global_symbol)

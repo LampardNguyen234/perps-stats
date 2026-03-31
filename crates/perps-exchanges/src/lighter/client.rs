@@ -34,10 +34,7 @@ impl LighterClient {
         self.symbols_cache
             .get_or_init(|| async {
                 let markets = self.get_markets().await?;
-                Ok(markets
-                    .into_iter()
-                    .map(|m| self.parse_symbol(&m.symbol))
-                    .collect())
+                Ok(markets.into_iter().map(|m| m.symbol).collect())
             })
             .await
     }
@@ -191,7 +188,11 @@ impl IPerps for LighterClient {
             .data
             .order_books
             .iter()
-            .map(conversions::to_market)
+            .map(|ob| {
+                let mut m = conversions::to_market(ob)?;
+                m.symbol = self.normalize_symbol(&m.symbol);
+                Ok(m)
+            })
             .collect();
 
         markets
@@ -215,7 +216,9 @@ impl IPerps for LighterClient {
             .find(|ob| ob.symbol == symbol)
             .ok_or_else(|| anyhow!("Symbol {} not found", symbol))?;
 
-        conversions::to_market(orderbook)
+        let mut m = conversions::to_market(orderbook)?;
+        m.symbol = self.normalize_symbol(&m.symbol);
+        Ok(m)
     }
 
     async fn get_ticker(&self, symbol: &str) -> Result<Ticker> {
@@ -232,7 +235,9 @@ impl IPerps for LighterClient {
             .best_for_tight_spreads()
             .ok_or_else(|| anyhow!("No orderbook available for {}", symbol))?;
 
-        conversions::to_ticker_with_orderbook(&detail, orderbook)
+        let mut ticker = conversions::to_ticker_with_orderbook(&detail, orderbook)?;
+        ticker.symbol = self.normalize_symbol(&ticker.symbol);
+        Ok(ticker)
     }
 
     async fn get_all_tickers(&self) -> Result<Vec<Ticker>> {
@@ -249,7 +254,11 @@ impl IPerps for LighterClient {
             .data
             .order_book_details
             .iter()
-            .map(conversions::to_ticker)
+            .map(|d| {
+                let mut t = conversions::to_ticker(d)?;
+                t.symbol = self.normalize_symbol(&t.symbol);
+                Ok(t)
+            })
             .collect();
 
         tickers
@@ -280,8 +289,9 @@ impl IPerps for LighterClient {
             return Err(anyhow!("API error: code {}", response.code));
         }
 
+        let normalized = self.normalize_symbol(&symbol);
         let orderbook =
-            conversions::to_orderbook(&symbol, &response.data.bids, &response.data.asks)?;
+            conversions::to_orderbook(&normalized, &response.data.bids, &response.data.asks)?;
         Ok(MultiResolutionOrderbook::from_single(orderbook))
     }
 
@@ -303,7 +313,9 @@ impl IPerps for LighterClient {
             .find(|fr| fr.symbol == symbol)
             .ok_or_else(|| anyhow!("Funding rate for {} not found", symbol))?;
 
-        conversions::to_funding_rate(funding_rate)
+        let mut fr = conversions::to_funding_rate(funding_rate)?;
+        fr.symbol = self.normalize_symbol(&fr.symbol);
+        Ok(fr)
     }
 
     async fn get_funding_rate_history(
@@ -327,7 +339,7 @@ impl IPerps for LighterClient {
         let detail = self.fetch_orderbook_detail(&symbol).await?;
 
         Ok(OpenInterest {
-            symbol: symbol.to_string(),
+            symbol: self.normalize_symbol(&symbol),
             open_interest: rust_decimal::Decimal::from_f64(detail.open_interest)
                 .unwrap_or_else(|| rust_decimal::Decimal::from(0)),
             open_value: rust_decimal::Decimal::from_f64(
@@ -383,11 +395,12 @@ impl IPerps for LighterClient {
         }
 
         // Convert candlesticks to Kline format
+        let normalized = self.normalize_symbol(&symbol);
         let klines: Result<Vec<Kline>> = response
             .data
             .candlesticks
             .iter()
-            .map(|cs| conversions::to_kline(&symbol, interval, cs))
+            .map(|cs| conversions::to_kline(&normalized, interval, cs))
             .collect();
 
         klines
@@ -422,7 +435,7 @@ impl IPerps for LighterClient {
         };
 
         Ok(MarketStats {
-            symbol: symbol.to_string(),
+            symbol: self.normalize_symbol(&symbol),
             last_price,
             mark_price: last_price,
             index_price: last_price,
@@ -473,7 +486,7 @@ impl IPerps for LighterClient {
                 };
 
                 MarketStats {
-                    symbol: detail.symbol.clone(),
+                    symbol: self.normalize_symbol(&detail.symbol),
                     last_price,
                     mark_price: last_price,
                     index_price: last_price,
@@ -502,7 +515,7 @@ impl IPerps for LighterClient {
         self.ensure_cache_initialized().await?;
         Ok(self
             .symbols_cache
-            .contains(&self.parse_symbol(symbol))
+            .contains(&self.normalize_symbol(symbol))
             .await)
     }
 }

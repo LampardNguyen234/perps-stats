@@ -38,10 +38,7 @@ impl NadoClient {
         self.symbols_cache
             .get_or_init(|| async {
                 let markets = self.get_markets().await?;
-                Ok(markets
-                    .into_iter()
-                    .map(|m| self.parse_symbol(&m.symbol))
-                    .collect())
+                Ok(markets.into_iter().map(|m| m.symbol).collect())
             })
             .await
     }
@@ -149,7 +146,11 @@ impl IPerps for NadoClient {
 
         let markets = pairs
             .into_iter()
-            .map(|pair| super::conversions::pair_to_market(&pair))
+            .map(|pair| {
+                let mut m = super::conversions::pair_to_market(&pair)?;
+                m.symbol = self.normalize_symbol(&m.symbol);
+                Ok(m)
+            })
             .collect::<Result<Vec<Market>>>()?;
 
         Ok(markets)
@@ -159,9 +160,10 @@ impl IPerps for NadoClient {
         let ticker_id = self.parse_symbol(symbol);
         let markets = self.get_markets().await?;
 
+        let normalized = self.normalize_symbol(&ticker_id);
         markets
             .into_iter()
-            .find(|m| m.symbol == ticker_id)
+            .find(|m| m.symbol == normalized)
             .ok_or_else(|| anyhow!("Market {} not found", ticker_id))
     }
 
@@ -190,12 +192,14 @@ impl IPerps for NadoClient {
         let best_ask = orderbook.orderbooks.first().and_then(|ob| ob.asks.first());
 
         // Convert to perps_core::Ticker with bid/ask data
-        super::conversions::merge_ticker_contract_and_orderbook(
+        let mut ticker = super::conversions::merge_ticker_contract_and_orderbook(
             ticker_data,
             contract_data,
             best_bid,
             best_ask,
-        )
+        )?;
+        ticker.symbol = self.normalize_symbol(&ticker.symbol);
+        Ok(ticker)
     }
 
     async fn get_all_tickers(&self) -> Result<Vec<Ticker>> {
@@ -211,7 +215,10 @@ impl IPerps for NadoClient {
         for (ticker_id, ticker_data) in tickers.iter() {
             if let Some(contract_data) = contracts.get(ticker_id) {
                 match super::conversions::merge_ticker_and_contract(ticker_data, contract_data) {
-                    Ok(ticker) => result.push(ticker),
+                    Ok(mut ticker) => {
+                        ticker.symbol = self.normalize_symbol(&ticker.symbol);
+                        result.push(ticker);
+                    }
                     Err(e) => {
                         tracing::warn!("Failed to convert ticker {}: {}", ticker_id, e);
                     }
@@ -233,7 +240,8 @@ impl IPerps for NadoClient {
         let orderbook_response: OrderbookResponse = self.get(&url).await?;
 
         // Convert to perps_core::Orderbook
-        let orderbook = super::conversions::orderbook_response_to_orderbook(&orderbook_response)?;
+        let mut orderbook = super::conversions::orderbook_response_to_orderbook(&orderbook_response)?;
+        orderbook.symbol = self.normalize_symbol(&orderbook.symbol);
 
         Ok(MultiResolutionOrderbook::from_single(orderbook))
     }
@@ -247,7 +255,9 @@ impl IPerps for NadoClient {
             .get(&ticker_id)
             .ok_or_else(|| anyhow!("Contract {} not found", ticker_id))?;
 
-        super::conversions::contract_to_funding_rate(contract_data)
+        let mut fr = super::conversions::contract_to_funding_rate(contract_data)?;
+        fr.symbol = self.normalize_symbol(&fr.symbol);
+        Ok(fr)
     }
 
     async fn get_funding_rate_history(
@@ -272,7 +282,9 @@ impl IPerps for NadoClient {
             .get(&ticker_id)
             .ok_or_else(|| anyhow!("Contract {} not found", ticker_id))?;
 
-        super::conversions::contract_to_open_interest(contract_data)
+        let mut oi = super::conversions::contract_to_open_interest(contract_data)?;
+        oi.symbol = self.normalize_symbol(&oi.symbol);
+        Ok(oi)
     }
 
     async fn get_klines(
@@ -303,7 +315,9 @@ impl IPerps for NadoClient {
             .get(&ticker_id)
             .ok_or_else(|| anyhow!("Contract {} not found", ticker_id))?;
 
-        super::conversions::contract_to_market_stats(contract_data)
+        let mut stats = super::conversions::contract_to_market_stats(contract_data)?;
+        stats.symbol = self.normalize_symbol(&stats.symbol);
+        Ok(stats)
     }
 
     async fn get_all_market_stats(&self) -> Result<Vec<MarketStats>> {
@@ -314,7 +328,10 @@ impl IPerps for NadoClient {
         let mut result = Vec::new();
         for (ticker_id, contract_data) in contracts.iter() {
             match super::conversions::contract_to_market_stats(contract_data) {
-                Ok(stats) => result.push(stats),
+                Ok(mut stats) => {
+                    stats.symbol = self.normalize_symbol(&stats.symbol);
+                    result.push(stats);
+                }
                 Err(e) => {
                     tracing::warn!("Failed to convert market stats for {}: {}", ticker_id, e);
                 }
@@ -328,7 +345,7 @@ impl IPerps for NadoClient {
         self.ensure_cache_initialized().await?;
         Ok(self
             .symbols_cache
-            .contains(&self.parse_symbol(symbol))
+            .contains(&self.normalize_symbol(symbol))
             .await)
     }
 }

@@ -221,7 +221,7 @@ impl IPerps for HyperliquidClient {
             .universe
             .into_iter()
             .map(|u| Market {
-                symbol: u.name.clone(),
+                symbol: self.normalize_symbol(&u.name),
                 contract: u.name,
                 contract_size: Decimal::ONE, // Not provided
                 price_scale: 0,              // Not provided
@@ -297,7 +297,7 @@ impl IPerps for HyperliquidClient {
         let mark_price = Decimal::from_str(&asset_ctx.mark_px)?;
 
         Ok(Ticker {
-            symbol: symbol.to_string(),
+            symbol: self.normalize_symbol(&symbol),
             last_price,
             mark_price,
             index_price: Decimal::from_str(&asset_ctx.oracle_px)?,
@@ -341,7 +341,7 @@ impl IPerps for HyperliquidClient {
                 };
 
                 tickers.push(Ticker {
-                    symbol: universe_item.name.clone(),
+                    symbol: self.normalize_symbol(&universe_item.name),
                     last_price,
                     mark_price: Decimal::from_str(&asset_ctx.mark_px)?,
                     index_price: Decimal::from_str(&asset_ctx.oracle_px)?,
@@ -456,7 +456,7 @@ impl IPerps for HyperliquidClient {
 
         let timestamp = Utc::now();
         Ok(MultiResolutionOrderbook::from_multiple(
-            symbol.to_string(),
+            self.normalize_symbol(&symbol),
             timestamp,
             orderbooks,
         ))
@@ -470,7 +470,7 @@ impl IPerps for HyperliquidClient {
             .last()
             .ok_or_else(|| anyhow!("No funding history found"))?;
         Ok(FundingRate {
-            symbol: symbol.to_string(),
+            symbol: self.normalize_symbol(&symbol),
             funding_rate: Decimal::from_str(&last_rate.funding_rate)?,
             predicted_rate: Decimal::ZERO, // Not available
             funding_time: Utc.timestamp_millis_opt(last_rate.time as i64).unwrap(),
@@ -496,7 +496,7 @@ impl IPerps for HyperliquidClient {
             .into_iter()
             .map(|h| {
                 Ok(FundingRate {
-                    symbol: symbol.to_string(),
+                    symbol: self.normalize_symbol(&symbol),
                     funding_rate: Decimal::from_str(&h.funding_rate)?,
                     predicted_rate: Decimal::ZERO,
                     funding_time: Utc.timestamp_millis_opt(h.time as i64).unwrap(),
@@ -530,7 +530,7 @@ impl IPerps for HyperliquidClient {
         let open_value = open_interest * mark_price;
 
         Ok(OpenInterest {
-            symbol: symbol.to_string(),
+            symbol: self.normalize_symbol(&symbol),
             open_interest,
             open_value,
             timestamp: Utc::now(),
@@ -552,7 +552,7 @@ impl IPerps for HyperliquidClient {
             .into_iter()
             .map(|k| {
                 Ok(Kline {
-                    symbol: symbol.to_string(),
+                    symbol: self.normalize_symbol(&symbol),
                     interval: interval.to_string(),
                     open_time: Utc.timestamp_millis_opt(k.t as i64).unwrap(),
                     close_time: Utc.timestamp_millis_opt(k.T as i64).unwrap(),
@@ -582,7 +582,7 @@ impl IPerps for HyperliquidClient {
         let funding = self.get_funding_rate(symbol).await?;
 
         Ok(MarketStats {
-            symbol: symbol.to_string(),
+            symbol: self.normalize_symbol(symbol),
             last_price: ticker.last_price,
             mark_price: ticker.mark_price,
             index_price: ticker.index_price,
@@ -620,7 +620,7 @@ impl IPerps for HyperliquidClient {
                 };
 
                 stats.push(MarketStats {
-                    symbol: universe_item.name.clone(),
+                    symbol: self.normalize_symbol(&universe_item.name),
                     last_price,
                     mark_price: Decimal::from_str(&asset_ctx.mark_px)?,
                     index_price: Decimal::from_str(&asset_ctx.oracle_px)?,
@@ -644,7 +644,7 @@ impl IPerps for HyperliquidClient {
         self.ensure_cache_initialized().await?;
         Ok(self
             .symbols_cache
-            .contains(&self.parse_symbol(symbol))
+            .contains(&self.normalize_symbol(symbol))
             .await)
     }
 }

@@ -40,9 +40,7 @@ impl TradexyzClient {
                 let markets = self.get_markets().await?;
                 Ok(markets
                     .into_iter()
-                    .map(|m| {
-                        self.parse_symbol(&m.symbol)
-                    })
+                    .map(|m| m.symbol)
                     .collect())
             })
             .await
@@ -153,7 +151,7 @@ impl TradexyzClient {
             .collect::<Result<Vec<_>>>()?;
 
         Ok(Orderbook {
-            symbol: book.coin,
+            symbol: self.normalize_symbol(&book.coin),
             bids,
             asks,
             timestamp: Utc::now(),
@@ -247,7 +245,7 @@ impl IPerps for TradexyzClient {
             .universe
             .into_iter()
             .map(|u| Market {
-                symbol: u.name.clone(),
+                symbol: self.normalize_symbol(&u.name),
                 contract: u.name,
                 contract_size: Decimal::ONE, // Not provided
                 price_scale: 0,              // Not provided
@@ -262,11 +260,11 @@ impl IPerps for TradexyzClient {
     }
 
     async fn get_market(&self, symbol: &str) -> Result<Market> {
-        let symbol = self.parse_symbol(symbol);
+        let normalized = self.normalize_symbol(symbol);
         let markets = self.get_markets().await?;
         markets
             .into_iter()
-            .find(|m| m.symbol == symbol)
+            .find(|m| m.symbol == normalized)
             .ok_or_else(|| anyhow!("Market {} not found", symbol))
     }
 
@@ -321,7 +319,7 @@ impl IPerps for TradexyzClient {
         let mark_price = Decimal::from_str(&asset_ctx.mark_px)?;
 
         Ok(Ticker {
-            symbol: symbol.to_string(),
+            symbol: self.normalize_symbol(&symbol),
             last_price,
             mark_price,
             index_price: Decimal::from_str(&asset_ctx.oracle_px)?,
@@ -362,7 +360,7 @@ impl IPerps for TradexyzClient {
                 };
 
                 tickers.push(Ticker {
-                    symbol: universe_item.name.clone(),
+                    symbol: self.normalize_symbol(&universe_item.name),
                     last_price,
                     mark_price: Decimal::from_str(&asset_ctx.mark_px)?,
                     index_price: Decimal::from_str(&asset_ctx.oracle_px)?,
@@ -476,7 +474,7 @@ impl IPerps for TradexyzClient {
 
         let timestamp = Utc::now();
         Ok(MultiResolutionOrderbook::from_multiple(
-            symbol.to_string(),
+            self.normalize_symbol(&symbol),
             timestamp,
             orderbooks,
         ))
@@ -496,7 +494,7 @@ impl IPerps for TradexyzClient {
             .last()
             .ok_or_else(|| anyhow!("No funding history found"))?;
         Ok(FundingRate {
-            symbol: symbol.to_string(),
+            symbol: self.normalize_symbol(&symbol),
             funding_rate: Decimal::from_str(&last_rate.funding_rate)?,
             predicted_rate: Decimal::ZERO,
             funding_time: Utc.timestamp_millis_opt(last_rate.time as i64).unwrap(),
@@ -529,7 +527,7 @@ impl IPerps for TradexyzClient {
             .into_iter()
             .map(|h| {
                 Ok(FundingRate {
-                    symbol: symbol.to_string(),
+                    symbol: self.normalize_symbol(&symbol),
                     funding_rate: Decimal::from_str(&h.funding_rate)?,
                     predicted_rate: Decimal::ZERO,
                     funding_time: Utc.timestamp_millis_opt(h.time as i64).unwrap(),
@@ -562,7 +560,7 @@ impl IPerps for TradexyzClient {
         let open_value = open_interest * mark_price;
 
         Ok(OpenInterest {
-            symbol: symbol.to_string(),
+            symbol: self.normalize_symbol(&symbol),
             open_interest,
             open_value,
             timestamp: Utc::now(),
@@ -593,7 +591,7 @@ impl IPerps for TradexyzClient {
             .into_iter()
             .map(|k| {
                 Ok(Kline {
-                    symbol: symbol.to_string(),
+                    symbol: self.normalize_symbol(&symbol),
                     interval: interval.to_string(),
                     open_time: Utc.timestamp_millis_opt(k.t as i64).unwrap(),
                     close_time: Utc.timestamp_millis_opt(k.T as i64).unwrap(),
@@ -621,7 +619,7 @@ impl IPerps for TradexyzClient {
         let funding = self.get_funding_rate(symbol).await?;
 
         Ok(MarketStats {
-            symbol: symbol.to_string(),
+            symbol: self.normalize_symbol(symbol),
             last_price: ticker.last_price,
             mark_price: ticker.mark_price,
             index_price: ticker.index_price,
@@ -658,7 +656,7 @@ impl IPerps for TradexyzClient {
                 };
 
                 stats.push(MarketStats {
-                    symbol: universe_item.name.clone(),
+                    symbol: self.normalize_symbol(&universe_item.name),
                     last_price,
                     mark_price: Decimal::from_str(&asset_ctx.mark_px)?,
                     index_price: Decimal::from_str(&asset_ctx.oracle_px)?,
@@ -682,7 +680,7 @@ impl IPerps for TradexyzClient {
         self.ensure_cache_initialized().await?;
         Ok(self
             .symbols_cache
-            .contains(&self.parse_symbol(symbol))
+            .contains(&self.normalize_symbol(symbol))
             .await)
     }
 }
