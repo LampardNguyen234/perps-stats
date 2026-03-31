@@ -136,7 +136,7 @@ impl KucoinClient {
                 // Build HashMap: symbol -> contract
                 let contract_map: HashMap<String, KucoinContract> = contracts
                     .into_iter()
-                    .map(|contract| (contract.symbol.clone(), contract))
+                    .map(|contract| (self.parse_symbol(&contract.symbol), contract))
                     .collect();
 
                 tracing::info!(
@@ -267,6 +267,7 @@ impl IPerps for KucoinClient {
     }
 
     fn parse_symbol(&self, symbol: &str) -> String {
+        let symbol = crate::symbol_aliases::resolve_alias("kucoin", symbol);
         // Convert BTC -> XBTUSDTM, ETH -> ETHUSDTM
         let upper = symbol.to_uppercase();
         if upper.contains("USDTM") {
@@ -278,6 +279,16 @@ impl IPerps for KucoinClient {
         } else {
             format!("{}USDTM", upper)
         }
+    }
+
+    fn normalize_symbol(&self, exchange_symbol: &str) -> String {
+        let upper = exchange_symbol.to_uppercase();
+        let base = if upper == "XBTUSDTM" {
+            "BTC".to_string()
+        } else {
+            upper.strip_suffix("USDTM").unwrap_or(&upper).to_string()
+        };
+        crate::symbol_aliases::unresolve_alias("kucoin", &base).to_string()
     }
 
     async fn get_markets(&self) -> Result<Vec<Market>> {
@@ -294,7 +305,7 @@ impl IPerps for KucoinClient {
                 let quantity_scale = if c.lot_size > 0 { 0 } else { 3 };
 
                 Market {
-                    symbol: c.symbol.clone(),
+                    symbol: self.normalize_symbol(&c.symbol),
                     contract: c.symbol,
                     price_scale,
                     quantity_scale,
@@ -310,6 +321,7 @@ impl IPerps for KucoinClient {
     }
 
     async fn get_market(&self, symbol: &str) -> Result<Market> {
+        let symbol = self.parse_symbol(symbol);
         let contracts: Vec<KucoinContractDetail> = self.get("/api/v1/contracts/active").await?;
         let contract = contracts
             .into_iter()
@@ -324,7 +336,7 @@ impl IPerps for KucoinClient {
         let quantity_scale = if contract.lot_size > 0 { 0 } else { 3 };
 
         Ok(Market {
-            symbol: contract.symbol.clone(),
+            symbol: self.normalize_symbol(&contract.symbol),
             contract: contract.symbol,
             price_scale,
             quantity_scale,
@@ -356,12 +368,15 @@ impl IPerps for KucoinClient {
                 })
                 .await?;
 
+            let mut orderbook = orderbook;
+            orderbook.symbol = self.normalize_symbol(&orderbook.symbol);
             return Ok(MultiResolutionOrderbook::from_single(orderbook));
         }
 
         // Fallback: direct REST API call with quantity conversion
+        let kucoin_symbol = self.parse_symbol(symbol);
         let response: KucoinOrderbook = self
-            .get(&format!("/api/v1/level2/snapshot?symbol={}", symbol))
+            .get(&format!("/api/v1/level2/snapshot?symbol={}", kucoin_symbol))
             .await?;
 
         // Get contract info for quantity conversion
@@ -392,7 +407,7 @@ impl IPerps for KucoinClient {
             .collect::<Result<Vec<_>>>()?;
 
         let orderbook = Orderbook {
-            symbol: response.symbol,
+            symbol: self.normalize_symbol(&response.symbol),
             bids,
             asks,
             timestamp: Utc.timestamp_nanos(response.timestamp),
@@ -402,6 +417,7 @@ impl IPerps for KucoinClient {
     }
 
     async fn get_recent_trades(&self, symbol: &str, _limit: u32) -> Result<Vec<Trade>> {
+        let symbol = self.parse_symbol(symbol);
         let trades: Vec<KucoinTrade> = self
             .get(&format!("/api/v1/trade/history?symbol={}", symbol))
             .await?;
@@ -411,7 +427,7 @@ impl IPerps for KucoinClient {
             .map(|t| {
                 Ok(Trade {
                     id: t.trade_id,
-                    symbol: symbol.to_string(),
+                    symbol: self.normalize_symbol(&symbol),
                     price: Decimal::from_str(&t.price)?,
                     quantity: Decimal::from(t.size),
                     side: if t.side == "buy" {
@@ -427,12 +443,13 @@ impl IPerps for KucoinClient {
     }
 
     async fn get_funding_rate(&self, symbol: &str) -> Result<FundingRate> {
+        let symbol = self.parse_symbol(symbol);
         let rate: KucoinFundingRate = self
             .get(&format!("/api/v1/funding-rate/{}/current", symbol))
             .await?;
 
         Ok(FundingRate {
-            symbol: rate.symbol.clone(),
+            symbol: self.normalize_symbol(&rate.symbol),
             funding_rate: Decimal::from_f64(rate.value).unwrap_or(Decimal::ZERO),
             funding_time: Utc.timestamp_millis_opt(rate.time_point).unwrap(),
             predicted_rate: rate
@@ -472,6 +489,7 @@ impl IPerps for KucoinClient {
             _ => return Err(anyhow!("Unsupported interval '{}' for KuCoin. Supported: 15m, 30m, 1h, 2h, 4h, 8h, 12h, 1d, 1w", interval)),
         };
 
+        let symbol = self.parse_symbol(symbol);
         // Build query parameters
         let mut params = vec![
             ("symbol", symbol.to_string()),
@@ -522,7 +540,7 @@ impl IPerps for KucoinClient {
                 let close_time = open_time + chrono::Duration::minutes(granularity as i64);
 
                 Some(Kline {
-                    symbol: symbol.to_string(),
+                    symbol: self.normalize_symbol(&symbol),
                     interval: interval.to_string(),
                     open_time,
                     close_time,
@@ -541,10 +559,14 @@ impl IPerps for KucoinClient {
 
     async fn is_supported(&self, symbol: &str) -> Result<bool> {
         self.ensure_cache_initialized().await?;
-        Ok(self.contract_cache.contains(symbol).await)
+        Ok(self
+            .contract_cache
+            .contains(&self.parse_symbol(symbol))
+            .await)
     }
 
     async fn get_ticker(&self, symbol: &str) -> Result<Ticker> {
+        let symbol = self.parse_symbol(symbol);
         // Get detailed contract info for this specific symbol (includes 24h stats)
         let contract: KucoinContractDetail =
             self.get(&format!("/api/v1/contracts/{}", symbol)).await?;
@@ -635,7 +657,7 @@ impl IPerps for KucoinClient {
         open_interest *= Decimal::from_f64(contract.multiplier).unwrap_or(Decimal::ZERO);
 
         Ok(Ticker {
-            symbol: contract.symbol,
+            symbol: self.normalize_symbol(&contract.symbol),
             last_price,
             mark_price,
             index_price,
@@ -681,16 +703,17 @@ impl IPerps for KucoinClient {
 
     async fn get_open_interest(&self, symbol: &str) -> Result<OpenInterest> {
         // Try to get from active contracts list
+        let exchange_symbol = self.parse_symbol(symbol);
         let contracts: Vec<KucoinContractDetail> = self.get("/api/v1/contracts/active").await?;
         let contract = contracts
             .into_iter()
-            .find(|c| c.symbol == symbol)
+            .find(|c| c.symbol == exchange_symbol)
             .ok_or_else(|| anyhow!("Contract {} not found", symbol))?;
 
         let open_interest = Decimal::from_str(&contract.open_interest).unwrap_or(Decimal::ZERO);
 
         Ok(OpenInterest {
-            symbol: symbol.to_string(),
+            symbol: self.normalize_symbol(symbol),
             open_interest,
             open_value: Decimal::ZERO,
             timestamp: Utc::now(),

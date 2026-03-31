@@ -205,8 +205,14 @@ impl IPerps for PacificaClient {
     }
 
     fn parse_symbol(&self, symbol: &str) -> String {
+        let symbol = crate::symbol_aliases::resolve_alias("pacifica", symbol);
         // Pacifica uses uppercase symbols like "BTC", "ETH"
         symbol.to_uppercase()
+    }
+
+    fn normalize_symbol(&self, exchange_symbol: &str) -> String {
+        // Pacifica uses global-style uppercase symbols
+        crate::symbol_aliases::unresolve_alias("pacifica", exchange_symbol).to_string()
     }
 
     async fn get_markets(&self) -> Result<Vec<Market>> {
@@ -228,7 +234,7 @@ impl IPerps for PacificaClient {
                     .unwrap_or(0);
 
                 Market {
-                    symbol: m.symbol.clone(),
+                    symbol: self.normalize_symbol(&m.symbol),
                     contract: m.symbol,
                     price_scale,
                     quantity_scale,
@@ -246,13 +252,15 @@ impl IPerps for PacificaClient {
 
     async fn get_market(&self, symbol: &str) -> Result<Market> {
         let markets = self.get_markets().await?;
+        let normalized = self.normalize_symbol(symbol);
         markets
             .into_iter()
-            .find(|m| m.symbol == symbol)
+            .find(|m| m.symbol == normalized)
             .ok_or_else(|| anyhow!("Market {} not found", symbol))
     }
 
     async fn get_ticker(&self, symbol: &str) -> Result<Ticker> {
+        let symbol = self.parse_symbol(symbol);
         // Get all prices and filter for the symbol
         let prices: Vec<PacificaPrice> = self.get("/info/prices").await?;
 
@@ -276,7 +284,7 @@ impl IPerps for PacificaClient {
         };
 
         // Get orderbook for best bid/ask with quantities
-        let multi_orderbook = self.get_orderbook(symbol, 1).await?;
+        let multi_orderbook = self.get_orderbook(&symbol, 1).await?;
         let orderbook = multi_orderbook
             .best_for_tight_spreads()
             .ok_or_else(|| anyhow::anyhow!("No orderbook available for {}", symbol))?;
@@ -306,7 +314,7 @@ impl IPerps for PacificaClient {
         };
 
         Ok(Ticker {
-            symbol: symbol.to_string(),
+            symbol: self.normalize_symbol(&symbol),
             last_price,
             mark_price,
             index_price,
@@ -359,7 +367,7 @@ impl IPerps for PacificaClient {
             };
 
             tickers.push(Ticker {
-                symbol: price.symbol.clone(),
+                symbol: self.normalize_symbol(&price.symbol),
                 last_price,
                 mark_price,
                 index_price,
@@ -404,7 +412,10 @@ impl IPerps for PacificaClient {
                 })
                 .await
             {
-                Ok(orderbook) => return Ok(MultiResolutionOrderbook::from_single(orderbook)),
+                Ok(mut orderbook) => {
+                    orderbook.symbol = self.normalize_symbol(symbol);
+                    return Ok(MultiResolutionOrderbook::from_single(orderbook));
+                }
                 Err(e) => {
                     tracing::warn!(
                         "[Pacifica] StreamManager failed, falling back to REST: {}",
@@ -433,7 +444,8 @@ impl IPerps for PacificaClient {
         let mut orderbooks = Vec::new();
         let timestamp = Utc::now();
 
-        if let Ok((fine_book, _)) = fine_result {
+        if let Ok((mut fine_book, _)) = fine_result {
+            fine_book.symbol = self.normalize_symbol(symbol);
             tracing::debug!(
                 "[Pacifica] ✓ Fine orderbook fetched for {} (notional={}): {} bids, {} asks | Best bid: {} @ {} | Best ask: {} @ {}",
                 symbol,
@@ -450,7 +462,8 @@ impl IPerps for PacificaClient {
             tracing::warn!("[Pacifica] Fine orderbook failed for {}: {}", symbol, e);
         }
 
-        if let Ok((coarse_book, _)) = coarse_result {
+        if let Ok((mut coarse_book, _)) = coarse_result {
+            coarse_book.symbol = self.normalize_symbol(symbol);
             tracing::debug!(
                 "[Pacifica] ✓ Coarse orderbook fetched for {} (notional={}): {} bids, {} asks | Best bid: {} @ {} | Best ask: {} @ {}",
                 symbol,
@@ -473,7 +486,7 @@ impl IPerps for PacificaClient {
         }
 
         Ok(MultiResolutionOrderbook::from_multiple(
-            symbol.to_string(),
+            self.normalize_symbol(symbol),
             timestamp,
             orderbooks,
         ))
@@ -497,7 +510,7 @@ impl IPerps for PacificaClient {
 
                 Ok(Trade {
                     id: t.created_at.to_string(), // Use timestamp as ID
-                    symbol: symbol.to_string(),
+                    symbol: self.normalize_symbol(symbol),
                     price: Decimal::from_str(&t.price)?,
                     quantity: Decimal::from_str(&t.amount)?,
                     side,
@@ -510,6 +523,7 @@ impl IPerps for PacificaClient {
     }
 
     async fn get_funding_rate(&self, symbol: &str) -> Result<FundingRate> {
+        let symbol = self.parse_symbol(symbol);
         // Funding rate is included in the prices endpoint
         let prices: Vec<PacificaPrice> = self.get("/info/prices").await?;
 
@@ -525,7 +539,7 @@ impl IPerps for PacificaClient {
         let next_funding_time = Utc::now() + chrono::Duration::hours(8);
 
         Ok(FundingRate {
-            symbol: symbol.to_string(),
+            symbol: self.normalize_symbol(&symbol),
             funding_rate,
             predicted_rate: next_funding_rate,
             funding_time: Utc.timestamp_millis_opt(price.timestamp).unwrap(),
@@ -554,7 +568,7 @@ impl IPerps for PacificaClient {
         let ticker = self.get_ticker(symbol).await?;
 
         Ok(OpenInterest {
-            symbol: symbol.to_string(),
+            symbol: self.normalize_symbol(symbol),
             open_interest: ticker.open_interest,
             open_value: ticker.open_interest_notional,
             timestamp: Utc::now(),
@@ -602,7 +616,7 @@ impl IPerps for PacificaClient {
                 let close_time = open_time + chrono::Duration::seconds(interval_seconds);
 
                 Ok(Kline {
-                    symbol: symbol.to_string(),
+                    symbol: self.normalize_symbol(symbol),
                     interval: interval.to_string(),
                     open_time,
                     close_time,
@@ -621,7 +635,10 @@ impl IPerps for PacificaClient {
 
     async fn is_supported(&self, symbol: &str) -> Result<bool> {
         self.ensure_cache_initialized().await?;
-        Ok(self.symbols_cache.contains(symbol).await)
+        Ok(self
+            .symbols_cache
+            .contains(&self.normalize_symbol(symbol))
+            .await)
     }
 
     async fn get_market_stats(&self, symbol: &str) -> Result<MarketStats> {
@@ -629,7 +646,7 @@ impl IPerps for PacificaClient {
         let funding = self.get_funding_rate(symbol).await?;
 
         Ok(MarketStats {
-            symbol: symbol.to_string(),
+            symbol: self.normalize_symbol(symbol),
             last_price: ticker.last_price,
             mark_price: ticker.mark_price,
             index_price: ticker.index_price,

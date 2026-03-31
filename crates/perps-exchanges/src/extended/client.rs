@@ -185,13 +185,18 @@ impl ExtendedClient {
         .await
     }
 
-    /// Normalize Extended symbol to global format (BTC-USD -> BTC)
-    fn normalize_symbol(exchange_symbol: &str) -> String {
-        exchange_symbol
+    /// Convert Extended exchange symbol to global format (BTC-USD -> BTC)
+    fn to_global_symbol(exchange_symbol: &str) -> String {
+        let mut tmp = exchange_symbol
             .split('-')
             .next()
             .unwrap_or(exchange_symbol)
-            .to_string()
+            .to_string();
+        if tmp.ends_with("_24_5") {
+            tmp.truncate(tmp.len() - 5);
+        }
+
+        tmp
     }
 }
 
@@ -208,6 +213,7 @@ impl IPerps for ExtendedClient {
     }
 
     fn parse_symbol(&self, symbol: &str) -> String {
+        let symbol = crate::symbol_aliases::resolve_alias("extended", symbol);
         // Check if symbol is already in Extended format (e.g., "BTC-USD")
         let symbol_upper = symbol.to_uppercase();
 
@@ -218,6 +224,12 @@ impl IPerps for ExtendedClient {
 
         // Otherwise, convert global symbol format (e.g., "BTC") to Extended format ("BTC-USD")
         format!("{}-USD", symbol_upper)
+    }
+
+    fn normalize_symbol(&self, exchange_symbol: &str) -> String {
+        // "BTC-USD" -> "BTC", "GOOG-USD" -> "GOOG" -> unresolve -> "GOOGL"
+        let base = Self::to_global_symbol(exchange_symbol);
+        crate::symbol_aliases::unresolve_alias("extended", &base).to_string()
     }
 
     async fn get_markets(&self) -> Result<Vec<Market>> {
@@ -232,7 +244,7 @@ impl IPerps for ExtendedClient {
                 let quantity_scale = m.asset_precision.max(0);
 
                 Market {
-                    symbol: Self::normalize_symbol(&m.name),
+                    symbol: self.normalize_symbol(&m.name),
                     contract: m.name.clone(),
                     price_scale,
                     quantity_scale,
@@ -267,7 +279,7 @@ impl IPerps for ExtendedClient {
         let quantity_scale = market.asset_precision.max(0);
 
         Ok(Market {
-            symbol: Self::normalize_symbol(&market.name),
+            symbol: self.normalize_symbol(&market.name),
             contract: market.name.clone(),
             price_scale,
             quantity_scale,
@@ -340,7 +352,7 @@ impl IPerps for ExtendedClient {
         };
 
         Ok(Ticker {
-            symbol: symbol.to_string(),
+            symbol: self.normalize_symbol(symbol),
             last_price,
             mark_price,
             index_price,
@@ -386,12 +398,13 @@ impl IPerps for ExtendedClient {
             manager.subscribe(exchange_symbol.clone()).await?;
 
             // Get orderbook (auto cache + fallback)
-            let orderbook = manager
+            let mut orderbook = manager
                 .get_orderbook(&exchange_symbol, depth, || async move {
                     // REST fallback returns (Orderbook, lastUpdateId) for snapshot initialization
                     Err(anyhow!("REST fallback not set"))
                 })
                 .await?;
+            orderbook.symbol = self.normalize_symbol(symbol);
 
             return Ok(MultiResolutionOrderbook::from_single(orderbook));
         }
@@ -425,7 +438,7 @@ impl IPerps for ExtendedClient {
             .collect::<Result<Vec<_>>>()?;
 
         let single_orderbook = Orderbook {
-            symbol: symbol.to_string(),
+            symbol: self.normalize_symbol(symbol),
             bids,
             asks,
             timestamp: Utc::now(),
@@ -448,7 +461,7 @@ impl IPerps for ExtendedClient {
             .map(|t| {
                 Ok(Trade {
                     id: t.id.to_string(),
-                    symbol: symbol.to_string(),
+                    symbol: self.normalize_symbol(symbol),
                     price: Decimal::from_str(&t.price)?,
                     quantity: Decimal::from_str(&t.quantity)?,
                     side: if t.side == "BUY" {
@@ -482,7 +495,7 @@ impl IPerps for ExtendedClient {
         };
 
         Ok(FundingRate {
-            symbol: symbol.to_string(),
+            symbol: self.normalize_symbol(symbol),
             funding_rate,
             funding_time: Utc::now(), // Current time as Extended doesn't provide last funding time
             predicted_rate: Decimal::ZERO, // Not provided
@@ -510,7 +523,7 @@ impl IPerps for ExtendedClient {
         let ticker = self.get_ticker(symbol).await?;
 
         Ok(OpenInterest {
-            symbol: symbol.to_string(),
+            symbol: self.normalize_symbol(symbol),
             open_interest: ticker.open_interest,
             open_value: ticker.open_interest_notional,
             timestamp: Utc::now(),
@@ -576,7 +589,7 @@ impl IPerps for ExtendedClient {
                 let close_time = open_time + chrono::Duration::seconds(interval_seconds);
 
                 Ok(Kline {
-                    symbol: symbol.to_string(),
+                    symbol: self.normalize_symbol(symbol),
                     interval: interval.to_string(),
                     open_time,
                     close_time,
@@ -594,10 +607,11 @@ impl IPerps for ExtendedClient {
     }
 
     async fn is_supported(&self, symbol: &str) -> Result<bool> {
-        // Cache stores global symbols (e.g., "BTC"), so normalize input first
-        let normalized_symbol = Self::normalize_symbol(symbol);
         self.ensure_cache_initialized().await?;
-        Ok(self.symbols_cache.contains(&normalized_symbol).await)
+        Ok(self
+            .symbols_cache
+            .contains(&self.normalize_symbol(symbol))
+            .await)
     }
 
     async fn get_market_stats(&self, _symbol: &str) -> Result<MarketStats> {
@@ -633,8 +647,8 @@ mod tests {
 
     #[test]
     fn test_normalize_symbol() {
-        assert_eq!(ExtendedClient::normalize_symbol("BTC-USD"), "BTC");
-        assert_eq!(ExtendedClient::normalize_symbol("ETH-USD"), "ETH");
-        assert_eq!(ExtendedClient::normalize_symbol("BTC"), "BTC");
+        assert_eq!(ExtendedClient::to_global_symbol("BTC-USD"), "BTC");
+        assert_eq!(ExtendedClient::to_global_symbol("ETH-USD"), "ETH");
+        assert_eq!(ExtendedClient::to_global_symbol("BTC"), "BTC");
     }
 }

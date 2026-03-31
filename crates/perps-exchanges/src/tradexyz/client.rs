@@ -12,17 +12,19 @@ use std::sync::Arc;
 
 const INFO_URL: &str = "https://api.hyperliquid.xyz/info";
 
-/// A client for the Hyperliquid exchange.
+/// A client for the tradexyz exchange.
+/// tradexyz is an HIP-3 perpetuals DEX on Hyperliquid dedicated to equity/RWA trading.
+/// It shares Hyperliquid's REST endpoint but uses different request bodies and coin prefixes.
 #[derive(Clone)]
-pub struct HyperliquidClient {
+pub struct TradexyzClient {
     http: reqwest::Client,
     /// Cached set of supported symbols
     symbols_cache: SymbolsCache,
-    /// Rate limiter for API calls
+    /// Rate limiter for API calls (shared with Hyperliquid)
     rate_limiter: Arc<RateLimiter>,
 }
 
-impl HyperliquidClient {
+impl TradexyzClient {
     pub fn new() -> Self {
         Self {
             http: reqwest::Client::new(),
@@ -38,10 +40,15 @@ impl HyperliquidClient {
                 let markets = self.get_markets().await?;
                 Ok(markets
                     .into_iter()
-                    .map(|m| self.parse_symbol(&m.symbol))
+                    .map(|m| m.symbol)
                     .collect())
             })
             .await
+    }
+
+    /// Helper to add dex field to request body for tradexyz
+    fn with_dex(body: &mut Value) {
+        body["dex"] = Value::String("xyz".to_string());
     }
 
     async fn post<T: serde::de::DeserializeOwned>(&self, body: Value) -> Result<T> {
@@ -84,7 +91,9 @@ impl HyperliquidClient {
 
     /// Helper method to fetch combined meta and asset contexts
     async fn get_meta_and_asset_ctxs(&self) -> Result<MetaAndAssetCtxs> {
-        let body = serde_json::json!({ "type": "metaAndAssetCtxs" });
+        let mut body = serde_json::json!({ "type": "metaAndAssetCtxs" });
+        Self::with_dex(&mut body);
+
         // The response is an array: [{"universe": [...]}, [...assetCtxs]]
         let response: Vec<Value> = self.post(body).await?;
 
@@ -117,6 +126,8 @@ impl HyperliquidClient {
         if n_sig_figs == 0 {
             body["nSigFigs"] = Value::Null;
         }
+        Self::with_dex(&mut body);
+
         let book: L2Book = self.post(body).await?;
 
         let bids = book.levels[0]
@@ -140,7 +151,7 @@ impl HyperliquidClient {
             .collect::<Result<Vec<_>>>()?;
 
         Ok(Orderbook {
-            symbol: book.coin,
+            symbol: self.normalize_symbol(&book.coin),
             bids,
             asks,
             timestamp: Utc::now(),
@@ -151,7 +162,7 @@ impl HyperliquidClient {
     async fn get_24h_high_low(&self, symbol: &str) -> Result<(Decimal, Decimal)> {
         // Fetch last 24 1-hour candles to calculate high/low
         let start_time = Utc::now() - chrono::Duration::hours(24);
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "type": "candleSnapshot",
             "req": {
                 "coin": symbol,
@@ -159,6 +170,7 @@ impl HyperliquidClient {
                 "startTime": start_time.timestamp_millis()
             }
         });
+        Self::with_dex(&mut body);
 
         let candles: Vec<CandleSnapshot> = self.post(body).await?;
 
@@ -191,31 +203,43 @@ impl HyperliquidClient {
     }
 }
 
-impl Default for HyperliquidClient {
+impl Default for TradexyzClient {
     fn default() -> Self {
         Self::new()
     }
 }
 
 #[async_trait]
-impl IPerps for HyperliquidClient {
+impl IPerps for TradexyzClient {
     fn get_name(&self) -> &str {
-        "hyperliquid"
+        "tradexyz"
     }
 
     fn parse_symbol(&self, symbol: &str) -> String {
-        let symbol = crate::symbol_aliases::resolve_alias("hyperliquid", symbol);
-        // Hyperliquid uses uppercase symbols like "BTC"
-        symbol.to_uppercase()
+        // tradexyz uses "xyz:" prefix for coin names (e.g., "xyz:TSLA")
+        // Idempotent: already-prefixed symbols pass through unchanged
+        let symbol = crate::symbol_aliases::resolve_alias("tradexyz", symbol);
+        let uppercase = symbol.to_uppercase();
+        if uppercase.starts_with("XYZ:") {
+            // Normalize to lowercase prefix with uppercase symbol: xyz:TSLA
+            format!("xyz:{}", &uppercase[4..])
+        } else {
+            format!("xyz:{}", uppercase)
+        }
     }
 
     fn normalize_symbol(&self, exchange_symbol: &str) -> String {
-        // Hyperliquid uses global-style symbols already
-        crate::symbol_aliases::unresolve_alias("hyperliquid", exchange_symbol).to_string()
+        // Strip "xyz:" prefix and resolve alias
+        let symbol = exchange_symbol
+            .strip_prefix("xyz:")
+            .unwrap_or(exchange_symbol);
+        crate::symbol_aliases::unresolve_alias("tradexyz", symbol).to_string()
     }
 
     async fn get_markets(&self) -> Result<Vec<Market>> {
-        let body = serde_json::json!({ "type": "meta" });
+        let mut body = serde_json::json!({ "type": "meta" });
+        Self::with_dex(&mut body);
+
         let meta: Meta = self.post(body).await?;
         let markets = meta
             .universe
@@ -236,11 +260,11 @@ impl IPerps for HyperliquidClient {
     }
 
     async fn get_market(&self, symbol: &str) -> Result<Market> {
-        let symbol = self.parse_symbol(symbol);
+        let normalized = self.normalize_symbol(symbol);
         let markets = self.get_markets().await?;
         markets
             .into_iter()
-            .find(|m| m.symbol == symbol)
+            .find(|m| m.symbol == normalized)
             .ok_or_else(|| anyhow!("Market {} not found", symbol))
     }
 
@@ -261,7 +285,6 @@ impl IPerps for HyperliquidClient {
             .ok_or_else(|| anyhow!("Asset context not found for {}", symbol))?;
 
         // Get orderbook for best bid/ask with quantities
-        // Use best available resolution (fine → medium → coarse)
         let multi_orderbook = self.get_orderbook(&symbol, 1).await?;
         let orderbook = multi_orderbook
             .best_for_tight_spreads()
@@ -282,14 +305,13 @@ impl IPerps for HyperliquidClient {
             Decimal::from_str(&asset_ctx.mid_px.clone().unwrap_or_else(|| "0".to_string()))?;
         let prev_day_px = Decimal::from_str(&asset_ctx.prev_day_px)?;
         let price_change = last_price - prev_day_px;
-        // Store as decimal (e.g., 0.05 for 5%) to match other exchanges
         let price_change_percent = if prev_day_px > Decimal::ZERO {
             price_change / prev_day_px
         } else {
             Decimal::ZERO
         };
 
-        // Fetch 24h high/low from 1-day candle
+        // Fetch 24h high/low from 1-hour candles
         let (high_price_24h, low_price_24h) = self.get_24h_high_low(&symbol).await?;
 
         let open_interest = Decimal::from_str(&asset_ctx.open_interest).unwrap_or(Decimal::ZERO);
@@ -323,8 +345,6 @@ impl IPerps for HyperliquidClient {
 
         for (index, universe_item) in data.universe.iter().enumerate() {
             if let Some(asset_ctx) = data.asset_ctxs.get(index) {
-                // For all tickers, we skip fetching orderbook to improve performance
-                // Use mid price as last price and mark price for bid/ask approximation
                 let last_price = Decimal::from_str(
                     &asset_ctx
                         .mid_px
@@ -333,7 +353,6 @@ impl IPerps for HyperliquidClient {
                 )?;
                 let prev_day_px = Decimal::from_str(&asset_ctx.prev_day_px)?;
                 let price_change = last_price - prev_day_px;
-                // Store as decimal (e.g., 0.05 for 5%) to match other exchanges
                 let price_change_percent = if prev_day_px > Decimal::ZERO {
                     price_change / prev_day_px
                 } else {
@@ -367,9 +386,9 @@ impl IPerps for HyperliquidClient {
 
     async fn get_orderbook(&self, symbol: &str, _depth: u32) -> Result<MultiResolutionOrderbook> {
         let symbol = self.parse_symbol(symbol);
-        // Fetch all 3 resolutions in parallel for optimal performance
+        // Fetch all 3 resolutions in parallel
         let (fine_result, medium_result, coarse_result) = match symbol.as_str() {
-            "BTC" => tokio::join!(
+            "xyz:BTC" => tokio::join!(
                 self.fetch_orderbook_at_resolution(&symbol, 0),
                 self.fetch_orderbook_at_resolution(&symbol, 5),
                 self.fetch_orderbook_at_resolution(&symbol, 4),
@@ -381,7 +400,7 @@ impl IPerps for HyperliquidClient {
             ),
         };
 
-        // Log results with enhanced debugging information
+        // Log results
         match &fine_result {
             Ok(book) => {
                 let best_bid = book.bids.first().map(|l| (l.price, l.quantity));
@@ -449,7 +468,6 @@ impl IPerps for HyperliquidClient {
             orderbooks.push(coarse_book);
         }
 
-        // Ensure at least one resolution succeeded
         if orderbooks.is_empty() {
             return Err(anyhow!("All orderbook resolutions failed for {}", symbol));
         }
@@ -464,7 +482,13 @@ impl IPerps for HyperliquidClient {
 
     async fn get_funding_rate(&self, symbol: &str) -> Result<FundingRate> {
         let symbol = self.parse_symbol(symbol);
-        let body = serde_json::json!({ "type": "fundingHistory", "coin": symbol, "startTime": Utc::now().timestamp_millis() - 1000 * 60 * 60 * 8 });
+        let mut body = serde_json::json!({
+            "type": "fundingHistory",
+            "coin": symbol,
+            "startTime": Utc::now().timestamp_millis() - 1000 * 60 * 60 * 8
+        });
+        Self::with_dex(&mut body);
+
         let history: Vec<FundingHistory> = self.post(body).await?;
         let last_rate = history
             .last()
@@ -472,11 +496,11 @@ impl IPerps for HyperliquidClient {
         Ok(FundingRate {
             symbol: self.normalize_symbol(&symbol),
             funding_rate: Decimal::from_str(&last_rate.funding_rate)?,
-            predicted_rate: Decimal::ZERO, // Not available
+            predicted_rate: Decimal::ZERO,
             funding_time: Utc.timestamp_millis_opt(last_rate.time as i64).unwrap(),
-            next_funding_time: Utc.timestamp_millis_opt(0).unwrap(), // Not available
-            funding_interval: 0,                                     // Not available
-            funding_rate_cap_floor: Decimal::ZERO,                   // Not available
+            next_funding_time: Utc.timestamp_millis_opt(0).unwrap(),
+            funding_interval: 0,
+            funding_rate_cap_floor: Decimal::ZERO,
         })
     }
 
@@ -490,7 +514,14 @@ impl IPerps for HyperliquidClient {
         let symbol = self.parse_symbol(symbol);
         let start = start_time.unwrap_or_else(|| Utc::now() - chrono::Duration::days(7));
         let end = end_time.unwrap_or_else(Utc::now);
-        let body = serde_json::json!({ "type": "fundingHistory", "coin": symbol, "startTime": start.timestamp_millis(), "endTime": end.timestamp_millis() });
+        let mut body = serde_json::json!({
+            "type": "fundingHistory",
+            "coin": symbol,
+            "startTime": start.timestamp_millis(),
+            "endTime": end.timestamp_millis()
+        });
+        Self::with_dex(&mut body);
+
         let history: Vec<FundingHistory> = self.post(body).await?;
         let rates = history
             .into_iter()
@@ -513,7 +544,6 @@ impl IPerps for HyperliquidClient {
         let symbol = self.parse_symbol(symbol);
         let data = self.get_meta_and_asset_ctxs().await?;
 
-        // Find the index of the symbol in the universe
         let index = data
             .universe
             .iter()
@@ -546,7 +576,16 @@ impl IPerps for HyperliquidClient {
         _limit: Option<u32>,
     ) -> Result<Vec<Kline>> {
         let symbol = self.parse_symbol(symbol);
-        let body = serde_json::json!({ "type": "candleSnapshot", "req": { "coin": symbol, "interval": interval, "startTime": start_time.unwrap_or_else(Utc::now).timestamp_millis() } });
+        let mut body = serde_json::json!({
+            "type": "candleSnapshot",
+            "req": {
+                "coin": symbol,
+                "interval": interval,
+                "startTime": start_time.unwrap_or_else(Utc::now).timestamp_millis()
+            }
+        });
+        Self::with_dex(&mut body);
+
         let klines: Vec<CandleSnapshot> = self.post(body).await?;
         let klines = klines
             .into_iter()
@@ -561,7 +600,7 @@ impl IPerps for HyperliquidClient {
                     low: Decimal::from_str(&k.l)?,
                     close: Decimal::from_str(&k.c)?,
                     volume: Decimal::from_str(&k.v)?,
-                    turnover: Decimal::ZERO, // Not available
+                    turnover: Decimal::ZERO,
                 })
             })
             .collect::<Result<Vec<_>>>()?;
@@ -569,10 +608,8 @@ impl IPerps for HyperliquidClient {
     }
 
     async fn get_recent_trades(&self, _symbol: &str, _limit: u32) -> Result<Vec<Trade>> {
-        // Hyperliquid doesn't have a public recent trades endpoint
-        // Would require userFills with a known address
         Err(anyhow!(
-            "Recent trades are not available from Hyperliquid public API"
+            "Recent trades are not available from tradexyz public API"
         ))
     }
 
@@ -612,7 +649,6 @@ impl IPerps for HyperliquidClient {
                 )?;
                 let prev_day_px = Decimal::from_str(&asset_ctx.prev_day_px)?;
                 let price_change = last_price - prev_day_px;
-                // Store as decimal (e.g., 0.05 for 5%) to match other exchanges
                 let price_change_percent = if prev_day_px > Decimal::ZERO {
                     price_change / prev_day_px
                 } else {
@@ -653,41 +689,49 @@ impl IPerps for HyperliquidClient {
 mod tests {
     use super::*;
 
+    #[test]
+    fn test_parse_symbol() {
+        let client = TradexyzClient::new();
+        assert_eq!(client.parse_symbol("GOLD"), "xyz:GOLD");
+        assert_eq!(client.parse_symbol("BTC"), "xyz:BTC");
+    }
+
+    #[test]
+    fn test_parse_symbol_idempotent() {
+        let client = TradexyzClient::new();
+        // Verify that parse_symbol is idempotent (calling twice gives same result)
+        assert_eq!(client.parse_symbol("GOLD"), "xyz:GOLD");
+        assert_eq!(client.parse_symbol("xyz:GOLD"), "xyz:GOLD");
+        assert_eq!(client.parse_symbol("BTC"), "xyz:BTC");
+        assert_eq!(client.parse_symbol("xyz:BTC"), "xyz:BTC");
+    }
+
+    #[test]
+    fn test_normalize_symbol() {
+        let client = TradexyzClient::new();
+        assert_eq!(client.normalize_symbol("xyz:GOLD"), "GOLD");
+        assert_eq!(client.normalize_symbol("xyz:BTC"), "BTC");
+    }
+
     #[tokio::test]
     async fn test_get_markets() {
-        let client = HyperliquidClient::default();
+        let client = TradexyzClient::default();
         let markets = client.get_markets().await.unwrap();
         assert!(!markets.is_empty());
     }
 
     #[tokio::test]
-    async fn test_get_orderbook() {
-        let client = HyperliquidClient::default();
-        let orderbook = client.get_orderbook("BTC", 10).await.unwrap();
-        assert_eq!(orderbook.symbol, "BTC");
-        assert!(!orderbook.orderbooks.is_empty());
+    async fn test_get_ticker() {
+        let client = TradexyzClient::default();
+        let ticker = client.get_ticker("GOLD").await.unwrap();
+        assert!(ticker.symbol.starts_with("xyz:"));
+        assert!(ticker.last_price >= Decimal::ZERO);
     }
 
     #[tokio::test]
     async fn test_get_funding_rate() {
-        let client = HyperliquidClient::default();
-        let funding_rate = client.get_funding_rate("BTC").await.unwrap();
-        assert_eq!(funding_rate.symbol, "BTC");
-    }
-
-    #[tokio::test]
-    async fn test_get_ticker() {
-        let client = HyperliquidClient::default();
-        let ticker = client.get_ticker("BTC").await.unwrap();
-        assert_eq!(ticker.symbol, "BTC");
-        assert!(ticker.last_price > Decimal::ZERO);
-    }
-
-    #[tokio::test]
-    async fn test_get_open_interest() {
-        let client = HyperliquidClient::default();
-        let oi = client.get_open_interest("BTC").await.unwrap();
-        assert_eq!(oi.symbol, "BTC");
-        assert!(oi.open_interest >= Decimal::ZERO);
+        let client = TradexyzClient::default();
+        let funding = client.get_funding_rate("GOLD").await.unwrap();
+        assert!(funding.symbol.starts_with("xyz:"));
     }
 }

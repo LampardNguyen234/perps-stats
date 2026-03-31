@@ -221,6 +221,7 @@ impl IPerps for AsterClient {
     }
 
     fn parse_symbol(&self, symbol: &str) -> String {
+        let symbol = crate::symbol_aliases::resolve_alias("aster", symbol);
         // Aster uses Binance-compatible format: BTC -> BTCUSDT
         // Idempotent: if already in exchange format (ends with USDT), return as-is
         let upper = symbol.to_uppercase();
@@ -229,6 +230,13 @@ impl IPerps for AsterClient {
         } else {
             format!("{}USDT", upper)
         }
+    }
+
+    fn normalize_symbol(&self, exchange_symbol: &str) -> String {
+        // "BTCUSDT" -> "BTC", "COPPERUSDT" -> "COPPER" -> unresolve -> "XCU"
+        let upper = exchange_symbol.to_uppercase();
+        let base = upper.strip_suffix("USDT").unwrap_or(&upper);
+        crate::symbol_aliases::unresolve_alias("aster", base).to_string()
     }
 
     async fn get_markets(&self) -> Result<Vec<Market>> {
@@ -242,7 +250,7 @@ impl IPerps for AsterClient {
                 let qty_step = Decimal::new(1, s.quantity_precision as u32);
 
                 Market {
-                    symbol: s.symbol.clone(),
+                    symbol: self.normalize_symbol(&s.symbol),
                     contract: s.symbol,
                     price_scale: s.price_precision,
                     quantity_scale: s.quantity_precision,
@@ -260,9 +268,10 @@ impl IPerps for AsterClient {
 
     async fn get_market(&self, symbol: &str) -> Result<Market> {
         let markets = self.get_markets().await?;
+        let normalized = self.normalize_symbol(symbol);
         markets
             .into_iter()
-            .find(|m| m.symbol == symbol)
+            .find(|m| m.symbol == normalized)
             .ok_or_else(|| anyhow!("Market {} not found", symbol))
     }
 
@@ -295,7 +304,7 @@ impl IPerps for AsterClient {
         let index_price = Decimal::from_str(&mark_price_data.index_price)?;
 
         Ok(Ticker {
-            symbol: ticker.symbol,
+            symbol: self.normalize_symbol(&ticker.symbol),
             last_price,
             mark_price,
             index_price,
@@ -396,6 +405,8 @@ impl IPerps for AsterClient {
     async fn get_orderbook(&self, symbol: &str, depth: u32) -> Result<MultiResolutionOrderbook> {
         let parsed_symbol = self.parse_symbol(symbol);
 
+        let normalized = self.normalize_symbol(symbol);
+
         // Check if StreamManager is available
         if let Some(ref manager) = self.stream_manager {
             // Subscribe to symbol (idempotent - no-op if already subscribed)
@@ -405,7 +416,7 @@ impl IPerps for AsterClient {
             // StreamManager handles all complexity: caching, staleness checks, WebSocket streaming
             let client_clone = self.clone();
             let symbol_clone = parsed_symbol.clone();
-            let orderbook = manager
+            let mut orderbook = manager
                 .get_orderbook(&parsed_symbol, depth, || async move {
                     // REST API fallback closure - returns (Orderbook, lastUpdateId) for snapshot initialization
                     client_clone
@@ -413,12 +424,14 @@ impl IPerps for AsterClient {
                         .await
                 })
                 .await?;
+            orderbook.symbol = normalized;
 
             return Ok(MultiResolutionOrderbook::from_single(orderbook));
         }
 
         // Fallback when StreamManager is not available: direct REST API call
-        let orderbook = self.fetch_orderbook_rest(&parsed_symbol, depth).await?;
+        let mut orderbook = self.fetch_orderbook_rest(&parsed_symbol, depth).await?;
+        orderbook.symbol = normalized;
         Ok(MultiResolutionOrderbook::from_single(orderbook))
     }
 
@@ -437,7 +450,7 @@ impl IPerps for AsterClient {
             .map(|t| {
                 Ok(Trade {
                     id: t.id.to_string(),
-                    symbol: symbol.to_string(),
+                    symbol: self.normalize_symbol(symbol),
                     price: Decimal::from_str(&t.price)?,
                     quantity: Decimal::from_str(&t.qty)?,
                     side: if t.is_buyer_maker {
@@ -468,7 +481,7 @@ impl IPerps for AsterClient {
             .ok_or_else(|| anyhow!("No funding rate data found for {}", symbol))?;
 
         Ok(FundingRate {
-            symbol: rate.symbol,
+            symbol: self.normalize_symbol(&rate.symbol),
             funding_rate: Decimal::from_str(&rate.funding_rate)?,
             funding_time: Utc.timestamp_millis_opt(rate.funding_time).unwrap(),
             predicted_rate: Decimal::ZERO,
@@ -504,7 +517,7 @@ impl IPerps for AsterClient {
             .into_iter()
             .map(|r| {
                 Ok(FundingRate {
-                    symbol: r.symbol.clone(),
+                    symbol: self.normalize_symbol(&r.symbol),
                     funding_rate: Decimal::from_str(&r.funding_rate)?,
                     funding_time: Utc.timestamp_millis_opt(r.funding_time).unwrap(),
                     predicted_rate: Decimal::ZERO,
@@ -525,7 +538,7 @@ impl IPerps for AsterClient {
             .await?;
 
         Ok(OpenInterest {
-            symbol: oi.symbol,
+            symbol: self.normalize_symbol(&oi.symbol),
             open_interest: Decimal::from_str(&oi.open_interest)?,
             open_value: Decimal::ZERO, // Calculate if price is available
             timestamp: Utc.timestamp_millis_opt(oi.time).unwrap(),
@@ -596,7 +609,7 @@ impl IPerps for AsterClient {
                 let quote_volume = Decimal::from_str(k[7].as_str()?).ok()?;
 
                 Some(Kline {
-                    symbol: symbol.to_string(),
+                    symbol: self.normalize_symbol(symbol),
                     interval: interval.to_string(),
                     open_time: Utc.timestamp_millis_opt(open_time).single()?,
                     close_time: Utc.timestamp_millis_opt(close_time).single()?,
@@ -615,7 +628,10 @@ impl IPerps for AsterClient {
 
     async fn is_supported(&self, symbol: &str) -> Result<bool> {
         self.ensure_cache_initialized().await?;
-        Ok(self.symbols_cache.contains(symbol).await)
+        Ok(self
+            .symbols_cache
+            .contains(&self.normalize_symbol(symbol))
+            .await)
     }
 
     async fn get_market_stats(&self, symbol: &str) -> Result<MarketStats> {
@@ -624,7 +640,7 @@ impl IPerps for AsterClient {
         let funding = self.get_funding_rate(symbol).await?;
 
         Ok(MarketStats {
-            symbol: symbol.to_string(),
+            symbol: self.normalize_symbol(symbol),
             last_price: ticker.last_price,
             mark_price: ticker.mark_price,
             index_price: ticker.index_price,
@@ -753,7 +769,7 @@ impl AsterClient {
         price_change_24h: Decimal,
     ) -> Result<Ticker> {
         Ok(Ticker {
-            symbol: ticker.symbol.clone(),
+            symbol: self.normalize_symbol(&ticker.symbol),
             last_price,
             mark_price: last_price, // Fallback to last price
             index_price: last_price,

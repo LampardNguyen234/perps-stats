@@ -348,8 +348,7 @@ impl PostgresRepository {
 
     /// Drop old partitions older than the specified number of days
     pub async fn cleanup_old_partitions(&self, retention_days: i64) -> anyhow::Result<usize> {
-        crate::partitions::drop_old_partitions(&self.pool, retention_days as i32)
-            .await
+        crate::partitions::drop_old_partitions(&self.pool, retention_days as i32).await
     }
 
     /// Get partition counts per table
@@ -447,7 +446,7 @@ impl Repository for PostgresRepository {
                 $16::numeric[], $17::numeric[], $18::timestamptz[]
             )
             ON CONFLICT DO NOTHING
-            "#
+            "#,
         )
         .bind(exchange_id)
         .bind(&symbols)
@@ -746,7 +745,8 @@ impl Repository for PostgresRepository {
         }
 
         // Resolve exchange_ids once per unique exchange name
-        let mut exchange_id_cache: std::collections::HashMap<String, i32> = std::collections::HashMap::new();
+        let mut exchange_id_cache: std::collections::HashMap<String, i32> =
+            std::collections::HashMap::new();
         for stat in depth_stats {
             if !exchange_id_cache.contains_key(&stat.exchange) {
                 let id = self.get_exchange_id(&stat.exchange).await?;
@@ -1659,7 +1659,7 @@ impl Repository for PostgresRepository {
                 $16::numeric[], $17::numeric[], $18::timestamptz[]
             )
             ON CONFLICT DO NOTHING
-            "#
+            "#,
         )
         .bind(&exchange_ids)
         .bind(&symbols)

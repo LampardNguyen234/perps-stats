@@ -1,0 +1,68 @@
+# Symbol alias map — maps global symbol names to exchange-specific base names.
+#
+# Use the lowercase factory exchange name as the section header.
+# Each entry: GLOBAL_NAME = "exchange_base_name"
+#
+# Example: gold is listed as "GOLD" on QFEX but as "XAU" elsewhere.
+# With the config below, passing "XAU" to any command will automatically
+# resolve to "GOLD" on QFEX and "XAU" on all other exchanges.
+#
+# Adding new tokens requires only editing this file — no code changes needed.
+
+[binance]
+XCU = "COPPER"
+
+[extended]
+NVDA = "NVDA_24_5"
+AAPL = "NVDA_24_5"
+GOOGL = "GOOG_24_5"
+META = "META_24_5"
+HOOD = "HOOD_24_5"
+TSLA = "TSLA_24_5"
+MSFT = "MSFT_24_5"
+INTC = "INTC_24_5"
+SNDK = "SNDK_24_5"
+NATGAS = "XNG"
+CL = "WTI"
+
+
+[gravity]
+XCU = "COPPER"
+
+[hotstuff]
+XAU = "GOLD"
+XAG = "SILVER"
+XCU = "COPPER"
+
+[kucoin]
+BTC = "XBT"
+XAU = "XAUT"
+XCU = "COPPER"
+
+[lighter]
+CL = "WTI"
+
+[nado]
+XAU = "XAUT"
+CL = "WTI"
+
+[pacifica]
+XCU = "COPPER"
+
+[paradex]
+XAU = "PAXG"
+
+[qfex]
+XAU = "GOLD"
+XAG = "SILVER"
+XCU = "COPPER"
+
+[tradexyz]
+XAU = "GOLD"
+XAG = "SILVER"
+XCU = "COPPER"
+
+
+
+
+

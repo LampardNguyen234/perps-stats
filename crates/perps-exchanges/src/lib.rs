@@ -14,6 +14,9 @@ pub mod nado;
 pub mod o1;
 pub mod pacifica;
 pub mod paradex;
+pub mod qfex;
+pub mod symbol_aliases;
+pub mod tradexyz;
 
 pub use aster::AsterClient;
 pub use binance::BinanceClient;
@@ -31,5 +34,8 @@ pub use nado::NadoClient;
 pub use o1::O1Client;
 pub use pacifica::PacificaClient;
 pub use paradex::ParadexClient;
+pub use qfex::QfexClient;
+pub use symbol_aliases::{init_aliases, resolve_alias, unresolve_alias};
+pub use tradexyz::TradexyzClient;
 
 pub use perps_core::IPerps;

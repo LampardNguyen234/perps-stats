@@ -312,7 +312,10 @@ mod tests {
     fn test_f64_to_decimal() {
         assert_eq!(f64_to_decimal(0.0), Decimal::ZERO);
         assert_eq!(f64_to_decimal(1.5), Decimal::from_str("1.5").unwrap());
-        assert_eq!(f64_to_decimal(0.00144), Decimal::from_str("0.00144").unwrap());
+        assert_eq!(
+            f64_to_decimal(0.00144),
+            Decimal::from_str("0.00144").unwrap()
+        );
         // NaN should fall back to ZERO
         assert_eq!(f64_to_decimal(f64::NAN), Decimal::ZERO);
         assert_eq!(f64_to_decimal(f64::INFINITY), Decimal::ZERO);

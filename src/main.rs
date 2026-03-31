@@ -4,6 +4,7 @@ mod commands;
 use anyhow::Result;
 use clap::Parser;
 use cli::{Cli, Commands, DbCommands, StatsCommands};
+use perps_exchanges::init_aliases;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
@@ -25,6 +26,8 @@ async fn main() -> Result<()> {
         )
         .with(tracing_subscriber::fmt::layer())
         .init();
+
+    init_aliases(std::path::Path::new("symbol_aliases.toml"));
 
     let cli = Cli::parse();
 

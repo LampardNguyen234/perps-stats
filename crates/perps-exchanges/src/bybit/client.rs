@@ -95,13 +95,30 @@ impl IPerps for BybitClient {
     }
 
     fn parse_symbol(&self, symbol: &str) -> String {
-        // Convert BTC -> BTCUSDT, ETH -> ETHUSDT
-        format!("{}USDT", symbol.to_uppercase())
+        let symbol = crate::symbol_aliases::resolve_alias("bybit", symbol);
+        let upper = symbol.to_uppercase();
+
+        let suffixes = ["USDT", "USDC", "BTC", "ETH"];
+        for suffix in suffixes {
+            if upper.ends_with(suffix) && upper.len() > suffix.len() {
+                return upper;
+            }
+        }
+        format!("{}USDT", upper)
+    }
+
+    fn normalize_symbol(&self, exchange_symbol: &str) -> String {
+        let upper = exchange_symbol.to_uppercase();
+        let base = upper
+            .strip_suffix("USDT")
+            .or_else(|| upper.strip_suffix("USDC"))
+            .unwrap_or(&upper);
+        crate::symbol_aliases::unresolve_alias("bybit", base).to_string()
     }
 
     async fn get_markets(&self) -> Result<Vec<Market>> {
         let result: InstrumentsResult = self
-            .get("/v5/market/instruments-info?category=linear")
+            .get("/v5/market/instruments-info?category=linear&limit=1000")
             .await?;
 
         let markets = result
@@ -126,7 +143,7 @@ impl IPerps for BybitClient {
                 };
 
                 Market {
-                    symbol: i.symbol.clone(),
+                    symbol: self.normalize_symbol(&i.symbol),
                     contract: i.symbol,
                     price_scale,
                     quantity_scale,
@@ -146,6 +163,7 @@ impl IPerps for BybitClient {
     }
 
     async fn get_market(&self, symbol: &str) -> Result<Market> {
+        let symbol = self.parse_symbol(symbol);
         let result: InstrumentsResult = self
             .get(&format!(
                 "/v5/market/instruments-info?category=linear&symbol={}",
@@ -176,7 +194,7 @@ impl IPerps for BybitClient {
         };
 
         Ok(Market {
-            symbol: instrument.symbol.clone(),
+            symbol: self.normalize_symbol(&instrument.symbol),
             contract: instrument.symbol,
             price_scale,
             quantity_scale,
@@ -193,6 +211,7 @@ impl IPerps for BybitClient {
     }
 
     async fn get_orderbook(&self, symbol: &str, depth: u32) -> Result<MultiResolutionOrderbook> {
+        let symbol = self.parse_symbol(symbol);
         let result: OrderbookResult = self
             .get(&format!(
                 "/v5/market/orderbook?category=linear&symbol={}&limit={}",
@@ -223,7 +242,7 @@ impl IPerps for BybitClient {
             .collect::<Result<Vec<_>>>()?;
 
         let orderbook = Orderbook {
-            symbol: result.s,
+            symbol: self.normalize_symbol(&result.s),
             bids,
             asks,
             timestamp: Utc.timestamp_millis_opt(result.ts).unwrap(),
@@ -233,6 +252,7 @@ impl IPerps for BybitClient {
     }
 
     async fn get_recent_trades(&self, symbol: &str, limit: u32) -> Result<Vec<Trade>> {
+        let symbol = self.parse_symbol(symbol);
         let result: TradesResult = self
             .get(&format!(
                 "/v5/market/recent-trade?category=linear&symbol={}&limit={}",
@@ -246,7 +266,7 @@ impl IPerps for BybitClient {
             .map(|t| {
                 Ok(Trade {
                     id: t.exec_id,
-                    symbol: t.symbol.clone(),
+                    symbol: self.normalize_symbol(&t.symbol),
                     price: Decimal::from_str(&t.price)?,
                     quantity: Decimal::from_str(&t.size)?,
                     side: if t.side == "Buy" {
@@ -262,6 +282,7 @@ impl IPerps for BybitClient {
     }
 
     async fn get_funding_rate(&self, symbol: &str) -> Result<FundingRate> {
+        let symbol = self.parse_symbol(symbol);
         // Get current funding rate from ticker
         let result: TickersResult = self
             .get(&format!(
@@ -293,7 +314,7 @@ impl IPerps for BybitClient {
             .ok_or_else(|| anyhow!("Instrument {} not found", symbol))?;
 
         Ok(FundingRate {
-            symbol: symbol.to_string(),
+            symbol: self.normalize_symbol(&symbol),
             funding_rate,
             funding_time: Utc::now(),
             predicted_rate: Decimal::ZERO,
@@ -311,6 +332,7 @@ impl IPerps for BybitClient {
         end_time: Option<chrono::DateTime<chrono::Utc>>,
         limit: Option<u32>,
     ) -> Result<Vec<Kline>> {
+        let symbol = self.parse_symbol(symbol);
         let bybit_interval = match interval {
             "1m" => "1",
             "5m" => "5",
@@ -343,7 +365,7 @@ impl IPerps for BybitClient {
             .into_iter()
             .map(|k| {
                 Ok(Kline {
-                    symbol: symbol.to_string(),
+                    symbol: self.normalize_symbol(&symbol),
                     interval: interval.to_string(),
                     open_time: Utc.timestamp_millis_opt(k[0].parse::<i64>()?).unwrap(),
                     close_time: Utc
@@ -363,10 +385,14 @@ impl IPerps for BybitClient {
 
     async fn is_supported(&self, symbol: &str) -> Result<bool> {
         self.ensure_cache_initialized().await?;
-        Ok(self.symbols_cache.contains(symbol).await)
+        Ok(self
+            .symbols_cache
+            .contains(&self.normalize_symbol(symbol))
+            .await)
     }
 
     async fn get_ticker(&self, symbol: &str) -> Result<Ticker> {
+        let symbol = self.parse_symbol(symbol);
         let result: TickersResult = self
             .get(&format!(
                 "/v5/market/tickers?category=linear&symbol={}",
@@ -397,7 +423,7 @@ impl IPerps for BybitClient {
         let open_interest = Decimal::from_str(&ticker.open_interest)?;
 
         Ok(Ticker {
-            symbol: ticker.symbol,
+            symbol: self.normalize_symbol(&ticker.symbol),
             last_price,
             mark_price,
             index_price,
@@ -440,7 +466,7 @@ impl IPerps for BybitClient {
                 let low_price_24h = Decimal::from_str(&ticker.low_price_24h).ok()?;
 
                 Some(Ticker {
-                    symbol: ticker.symbol,
+                    symbol: self.normalize_symbol(&ticker.symbol),
                     last_price,
                     mark_price,
                     index_price,
@@ -470,6 +496,7 @@ impl IPerps for BybitClient {
         end_time: Option<chrono::DateTime<chrono::Utc>>,
         limit: Option<u32>,
     ) -> Result<Vec<FundingRate>> {
+        let symbol = self.parse_symbol(symbol);
         let mut endpoint = format!(
             "/v5/market/funding/history?category=linear&symbol={}",
             symbol
@@ -492,7 +519,7 @@ impl IPerps for BybitClient {
             .into_iter()
             .map(|fr| {
                 Ok(FundingRate {
-                    symbol: fr.symbol.clone(),
+                    symbol: self.normalize_symbol(&fr.symbol),
                     funding_rate: Decimal::from_str(&fr.funding_rate)?,
                     funding_time: Utc
                         .timestamp_millis_opt(fr.funding_rate_timestamp.parse::<i64>()?)
@@ -508,6 +535,7 @@ impl IPerps for BybitClient {
     }
 
     async fn get_open_interest(&self, symbol: &str) -> Result<OpenInterest> {
+        let symbol = self.parse_symbol(symbol);
         // Get from ticker which includes open interest
         let result: TickersResult = self
             .get(&format!(
@@ -526,7 +554,7 @@ impl IPerps for BybitClient {
         let open_value = Decimal::from_str(&ticker.open_interest_value)?;
 
         Ok(OpenInterest {
-            symbol: symbol.to_string(),
+            symbol: self.normalize_symbol(&symbol),
             open_interest,
             open_value,
             timestamp: Utc::now(),
@@ -539,7 +567,7 @@ impl IPerps for BybitClient {
         let funding = self.get_funding_rate(symbol).await?;
 
         Ok(MarketStats {
-            symbol: symbol.to_string(),
+            symbol: self.normalize_symbol(symbol),
             last_price: ticker.last_price,
             mark_price: ticker.mark_price,
             index_price: ticker.index_price,

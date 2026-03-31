@@ -11,6 +11,8 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::time::sleep;
 
+use super::common::get_supported_exchanges;
+
 #[derive(Args)]
 pub struct BackfillArgs {
     /// Exchanges to backfill from (comma-separated). Defaults to all: aster,binance,bybit,extended,gravity,hyperliquid,kucoin,lighter,nado,pacifica,paradex
@@ -417,22 +419,7 @@ pub async fn execute(args: BackfillArgs) -> Result<()> {
     tracing::info!("Symbols: {:?}", args.symbols);
 
     // Validate exchanges
-    let supported_exchanges = vec![
-        "01",
-        "aster",
-        "binance",
-        "extended",
-        "gravity",
-        "hibachi",
-        "hotstuff",
-        "hyperliquid",
-        "bybit",
-        "kucoin",
-        "lighter",
-        "nado",
-        "pacifica",
-        "paradex",
-    ];
+    let supported_exchanges = get_supported_exchanges();
     for exchange in &exchanges_to_process {
         if !supported_exchanges.contains(&exchange.as_str()) {
             anyhow::bail!(
@@ -478,7 +465,7 @@ pub async fn execute(args: BackfillArgs) -> Result<()> {
     }
 
     // Initialize database once for all exchanges
-    tracing::info!("Connecting to database: {}", args.database_url);
+    tracing::info!("Connecting to database");
     let pool = PgPool::connect(&args.database_url).await?;
     let repository = Arc::new(Mutex::new(PostgresRepository::new(pool)));
 

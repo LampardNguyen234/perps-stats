@@ -42,6 +42,19 @@ impl HotstuffClient {
         }
     }
 
+    async fn ensure_cache_initialized(&self) -> Result<()> {
+        // Initialize cache with all instruments if not already cached
+        self.symbols_cache
+            .get_or_init(|| async {
+                let instruments = self.fetch_instruments().await?;
+                Ok(instruments
+                    .iter()
+                    .map(|i| self.parse_symbol(&i.name))
+                    .collect())
+            })
+            .await
+    }
+
     // ---- symbol conversion ----
 
     /// Convert a global symbol (e.g. "BTC") to Hotstuff format (e.g. "BTC-PERP").
@@ -209,7 +222,14 @@ impl IPerps for HotstuffClient {
 
     /// Convert global symbol to Hotstuff format: "BTC" → "BTC-PERP".
     fn parse_symbol(&self, symbol: &str) -> String {
-        Self::to_hotstuff_symbol(symbol)
+        Self::to_hotstuff_symbol(crate::symbol_aliases::resolve_alias("hotstuff", symbol))
+    }
+
+    fn normalize_symbol(&self, exchange_symbol: &str) -> String {
+        // "BTC-PERP" -> "BTC" -> unresolve alias
+        let upper = exchange_symbol.to_uppercase();
+        let base = upper.strip_suffix("-PERP").unwrap_or(&upper);
+        crate::symbol_aliases::unresolve_alias("hotstuff", base).to_string()
     }
 
     async fn get_markets(&self) -> Result<Vec<Market>> {
@@ -219,9 +239,7 @@ impl IPerps for HotstuffClient {
             .iter()
             .filter(|i| !i.delisted)
             .map(|i| {
-                // Strip "-PERP" suffix for the global symbol
-                let global = i.name.trim_end_matches("-PERP").to_string();
-                super::conversions::instrument_to_market(i, global)
+                super::conversions::instrument_to_market(i, self.normalize_symbol(&i.name))
             })
             .collect()
     }
@@ -235,7 +253,7 @@ impl IPerps for HotstuffClient {
             .find(|i| i.name == hotstuff_symbol)
             .ok_or_else(|| anyhow!("Market not found: {}", hotstuff_symbol))?;
 
-        super::conversions::instrument_to_market(inst, symbol.to_string())
+        super::conversions::instrument_to_market(inst, self.normalize_symbol(symbol))
     }
 
     async fn get_ticker(&self, symbol: &str) -> Result<Ticker> {
@@ -243,7 +261,7 @@ impl IPerps for HotstuffClient {
         tracing::debug!("Hotstuff: fetching ticker for {}", hotstuff_symbol);
 
         let ht = self.fetch_ticker(&hotstuff_symbol).await?;
-        super::conversions::ticker_to_ticker(&ht, symbol.to_string())
+        super::conversions::ticker_to_ticker(&ht, self.normalize_symbol(symbol))
     }
 
     async fn get_all_tickers(&self) -> Result<Vec<Ticker>> {
@@ -253,8 +271,7 @@ impl IPerps for HotstuffClient {
         let mut result = Vec::new();
 
         for ht in &tickers {
-            let global = ht.symbol.trim_end_matches("-PERP").to_string();
-            match super::conversions::ticker_to_ticker(ht, global) {
+            match super::conversions::ticker_to_ticker(ht, self.normalize_symbol(&ht.symbol)) {
                 Ok(t) => result.push(t),
                 Err(e) => tracing::warn!("Hotstuff: failed to convert ticker {}: {}", ht.symbol, e),
             }
@@ -281,7 +298,7 @@ impl IPerps for HotstuffClient {
         ob.bids.truncate(depth);
         ob.asks.truncate(depth);
 
-        let orderbook = super::conversions::orderbook_to_orderbook(ob, symbol.to_string())?;
+        let orderbook = super::conversions::orderbook_to_orderbook(ob, self.normalize_symbol(symbol))?;
         Ok(MultiResolutionOrderbook::from_single(orderbook))
     }
 
@@ -290,7 +307,7 @@ impl IPerps for HotstuffClient {
         tracing::debug!("Hotstuff: fetching funding rate for {}", hotstuff_symbol);
 
         let ht = self.fetch_ticker(&hotstuff_symbol).await?;
-        super::conversions::ticker_to_funding_rate(&ht, symbol.to_string())
+        super::conversions::ticker_to_funding_rate(&ht, self.normalize_symbol(symbol))
     }
 
     /// Hotstuff does not expose funding rate history via REST.
@@ -310,7 +327,7 @@ impl IPerps for HotstuffClient {
         tracing::debug!("Hotstuff: fetching open interest for {}", hotstuff_symbol);
 
         let ht = self.fetch_ticker(&hotstuff_symbol).await?;
-        super::conversions::ticker_to_open_interest(&ht, symbol.to_string())
+        super::conversions::ticker_to_open_interest(&ht, self.normalize_symbol(symbol))
     }
 
     async fn get_klines(
@@ -338,7 +355,11 @@ impl IPerps for HotstuffClient {
 
         tracing::debug!(
             "Hotstuff: fetching klines for {} (id={}) interval={} from={} to={}",
-            hotstuff_symbol, instrument_id, resolution, from_secs, to_ms
+            hotstuff_symbol,
+            instrument_id,
+            resolution,
+            from_secs,
+            to_ms
         );
 
         let klines: Vec<HotstuffKline> = self
@@ -357,7 +378,9 @@ impl IPerps for HotstuffClient {
         let interval_str = interval.to_string();
         let result: Vec<Kline> = klines
             .iter()
-            .map(|k| super::conversions::kline_to_kline(k, symbol.to_string(), interval_str.clone()))
+            .map(|k| {
+                super::conversions::kline_to_kline(k, self.normalize_symbol(symbol), interval_str.clone())
+            })
             .collect::<Result<Vec<_>>>()?;
 
         // Apply limit (take last N if more than requested)
@@ -393,7 +416,7 @@ impl IPerps for HotstuffClient {
 
         trades
             .into_iter()
-            .map(|t| super::conversions::trade_to_trade(t, symbol.to_string()))
+            .map(|t| super::conversions::trade_to_trade(t, self.normalize_symbol(symbol)))
             .collect()
     }
 
@@ -402,7 +425,7 @@ impl IPerps for HotstuffClient {
         tracing::debug!("Hotstuff: fetching market stats for {}", hotstuff_symbol);
 
         let ht = self.fetch_ticker(&hotstuff_symbol).await?;
-        super::conversions::ticker_to_market_stats(&ht, symbol.to_string())
+        super::conversions::ticker_to_market_stats(&ht, self.normalize_symbol(symbol))
     }
 
     async fn get_all_market_stats(&self) -> Result<Vec<MarketStats>> {
@@ -412,11 +435,14 @@ impl IPerps for HotstuffClient {
         let mut result = Vec::new();
 
         for ht in &tickers {
-            let global = ht.symbol.trim_end_matches("-PERP").to_string();
-            match super::conversions::ticker_to_market_stats(ht, global) {
+            match super::conversions::ticker_to_market_stats(ht, self.normalize_symbol(&ht.symbol)) {
                 Ok(s) => result.push(s),
                 Err(e) => {
-                    tracing::warn!("Hotstuff: failed to convert market stats {}: {}", ht.symbol, e)
+                    tracing::warn!(
+                        "Hotstuff: failed to convert market stats {}: {}",
+                        ht.symbol,
+                        e
+                    )
                 }
             }
         }
@@ -425,16 +451,11 @@ impl IPerps for HotstuffClient {
     }
 
     async fn is_supported(&self, symbol: &str) -> Result<bool> {
-        let hotstuff_symbol = self.parse_symbol(symbol);
-
-        self.symbols_cache
-            .get_or_init(|| async {
-                let instruments = self.fetch_instruments().await?;
-                Ok(instruments.iter().map(|i| i.name.clone()).collect())
-            })
-            .await?;
-
-        Ok(self.symbols_cache.contains(&hotstuff_symbol).await)
+        self.ensure_cache_initialized().await?;
+        Ok(self
+            .symbols_cache
+            .contains(&self.parse_symbol(symbol))
+            .await)
     }
 }
 

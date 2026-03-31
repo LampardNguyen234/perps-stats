@@ -8,8 +8,7 @@ use perps_core::*;
 use perps_core::{execute_with_retry, RetryConfig};
 use rust_decimal::Decimal;
 use std::sync::Arc;
-use tracing::log::trace;
-use tracing::warn;
+use tracing::{trace, warn};
 
 /// Binance Futures client implementing the IPerps trait
 pub struct BinanceClient {
@@ -375,7 +374,7 @@ impl BinanceClient {
         symbol: &str,
         depth: u32,
     ) -> anyhow::Result<(Orderbook, u64)> {
-        let binance_symbol = denormalize_symbol(symbol);
+        let binance_symbol = denormalize_symbol(&self.parse_symbol(symbol));
         let endpoint = format!("/fapi/v1/depth?symbol={}&limit={}", binance_symbol, depth);
         let data: serde_json::Value = self.get(&endpoint).await?;
 
@@ -594,6 +593,7 @@ impl IPerps for BinanceClient {
     }
 
     fn parse_symbol(&self, symbol: &str) -> String {
+        let symbol = crate::symbol_aliases::resolve_alias("binance", symbol);
         let upper_symbol = symbol.to_uppercase();
         if upper_symbol.contains('-') {
             // Assumes format "BASE-QUOTE"
@@ -607,6 +607,19 @@ impl IPerps for BinanceClient {
         }
     }
 
+    fn normalize_symbol(&self, exchange_symbol: &str) -> String {
+        // Handle both "BTC-USDT" (internal) and "BTCUSDT" (API) formats
+        let upper = exchange_symbol.to_uppercase();
+        let base = if let Some(s) = upper.strip_suffix("-USDT") {
+            s.to_string()
+        } else if let Some(s) = upper.strip_suffix("USDT") {
+            s.to_string()
+        } else {
+            upper
+        };
+        crate::symbol_aliases::unresolve_alias("binance", &base).to_string()
+    }
+
     async fn get_markets(&self) -> anyhow::Result<Vec<Market>> {
         let data: serde_json::Value = self.get("/fapi/v1/exchangeInfo").await?;
 
@@ -617,8 +630,10 @@ impl IPerps for BinanceClient {
         let mut markets = Vec::new();
         for symbol_info in symbols {
             // Include perpetual futures (both crypto and TradFi commodities like XAU, XAG)
-            if matches!(symbol_info["contractType"].as_str(), Some("PERPETUAL") | Some("TRADIFI_PERPETUAL"))
-                && symbol_info["status"].as_str() == Some("TRADING")
+            if matches!(
+                symbol_info["contractType"].as_str(),
+                Some("PERPETUAL") | Some("TRADIFI_PERPETUAL")
+            ) && symbol_info["status"].as_str() == Some("TRADING")
             {
                 match self.convert_exchange_info_to_market(symbol_info.clone()) {
                     Ok(market) => markets.push(market),
@@ -631,7 +646,7 @@ impl IPerps for BinanceClient {
     }
 
     async fn get_market(&self, symbol: &str) -> anyhow::Result<Market> {
-        let binance_symbol = denormalize_symbol(symbol);
+        let binance_symbol = denormalize_symbol(&self.parse_symbol(symbol));
         let data: serde_json::Value = self.get("/fapi/v1/exchangeInfo").await?;
 
         let symbols = data["symbols"]
@@ -648,7 +663,7 @@ impl IPerps for BinanceClient {
     }
 
     async fn get_ticker(&self, symbol: &str) -> anyhow::Result<Ticker> {
-        let binance_symbol = denormalize_symbol(symbol);
+        let binance_symbol = denormalize_symbol(&self.parse_symbol(symbol));
 
         // Fetch 24hr ticker data
         let ticker_endpoint = format!("/fapi/v1/ticker/24hr?symbol={}", binance_symbol);
@@ -751,7 +766,7 @@ impl IPerps for BinanceClient {
     ) -> anyhow::Result<MultiResolutionOrderbook> {
         // Check if StreamManager is available
         if let Some(ref manager) = self.stream_manager {
-            let binance_symbol = denormalize_symbol(symbol);
+            let binance_symbol = denormalize_symbol(&self.parse_symbol(symbol));
 
             // Subscribe (idempotent, auto-starts streaming)
             manager.subscribe(binance_symbol.clone()).await?;
@@ -772,7 +787,7 @@ impl IPerps for BinanceClient {
         }
 
         // Fallback when StreamManager is not available: direct REST API call
-        let binance_symbol = denormalize_symbol(symbol);
+        let binance_symbol = denormalize_symbol(&self.parse_symbol(symbol));
         let endpoint = format!("/fapi/v1/depth?symbol={}&limit={}", binance_symbol, depth);
         let data: serde_json::Value = self.get(&endpoint).await?;
         let orderbook = self.convert_orderbook(symbol, data)?;
@@ -780,7 +795,7 @@ impl IPerps for BinanceClient {
     }
 
     async fn get_funding_rate(&self, symbol: &str) -> anyhow::Result<FundingRate> {
-        let binance_symbol = denormalize_symbol(symbol);
+        let binance_symbol = denormalize_symbol(&self.parse_symbol(symbol));
         let endpoint = format!("/fapi/v1/premiumIndex?symbol={}", binance_symbol);
         let data: serde_json::Value = self.get(&endpoint).await?;
         self.convert_funding_rate(data)
@@ -793,7 +808,7 @@ impl IPerps for BinanceClient {
         end_time: Option<DateTime<Utc>>,
         limit: Option<u32>,
     ) -> anyhow::Result<Vec<FundingRate>> {
-        let binance_symbol = denormalize_symbol(symbol);
+        let binance_symbol = denormalize_symbol(&self.parse_symbol(symbol));
         let mut endpoint = format!("/fapi/v1/fundingRate?symbol={}", binance_symbol);
 
         if let Some(start) = start_time {
@@ -822,7 +837,7 @@ impl IPerps for BinanceClient {
     }
 
     async fn get_open_interest(&self, symbol: &str) -> anyhow::Result<OpenInterest> {
-        let binance_symbol = denormalize_symbol(symbol);
+        let binance_symbol = denormalize_symbol(&self.parse_symbol(symbol));
         let endpoint = format!("/fapi/v1/openInterest?symbol={}", binance_symbol);
         let data: serde_json::Value = self.get(&endpoint).await?;
 
@@ -852,7 +867,7 @@ impl IPerps for BinanceClient {
         end_time: Option<DateTime<Utc>>,
         limit: Option<u32>,
     ) -> anyhow::Result<Vec<Kline>> {
-        let binance_symbol = denormalize_symbol(symbol);
+        let binance_symbol = denormalize_symbol(&self.parse_symbol(symbol));
         let mut endpoint = format!(
             "/fapi/v1/klines?symbol={}&interval={}",
             binance_symbol, interval
@@ -885,7 +900,7 @@ impl IPerps for BinanceClient {
     }
 
     async fn get_recent_trades(&self, symbol: &str, limit: u32) -> anyhow::Result<Vec<Trade>> {
-        let binance_symbol = denormalize_symbol(symbol);
+        let binance_symbol = denormalize_symbol(&self.parse_symbol(symbol));
         let endpoint = format!("/fapi/v1/trades?symbol={}&limit={}", binance_symbol, limit);
         let data: serde_json::Value = self.get(&endpoint).await?;
 
@@ -959,6 +974,9 @@ impl IPerps for BinanceClient {
 
     async fn is_supported(&self, symbol: &str) -> anyhow::Result<bool> {
         self.ensure_cache_initialized().await?;
-        Ok(self.symbols_cache.contains(symbol).await)
+        Ok(self
+            .symbols_cache
+            .contains(&self.parse_symbol(symbol))
+            .await)
     }
 }

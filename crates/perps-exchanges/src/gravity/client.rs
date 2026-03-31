@@ -43,6 +43,31 @@ impl GravityClient {
         }
     }
 
+    async fn ensure_cache_initialized(&self) -> Result<()> {
+        // Initialize cache with all instruments if not already cached
+        self.symbols_cache
+            .get_or_init(|| async {
+                match self.fetch_all_instruments().await {
+                    Ok(instruments) => {
+                        let symbols: std::collections::HashSet<String> = instruments
+                            .iter()
+                            .map(|i| self.parse_symbol(&i.instrument))
+                            .collect();
+                        tracing::debug!("Cached {} Gravity instruments", symbols.len());
+                        Ok(symbols)
+                    }
+                    Err(err) => {
+                        tracing::error!(
+                            "Failed to fetch instruments from Gravity API for caching: {}",
+                            err
+                        );
+                        Err(err)
+                    }
+                }
+            })
+            .await
+    }
+
     /// Helper method to make rate-limited POST requests with retry
     async fn post<T: serde::de::DeserializeOwned>(
         &self,
@@ -282,9 +307,16 @@ impl IPerps for GravityClient {
     }
 
     fn parse_symbol(&self, symbol: &str) -> String {
-        // Convert global symbol to Gravity perpetual format
-        // E.g., "BTC" → "BTC_USDT_Perp"
-        format!("{}_USDT_Perp", symbol.to_uppercase())
+        let symbol = crate::symbol_aliases::resolve_alias("gravity", symbol);
+        // Delegate to idempotent denormalize_symbol — handles already-formatted inputs too
+        self.denormalize_symbol(symbol)
+    }
+
+    fn normalize_symbol(&self, exchange_symbol: &str) -> String {
+        // "BTC_USDT_Perp" -> "BTC" -> unresolve alias
+        let upper = exchange_symbol.to_uppercase();
+        let base = upper.split('_').next().unwrap_or(&upper);
+        crate::symbol_aliases::unresolve_alias("gravity", base).to_string()
     }
 
     async fn get_markets(&self) -> Result<Vec<Market>> {
@@ -295,7 +327,7 @@ impl IPerps for GravityClient {
         let markets: Result<Vec<_>> = gravity_instruments
             .into_iter()
             .map(|gi| {
-                let symbol = gi.instrument.clone();
+                let symbol = self.normalize_symbol(&gi.instrument);
                 gravity_market_to_market(gi, symbol)
             })
             .collect();
@@ -314,20 +346,20 @@ impl IPerps for GravityClient {
     }
 
     async fn get_market(&self, symbol: &str) -> Result<Market> {
-        let gravity_symbol = self.denormalize_symbol(symbol);
+        let gravity_symbol = self.parse_symbol(symbol);
         let instruments = self.fetch_all_instruments().await?;
 
         instruments
             .into_iter()
             .find(|i| i.instrument == gravity_symbol)
             .ok_or_else(|| anyhow::anyhow!("Market not found: {}", gravity_symbol))
-            .and_then(|gi| gravity_market_to_market(gi, symbol.to_string()))
+            .and_then(|gi| gravity_market_to_market(gi, self.normalize_symbol(symbol)))
     }
 
     async fn get_ticker(&self, symbol: &str) -> Result<Ticker> {
-        let gravity_symbol = self.denormalize_symbol(symbol);
+        let gravity_symbol = self.parse_symbol(symbol);
         let gravity_ticker = self.fetch_ticker(&gravity_symbol).await?;
-        gravity_ticker_to_ticker(gravity_ticker, symbol.to_string())
+        gravity_ticker_to_ticker(gravity_ticker, self.normalize_symbol(symbol))
     }
 
     async fn get_all_tickers(&self) -> Result<Vec<Ticker>> {
@@ -336,31 +368,31 @@ impl IPerps for GravityClient {
         gravity_tickers
             .into_iter()
             .map(|gt| {
-                // Extract symbol from Gravity format (e.g., "BTC_USDT_Perp" → "BTC")
-                let symbol = gt.instrument.split('_').next().unwrap_or("").to_string();
+                let symbol = self.normalize_symbol(&gt.instrument);
                 gravity_ticker_to_ticker(gt, symbol)
             })
             .collect()
     }
 
     async fn get_orderbook(&self, symbol: &str, depth: u32) -> Result<MultiResolutionOrderbook> {
-        let gravity_symbol = self.denormalize_symbol(symbol);
+        let gravity_symbol = self.parse_symbol(symbol);
         let gravity_orderbook = self.fetch_orderbook(&gravity_symbol, depth).await?;
-        let orderbook = gravity_orderbook_to_orderbook(gravity_orderbook, symbol.to_string())?;
+        let normalized = self.normalize_symbol(symbol);
+        let orderbook = gravity_orderbook_to_orderbook(gravity_orderbook, normalized.clone())?;
         let timestamp = orderbook.timestamp;
 
         // Wrap in MultiResolutionOrderbook (medium resolution for REST)
         Ok(MultiResolutionOrderbook {
-            symbol: symbol.to_string(),
+            symbol: normalized,
             timestamp,
             orderbooks: vec![orderbook],
         })
     }
 
     async fn get_funding_rate(&self, symbol: &str) -> Result<FundingRate> {
-        let gravity_symbol = self.denormalize_symbol(symbol);
+        let gravity_symbol = self.parse_symbol(symbol);
         let gravity_funding = self.fetch_funding_rate(&gravity_symbol).await?;
-        gravity_funding_rate_to_funding_rate(gravity_funding, symbol.to_string())
+        gravity_funding_rate_to_funding_rate(gravity_funding, self.normalize_symbol(symbol))
     }
 
     async fn get_funding_rate_history(
@@ -378,9 +410,9 @@ impl IPerps for GravityClient {
     }
 
     async fn get_open_interest(&self, symbol: &str) -> Result<OpenInterest> {
-        let gravity_symbol = self.denormalize_symbol(symbol);
+        let gravity_symbol = self.parse_symbol(symbol);
         let gravity_oi = self.fetch_open_interest(&gravity_symbol).await?;
-        gravity_open_interest_to_open_interest(gravity_oi, symbol.to_string())
+        gravity_open_interest_to_open_interest(gravity_oi, self.normalize_symbol(symbol))
     }
 
     async fn get_klines(
@@ -401,22 +433,24 @@ impl IPerps for GravityClient {
             );
         }
 
-        let gravity_symbol = self.denormalize_symbol(symbol);
+        let gravity_symbol = self.parse_symbol(symbol);
         let gravity_klines = self.fetch_klines(&gravity_symbol, interval, limit).await?;
 
+        let normalized = self.normalize_symbol(symbol);
         gravity_klines
             .into_iter()
-            .map(|gk| gravity_kline_to_kline(gk, symbol.to_string()))
+            .map(|gk| gravity_kline_to_kline(gk, normalized.clone()))
             .collect()
     }
 
     async fn get_recent_trades(&self, symbol: &str, limit: u32) -> Result<Vec<Trade>> {
-        let gravity_symbol = self.denormalize_symbol(symbol);
+        let gravity_symbol = self.parse_symbol(symbol);
         let gravity_trades = self.fetch_trades(&gravity_symbol, Some(limit)).await?;
 
+        let normalized = self.normalize_symbol(symbol);
         gravity_trades
             .into_iter()
-            .map(|gt| gravity_trade_to_trade(gt, symbol.to_string()))
+            .map(|gt| gravity_trade_to_trade(gt, normalized.clone()))
             .collect()
     }
 
@@ -481,52 +515,11 @@ impl IPerps for GravityClient {
     }
 
     async fn is_supported(&self, symbol: &str) -> Result<bool> {
-        // Normalize symbol to Gravity format (e.g., "BTC" or "BTC_USDT_Perp" both become "BTC_USDT_Perp")
-        let normalized_symbol = self.denormalize_symbol(symbol);
-        tracing::debug!(
-            "Checking if symbol {} (normalized to {}) is supported on Gravity",
-            symbol,
-            normalized_symbol
-        );
-
-        // Initialize cache with all instruments if not already cached
-        self.symbols_cache
-            .get_or_init(|| async {
-                match self.fetch_all_instruments().await {
-                    Ok(instruments) => {
-                        let symbols: std::collections::HashSet<String> =
-                            instruments.iter().map(|i| i.instrument.clone()).collect();
-                        tracing::debug!("Cached {} Gravity instruments", symbols.len());
-                        Ok(symbols)
-                    }
-                    Err(err) => {
-                        tracing::error!(
-                            "Failed to fetch instruments from Gravity API for caching: {}",
-                            err
-                        );
-                        Err(err)
-                    }
-                }
-            })
-            .await?;
-
-        // Check if normalized symbol is in cache
-        let is_cached = self.symbols_cache.contains(&normalized_symbol).await;
-        if is_cached {
-            tracing::debug!(
-                "✓ Symbol {} (normalized: {}) is supported on Gravity (from cache)",
-                symbol,
-                normalized_symbol
-            );
-            Ok(true)
-        } else {
-            tracing::warn!(
-                "✗ Symbol {} (normalized: {}) not found in Gravity cache",
-                symbol,
-                normalized_symbol
-            );
-            Ok(false)
-        }
+        self.ensure_cache_initialized().await?;
+        Ok(self
+            .symbols_cache
+            .contains(&self.parse_symbol(symbol))
+            .await)
     }
 }
 
