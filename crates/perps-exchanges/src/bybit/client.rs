@@ -387,7 +387,7 @@ impl IPerps for BybitClient {
         self.ensure_cache_initialized().await?;
         Ok(self
             .symbols_cache
-            .contains(&self.normalize_symbol(symbol))
+            .contains(&self.parse_symbol(symbol))
             .await)
     }
 

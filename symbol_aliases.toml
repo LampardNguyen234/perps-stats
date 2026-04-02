@@ -11,19 +11,26 @@
 
 [binance]
 XCU = "COPPER"
+PLATINUM = "XPT"
+PALLADIUM = "XPD"
+BRENTOIL = "BZ"
 
 [extended]
 NVDA = "NVDA_24_5"
 AAPL = "NVDA_24_5"
-GOOGL = "GOOG_24_5"
+GOOGL = "GOOG"
 META = "META_24_5"
 HOOD = "HOOD_24_5"
 TSLA = "TSLA_24_5"
 MSFT = "MSFT_24_5"
 INTC = "INTC_24_5"
 SNDK = "SNDK_24_5"
+COIN = "COIN_24_5"
 NATGAS = "XNG"
 CL = "WTI"
+SP500 = "SPX"
+BRENTOIL = "XBR"
+PLATINUM = "XPT"
 
 
 [gravity]
@@ -41,6 +48,8 @@ XCU = "COPPER"
 
 [lighter]
 CL = "WTI"
+PLATINUM = "XPT"
+PALLADIUM = "XPD"
 
 [nado]
 XAU = "XAUT"
@@ -56,11 +65,14 @@ XAU = "PAXG"
 XAU = "GOLD"
 XAG = "SILVER"
 XCU = "COPPER"
+SP500 = "US500"
+EWY = "KOSPI"
 
 [tradexyz]
 XAU = "GOLD"
 XAG = "SILVER"
 XCU = "COPPER"
+SAMSUNG = "SMSN"
 
 
 

@@ -121,7 +121,8 @@ impl ExtendedClient {
         self.symbols_cache
             .get_or_init(|| async {
                 let markets = self.get_markets().await?;
-                Ok(markets.into_iter().map(|m| m.symbol).collect())
+                Ok(markets.into_iter().map(|m| {
+                    self.parse_symbol(&m.symbol)}).collect())
             })
             .await
     }
@@ -237,7 +238,7 @@ impl IPerps for ExtendedClient {
 
         let markets = markets
             .into_iter()
-            .filter(|m| m.active && m.status == "ACTIVE")
+            .filter(|m| m.active)
             .map(|m| {
                 // Calculate precision from asset precision
                 let price_scale = m.collateral_asset_precision.max(0);
@@ -362,7 +363,7 @@ impl IPerps for ExtendedClient {
             best_ask_qty,
             volume_24h: Decimal::from_str(&stats.daily_volume_base).unwrap_or(Decimal::ZERO),
             turnover_24h: Decimal::from_str(&stats.daily_volume).unwrap_or(Decimal::ZERO),
-            open_interest: open_interest / mark_price,
+            open_interest: if mark_price.is_zero() { Decimal::ZERO } else { open_interest / mark_price },
             open_interest_notional: open_interest,
             price_change_24h,
             price_change_pct,
@@ -610,7 +611,7 @@ impl IPerps for ExtendedClient {
         self.ensure_cache_initialized().await?;
         Ok(self
             .symbols_cache
-            .contains(&self.normalize_symbol(symbol))
+            .contains(&self.parse_symbol(symbol))
             .await)
     }
 
