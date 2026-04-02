@@ -1072,7 +1072,7 @@ async fn spawn_liquidity_report_task(
     report_interval: u64,
     max_concurrent_symbols: usize,
     repository: Arc<Mutex<PostgresRepository>>,
-    parquet_writer: Arc<Mutex<perps_database::OrderbookParquetWriter>>,
+    _parquet_writer: Arc<Mutex<perps_database::OrderbookParquetWriter>>,
     shutdown: Arc<AtomicBool>,
     _exclude_fees: bool,
     _override_fee: Option<f64>,
@@ -1278,26 +1278,26 @@ async fn spawn_liquidity_report_task(
                 }
             }
 
-            // Batch write Parquet (orderbooks already have batch_ts from above)
-            {
-                let mut pw = parquet_writer.lock().await;
-                for (exchange, obs) in &orderbooks_by_exchange {
-                    for ob in obs {
-                        if let Err(e) = pw.write_orderbook(exchange, &ob.symbol, ob) {
-                            tracing::error!(
-                                "Failed to write orderbook to Parquet for {}/{}: {}",
-                                exchange,
-                                ob.symbol,
-                                e
-                            );
-                        }
-                    }
-                }
-
-                if let Err(e) = pw.flush_all() {
-                    tracing::error!("Failed to flush Parquet writer after report cycle: {}", e);
-                }
-            }
+            // // Batch write Parquet (orderbooks already have batch_ts from above)
+            // {
+            //     let mut pw = parquet_writer.lock().await;
+            //     for (exchange, obs) in &orderbooks_by_exchange {
+            //         for ob in obs {
+            //             if let Err(e) = pw.write_orderbook(exchange, &ob.symbol, ob) {
+            //                 tracing::error!(
+            //                     "Failed to write orderbook to Parquet for {}/{}: {}",
+            //                     exchange,
+            //                     ob.symbol,
+            //                     e
+            //                 );
+            //             }
+            //         }
+            //     }
+            //
+            //     if let Err(e) = pw.flush_all() {
+            //         tracing::error!("Failed to flush Parquet writer after report cycle: {}", e);
+            //     }
+            // }
 
             tracing::info!(
                 "Completed liquidity report generation (batch_ts: {})",
@@ -1310,13 +1310,13 @@ async fn spawn_liquidity_report_task(
             }
         }
 
-        // Final flush on task exit
-        {
-            let mut pw = parquet_writer.lock().await;
-            if let Err(e) = pw.flush_all() {
-                tracing::error!("Failed to flush Parquet writer on task exit: {}", e);
-            }
-        }
+        // // Final flush on task exit
+        // {
+        //     let mut pw = parquet_writer.lock().await;
+        //     if let Err(e) = pw.flush_all() {
+        //         tracing::error!("Failed to flush Parquet writer on task exit: {}", e);
+        //     }
+        // }
 
         tracing::info!("Liquidity report task stopped");
         Ok(())
@@ -1736,14 +1736,14 @@ pub async fn execute(args: StartArgs) -> Result<()> {
     let results = futures::future::join_all(tasks).await;
 
     // Flush remaining Parquet buffers on shutdown
-    {
-        let mut pw = parquet_writer.lock().await;
-        if let Err(e) = pw.flush_all() {
-            tracing::error!("Failed to flush Parquet writer on shutdown: {}", e);
-        } else {
-            tracing::info!("Flushed Parquet writer on shutdown");
-        }
-    }
+    // {
+    //     let mut pw = parquet_writer.lock().await;
+    //     if let Err(e) = pw.flush_all() {
+    //         tracing::error!("Failed to flush Parquet writer on shutdown: {}", e);
+    //     } else {
+    //         tracing::info!("Flushed Parquet writer on shutdown");
+    //     }
+    // }
 
     // Check for errors
     let mut had_errors = false;
