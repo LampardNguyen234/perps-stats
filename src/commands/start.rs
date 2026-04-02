@@ -1213,11 +1213,6 @@ async fn spawn_liquidity_report_task(
                 .flatten()
                 .collect();
 
-            if shutdown.load(Ordering::Relaxed) {
-                tracing::info!("Shutdown signal received for liquidity report task");
-                break;
-            }
-
             // Aggregate results by exchange for batch storage, overriding timestamps with batch_ts
             let mut all_depth_stats: Vec<LiquidityDepthStats> = Vec::new();
             let mut slippages_by_exchange: HashMap<String, Vec<Slippage>> = HashMap::new();
@@ -1308,6 +1303,11 @@ async fn spawn_liquidity_report_task(
                 "Completed liquidity report generation (batch_ts: {})",
                 batch_ts
             );
+
+            if shutdown.load(Ordering::Relaxed) {
+                tracing::info!("Shutdown signal received for liquidity report task");
+                break;
+            }
         }
 
         // Final flush on task exit
@@ -1446,11 +1446,6 @@ async fn spawn_ticker_report_task(
 
             let all_results = futures::future::join_all(symbol_futures).await;
 
-            if shutdown.load(Ordering::Relaxed) {
-                tracing::info!("Shutdown signal received for ticker report task");
-                break;
-            }
-
             // Override timestamps with batch_ts
             let mut ticker_results: HashMap<String, Vec<Ticker>> = HashMap::new();
             for symbol_results in all_results {
@@ -1471,6 +1466,11 @@ async fn spawn_ticker_report_task(
                 "Completed ticker report generation (batch_ts: {})",
                 batch_ts
             );
+
+            if shutdown.load(Ordering::Relaxed) {
+                tracing::info!("Shutdown signal received for ticker report task");
+                break;
+            }
         }
 
         tracing::info!("Ticker report task stopped");

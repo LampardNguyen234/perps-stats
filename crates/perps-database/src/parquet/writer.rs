@@ -113,12 +113,41 @@ impl OrderbookParquetWriter {
         let final_path = self.file_path(key);
         let tmp_path = final_path.with_extension("parquet.tmp");
 
-        // If the file already exists, read existing data and merge
+        // If the file already exists, read existing data and merge.
+        // Use catch_unwind because the parquet library can panic on malformed files.
         let batches_to_write = if final_path.exists() {
-            let existing = self.read_existing_file(&final_path)?;
-            let mut all = existing;
-            all.push(batch);
-            all
+            let path_clone = final_path.clone();
+            let read_result = std::panic::catch_unwind(|| {
+                let file = fs::File::open(&path_clone)?;
+                use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+                let reader = ParquetRecordBatchReaderBuilder::try_new(file)
+                    .context("failed to create Parquet reader")?
+                    .build()
+                    .context("failed to build Parquet batch reader")?;
+                reader.collect::<Result<Vec<_>, _>>().context("failed to read Parquet batches")
+            });
+            match read_result {
+                Ok(Ok(existing)) => {
+                    let mut all = existing;
+                    all.push(batch);
+                    all
+                }
+                Ok(Err(e)) => {
+                    tracing::warn!(
+                        "Failed to read existing Parquet file {}, overwriting: {}",
+                        final_path.display(),
+                        e
+                    );
+                    vec![batch]
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        "Panic while reading existing Parquet file {}, overwriting",
+                        final_path.display()
+                    );
+                    vec![batch]
+                }
+            }
         } else {
             vec![batch]
         };
@@ -162,29 +191,6 @@ impl OrderbookParquetWriter {
         Ok(())
     }
 
-    /// Read all RecordBatches from an existing Parquet file.
-    fn read_existing_file(
-        &self,
-        path: &Path,
-    ) -> anyhow::Result<Vec<arrow::record_batch::RecordBatch>> {
-        use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-
-        let file = fs::File::open(path)
-            .with_context(|| format!("failed to open existing file: {}", path.display()))?;
-
-        let reader = ParquetRecordBatchReaderBuilder::try_new(file)
-            .context("failed to create Parquet reader")?
-            .build()
-            .context("failed to build Parquet batch reader")?;
-
-        let mut batches = Vec::new();
-        for batch_result in reader {
-            let batch = batch_result.context("failed to read RecordBatch")?;
-            batches.push(batch);
-        }
-
-        Ok(batches)
-    }
 
     /// Directory for a given file key.
     fn file_dir(&self, key: &FileKey) -> PathBuf {
