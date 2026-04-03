@@ -10,12 +10,21 @@ use reqwest::Client;
 use rust_decimal::prelude::FromPrimitive;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tokio::sync::RwLock;
 use tracing;
 
 use super::conversions;
 use super::models::*;
 
+const ORDER_BOOK_DETAILS_CACHE_TTL: Duration = Duration::from_secs(10);
+
 const BASE_URL: &str = "https://mainnet.zklighter.elliot.ai/api/v1";
+
+struct OrderBookDetailsCache {
+    data: Vec<OrderBookDetail>,
+    fetched_at: Instant,
+}
 
 pub struct LighterClient {
     client: Client,
@@ -26,6 +35,8 @@ pub struct LighterClient {
     symbols_cache: SymbolsCache,
     /// Rate limiter for API requests
     rate_limiter: Arc<RateLimiter>,
+    /// TTL cache for orderBookDetails (shared across clones)
+    order_book_details_cache: Arc<RwLock<Option<OrderBookDetailsCache>>>,
 }
 
 impl LighterClient {
@@ -46,7 +57,35 @@ impl LighterClient {
             symbol_to_market_id: HashMap::new(),
             symbols_cache: SymbolsCache::new(),
             rate_limiter: Arc::new(RateLimiter::lighter()),
+            order_book_details_cache: Arc::new(RwLock::new(None)),
         }
+    }
+
+    /// Fetch all order book details, using the TTL cache when fresh enough.
+    async fn get_order_book_details(&self) -> Result<Vec<OrderBookDetail>> {
+        {
+            let cache = self.order_book_details_cache.read().await;
+            if let Some(ref c) = *cache {
+                if c.fetched_at.elapsed() < ORDER_BOOK_DETAILS_CACHE_TTL {
+                    return Ok(c.data.clone());
+                }
+            }
+        }
+
+        let url = format!("{}/orderBookDetails", self.base_url);
+        let response: LighterResponse<OrderBookDetailsResponse> = self.get(&url).await?;
+
+        if response.code != 200 {
+            return Err(anyhow!("API error: code {}", response.code));
+        }
+
+        let details = response.data.order_book_details;
+        *self.order_book_details_cache.write().await = Some(OrderBookDetailsCache {
+            data: details.clone(),
+            fetched_at: Instant::now(),
+        });
+
+        Ok(details)
     }
 
     /// Helper method to make rate-limited GET requests with retry
@@ -118,18 +157,10 @@ impl LighterClient {
             .ok_or_else(|| anyhow!("Symbol {} not found", symbol))
     }
 
-    /// Fetch order book details for a specific market
+    /// Fetch order book details for a specific market (uses shared TTL cache).
     async fn fetch_orderbook_detail(&self, symbol: &str) -> Result<OrderBookDetail> {
-        let url = format!("{}/orderBookDetails", self.base_url);
-        let response: LighterResponse<OrderBookDetailsResponse> = self.get(&url).await?;
-
-        if response.code != 200 {
-            return Err(anyhow!("API error: code {}", response.code));
-        }
-
-        response
-            .data
-            .order_book_details
+        let details = self.get_order_book_details().await?;
+        details
             .into_iter()
             .find(|detail| self.parse_symbol(&detail.symbol) == self.parse_symbol(symbol))
             .ok_or_else(|| anyhow!("Symbol {} not found in order book details", symbol))
@@ -241,18 +272,11 @@ impl IPerps for LighterClient {
     }
 
     async fn get_all_tickers(&self) -> Result<Vec<Ticker>> {
-        let url = format!("{}/orderBookDetails", self.base_url);
-        tracing::debug!("Fetching all tickers from Lighter: {}", url);
+        tracing::debug!("Fetching all tickers from Lighter");
 
-        let response: LighterResponse<OrderBookDetailsResponse> = self.get(&url).await?;
-
-        if response.code != 200 {
-            return Err(anyhow!("API error: code {}", response.code));
-        }
-
-        let tickers: Result<Vec<Ticker>> = response
-            .data
-            .order_book_details
+        let tickers: Result<Vec<Ticker>> = self
+            .get_order_book_details()
+            .await?
             .iter()
             .map(|d| {
                 let mut t = conversions::to_ticker(d)?;
@@ -457,18 +481,11 @@ impl IPerps for LighterClient {
     }
 
     async fn get_all_market_stats(&self) -> Result<Vec<MarketStats>> {
-        let url = format!("{}/orderBookDetails", self.base_url);
-        tracing::debug!("Fetching all market stats from Lighter: {}", url);
+        tracing::debug!("Fetching all market stats from Lighter");
 
-        let response: LighterResponse<OrderBookDetailsResponse> = self.get(&url).await?;
-
-        if response.code != 200 {
-            return Err(anyhow!("API error: code {}", response.code));
-        }
-
-        let stats: Vec<MarketStats> = response
-            .data
-            .order_book_details
+        let stats: Vec<MarketStats> = self
+            .get_order_book_details()
+            .await?
             .iter()
             .map(|detail| {
                 let last_price = rust_decimal::Decimal::from_f64(detail.last_trade_price)
@@ -529,6 +546,7 @@ impl Clone for LighterClient {
             symbol_to_market_id: self.symbol_to_market_id.clone(),
             symbols_cache: self.symbols_cache.clone(),
             rate_limiter: self.rate_limiter.clone(),
+            order_book_details_cache: self.order_book_details_cache.clone(),
         }
     }
 }
