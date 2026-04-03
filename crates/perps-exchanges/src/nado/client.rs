@@ -38,7 +38,7 @@ impl NadoClient {
         self.symbols_cache
             .get_or_init(|| async {
                 let markets = self.get_markets().await?;
-                Ok(markets.into_iter().map(|m| m.symbol).collect())
+                Ok(markets.into_iter().map(|m| self.parse_symbol(&m.symbol)).collect())
             })
             .await
     }
@@ -126,16 +126,7 @@ impl IPerps for NadoClient {
             return symbol.to_uppercase();
         }
 
-        // Convert "BTC" → "BTC-PERP_USDT0"
-        // Convert "BTCUSDT" → "BTC-PERP_USDT0"
-        let base = symbol
-            .to_uppercase()
-            .trim_end_matches("USDT")
-            .trim_end_matches("-USDT")
-            .trim_end_matches("USD")
-            .trim_end_matches("-USD")
-            .to_string();
-        format!("{}-PERP_USDT0", base)
+        format!("{}-PERP_USDT0", symbol.to_uppercase())
     }
 
     async fn get_markets(&self) -> Result<Vec<Market>> {
@@ -345,7 +336,7 @@ impl IPerps for NadoClient {
         self.ensure_cache_initialized().await?;
         Ok(self
             .symbols_cache
-            .contains(&self.normalize_symbol(symbol))
+            .contains(&self.parse_symbol(symbol))
             .await)
     }
 }
