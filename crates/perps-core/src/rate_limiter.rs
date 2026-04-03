@@ -160,9 +160,9 @@ impl RateLimiter {
     /// Create preset rate limiter for Lighter
     /// - No strict limits documented, using conservative values
     /// - 10 requests per second
-    /// - 600 requests per minute
+    /// - 60 requests per minute
     pub fn lighter() -> Self {
-        Self::new(vec![RateLimit::per_second(10), RateLimit::per_minute(50)])
+        Self::new(vec![RateLimit::per_second(30), RateLimit::per_minute(60)])
     }
 
     /// Create preset rate limiter for Paradex
