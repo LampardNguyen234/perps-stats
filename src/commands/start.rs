@@ -144,9 +144,10 @@ async fn validate_symbols(exchange: &str, symbols: &[String]) -> Result<Vec<Stri
     }
 
     tracing::info!(
-        "Validated {}/{} symbols for exchange {}",
+        "Validated {}/{} symbols {:?} for exchange {}",
         valid_symbols.len(),
         symbols.len(),
+        valid_symbols,
         exchange
     );
     Ok(valid_symbols)
@@ -1239,7 +1240,9 @@ async fn spawn_liquidity_report_task(
                     slippages_by_exchange
                         .entry(exchange.clone())
                         .or_default()
-                        .extend(slippages.iter().map(|s| {
+                        .extend(slippages.iter()
+                            .filter(|s| s.buy_feasible || s.sell_feasible)
+                            .map(|s| {
                             let mut s = s.clone();
                             s.timestamp = batch_ts;
                             s

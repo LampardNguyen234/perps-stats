@@ -60,6 +60,8 @@ pub struct Universe {
     pub max_leverage: u32,
     #[serde(rename = "onlyIsolated", default)]
     pub only_isolated: bool,
+    #[serde(rename = "isDelisted", default)]
+    pub is_delisted: bool,
 }
 
 #[derive(Debug, Deserialize, Clone)]

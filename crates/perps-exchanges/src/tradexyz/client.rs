@@ -40,7 +40,7 @@ impl TradexyzClient {
                 let markets = self.get_markets().await?;
                 Ok(markets
                     .into_iter()
-                    .map(|m| m.symbol)
+                    .map(|m| self.parse_symbol(&m.symbol))
                     .collect())
             })
             .await
@@ -244,6 +244,7 @@ impl IPerps for TradexyzClient {
         let markets = meta
             .universe
             .into_iter()
+            .filter(|u| !u.is_delisted)
             .map(|u| Market {
                 symbol: self.normalize_symbol(&u.name),
                 contract: u.name,
@@ -680,7 +681,7 @@ impl IPerps for TradexyzClient {
         self.ensure_cache_initialized().await?;
         Ok(self
             .symbols_cache
-            .contains(&self.normalize_symbol(symbol))
+            .contains(&self.parse_symbol(symbol))
             .await)
     }
 }

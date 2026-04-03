@@ -219,7 +219,7 @@ impl IPerps for HyperliquidClient {
         let meta: Meta = self.post(body).await?;
         let markets = meta
             .universe
-            .into_iter()
+            .into_iter().filter(|u| !u.is_delisted)
             .map(|u| Market {
                 symbol: self.normalize_symbol(&u.name),
                 contract: u.name,

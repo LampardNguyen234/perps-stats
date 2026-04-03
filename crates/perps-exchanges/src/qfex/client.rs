@@ -161,7 +161,8 @@ impl IPerps for QfexClient {
     fn normalize_symbol(&self, exchange_symbol: &str) -> String {
         // "NVDA-USD" -> "NVDA", "GOLD-USD" -> "GOLD" -> unresolve -> "XAU"
         let upper = exchange_symbol.to_uppercase();
-        let base = upper.strip_suffix("-USD").unwrap_or(&upper);
+        let mut base = upper.strip_suffix("-USD").unwrap_or(&upper);
+        base = base.strip_suffix("-KRW").unwrap_or(&base);
         crate::symbol_aliases::unresolve_alias("qfex", base).to_string()
     }
 

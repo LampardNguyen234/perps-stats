@@ -34,7 +34,7 @@ impl LighterClient {
         self.symbols_cache
             .get_or_init(|| async {
                 let markets = self.get_markets().await?;
-                Ok(markets.into_iter().map(|m| m.symbol).collect())
+                Ok(markets.into_iter().map(|m| self.parse_symbol(&m.symbol)).collect())
             })
             .await
     }
@@ -93,7 +93,7 @@ impl LighterClient {
     /// Get market ID for a symbol
     async fn get_market_id(&mut self, symbol: &str) -> Result<u64> {
         // Check cache first
-        if let Some(&market_id) = self.symbol_to_market_id.get(symbol) {
+        if let Some(&market_id) = self.symbol_to_market_id.get(&self.parse_symbol(symbol)) {
             return Ok(market_id);
         }
 
@@ -108,12 +108,12 @@ impl LighterClient {
         // Build cache
         for orderbook in &response.data.order_books {
             self.symbol_to_market_id
-                .insert(orderbook.symbol.clone(), orderbook.market_id);
+                .insert(self.parse_symbol(&orderbook.symbol), orderbook.market_id);
         }
 
         // Try again from cache
         self.symbol_to_market_id
-            .get(symbol)
+            .get(&self.parse_symbol(symbol))
             .copied()
             .ok_or_else(|| anyhow!("Symbol {} not found", symbol))
     }
@@ -131,7 +131,7 @@ impl LighterClient {
             .data
             .order_book_details
             .into_iter()
-            .find(|detail| detail.symbol == symbol)
+            .find(|detail| self.parse_symbol(&detail.symbol) == self.parse_symbol(symbol))
             .ok_or_else(|| anyhow!("Symbol {} not found in order book details", symbol))
     }
 }
@@ -515,7 +515,7 @@ impl IPerps for LighterClient {
         self.ensure_cache_initialized().await?;
         Ok(self
             .symbols_cache
-            .contains(&self.normalize_symbol(symbol))
+            .contains(&self.parse_symbol(symbol))
             .await)
     }
 }
