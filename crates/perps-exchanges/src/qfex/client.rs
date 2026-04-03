@@ -229,7 +229,7 @@ impl IPerps for QfexClient {
         let metrics = self.get_cached_metrics().await?;
         let m = metrics
             .iter()
-            .find(|m| m.symbol == qfex_sym)
+            .find(|m| self.parse_symbol(&m.symbol) == qfex_sym)
             .ok_or_else(|| anyhow!("No metrics found for symbol: {}", qfex_sym))?;
 
         let ob = self.get_orderbook(&qfex_sym, 0).await?;
