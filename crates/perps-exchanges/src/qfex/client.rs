@@ -10,9 +10,17 @@ use perps_core::{
     OpenInterest, RateLimit, RateLimiter, RetryConfig, Ticker, Trade,
 };
 use reqwest::Client;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
+
+/// Process-wide singleton `OrderbookManager` shared across all `QfexClient` instances.
+/// This ensures only one WS connection is maintained regardless of how many clients are created.
+static ORDERBOOK_MANAGER: OnceLock<Arc<OrderbookManager>> = OnceLock::new();
+
+fn shared_orderbook_manager() -> Arc<OrderbookManager> {
+    Arc::clone(ORDERBOOK_MANAGER.get_or_init(|| Arc::new(OrderbookManager::new(vec![0, 1, 2]))))
+}
 
 const BASE_URL: &str = "https://api.qfex.com";
 
@@ -44,14 +52,44 @@ pub struct QfexClient {
 
 impl QfexClient {
     /// Create a new `QfexClient` with default settings.
+    ///
+    /// Spawns a background task that fetches all available symbols and pre-subscribes
+    /// the WebSocket orderbook manager to them, so orderbook snapshots are available
+    /// before the first explicit `get_orderbook` call.
     pub fn new() -> Self {
-        Self {
+        let is_first = ORDERBOOK_MANAGER.get().is_none();
+        let this = Self {
             http: Client::new(),
             base_url: BASE_URL.to_string(),
             rate_limiter: Arc::new(RateLimiter::new(vec![RateLimit::per_second(20)])),
             metrics_cache: Arc::new(RwLock::new(None)),
-            orderbook_manager: Arc::new(OrderbookManager::new(vec![0, 1, 2])),
+            orderbook_manager: shared_orderbook_manager(),
+        };
+
+        // Only the first client to initialize triggers the auto-subscribe bootstrap.
+        // Subsequent clients (e.g. short-lived validation clients) share the same WS
+        // connection without triggering redundant subscriptions.
+        if is_first {
+            let bootstrap = QfexClient {
+                http: this.http.clone(),
+                base_url: this.base_url.clone(),
+                rate_limiter: Arc::clone(&this.rate_limiter),
+                metrics_cache: Arc::clone(&this.metrics_cache),
+                orderbook_manager: Arc::clone(&this.orderbook_manager),
+            };
+            tokio::spawn(async move {
+                match bootstrap.get_cached_metrics().await {
+                    Ok(metrics) => {
+                        let symbols: Vec<String> = metrics.iter().map(|m| m.symbol.clone()).collect();
+                        tracing::info!("qfex: auto-subscribing orderbook for {} symbols", symbols.len());
+                        bootstrap.orderbook_manager.subscribe_symbols(symbols).await;
+                    }
+                    Err(e) => tracing::warn!("qfex: auto-subscribe startup failed: {}", e),
+                }
+            });
         }
+
+        this
     }
 
     // ---- HTTP helper --------------------------------------------------------

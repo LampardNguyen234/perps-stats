@@ -140,6 +140,18 @@ impl OrderbookManager {
         }
     }
 
+    /// Send a list of symbols (QFEX format) to the background task for subscription.
+    ///
+    /// This is fire-and-forget; errors are logged but not returned.
+    pub async fn subscribe_symbols(&self, symbols: Vec<String>) {
+        if symbols.is_empty() {
+            return;
+        }
+        if let Err(e) = self.subscribe_tx.send(symbols).await {
+            tracing::warn!("OrderbookManager: failed to send auto-subscribe: {}", e);
+        }
+    }
+
     /// Get (or wait for) the current orderbook snapshot for a symbol.
     ///
     /// - If not yet subscribed, triggers a subscription.
@@ -299,6 +311,9 @@ async fn run_background_task(
                                                     match ws_l2_to_orderbook(&l2_msg) {
                                                         Ok(ob) => {
                                                             {
+                                                                tracing::debug!("OrderbookManager: new orderbook received for {}, bids {}, asks {}", ob.symbol, ob.bids.len(), ob.asks.len());
+                                                            }
+                                                            {
                                                                 let mut snaps = snapshots.write().await;
                                                                 // Accumulate into a per-sig_figs slot rather than
                                                                 // overwriting the entire entry. This preserves all
@@ -396,18 +411,20 @@ async fn run_background_task(
                                 all_new.extend(more);
                             }
 
-                            // Deduplicate and add to subscribed set
-                            {
+                            // Filter to only truly new symbols, then add them to the set
+                            let truly_new: Vec<String> = {
                                 let mut sub = subscribed.lock().await;
-                                for s in &all_new {
-                                    sub.insert(s.clone());
-                                }
+                                all_new.into_iter().filter(|s| sub.insert(s.clone())).collect()
+                            };
+
+                            if truly_new.is_empty() {
+                                continue;
                             }
 
                             // Send one subscribe message for all new symbols
                             match build_subscribe_msg(
                                 vec!["level2".to_string()],
-                                all_new.clone(),
+                                truly_new.clone(),
                                 &sig_figs,
                             ) {
                                 Ok(msg) => {
@@ -420,7 +437,7 @@ async fn run_background_task(
                                     } else {
                                         tracing::debug!(
                                             "OrderbookManager: subscribed to {:?}, sig_figs {:?}",
-                                            all_new, sig_figs
+                                            truly_new, sig_figs
                                         );
                                     }
                                 }
