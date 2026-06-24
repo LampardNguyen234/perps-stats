@@ -15,6 +15,7 @@ pub mod o1;
 pub mod pacifica;
 pub mod paradex;
 pub mod qfex;
+pub mod risex;
 pub mod symbol_aliases;
 pub mod tradexyz;
 
@@ -23,7 +24,7 @@ pub use binance::BinanceClient;
 pub use bybit::BybitClient;
 pub use cache::SymbolsCache;
 pub use extended::ExtendedClient;
-pub use factory::{all_exchanges, get_exchange};
+pub use factory::{all_exchanges, exchange_names, get_exchange};
 pub use gravity::GravityClient;
 pub use hibachi::HibachiClient;
 pub use hotstuff::HotstuffClient;
@@ -35,6 +36,7 @@ pub use o1::O1Client;
 pub use pacifica::PacificaClient;
 pub use paradex::ParadexClient;
 pub use qfex::QfexClient;
+pub use risex::RiseXClient;
 pub use symbol_aliases::{init_aliases, resolve_alias, unresolve_alias};
 pub use tradexyz::TradexyzClient;
 

@@ -224,6 +224,12 @@ impl RateLimiter {
         Self::new(vec![RateLimit::new(300, Duration::from_secs(10))])
     }
 
+    /// Create preset rate limiter for RISEx
+    /// Conservative 20 req/s — API rate limit is undocumented; lower if 429s are observed.
+    pub fn risex() -> Self {
+        Self::new(vec![RateLimit::per_second(20)])
+    }
+
     /// Create preset rate limiter for Gravity Dex
     /// Conservative rate limit based on market data API:
     /// - No explicit rate limit documented in Gravity API

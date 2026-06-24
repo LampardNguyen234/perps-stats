@@ -80,8 +80,12 @@ impl QfexClient {
             tokio::spawn(async move {
                 match bootstrap.get_cached_metrics().await {
                     Ok(metrics) => {
-                        let symbols: Vec<String> = metrics.iter().map(|m| m.symbol.clone()).collect();
-                        tracing::info!("qfex: auto-subscribing orderbook for {} symbols", symbols.len());
+                        let symbols: Vec<String> =
+                            metrics.iter().map(|m| m.symbol.clone()).collect();
+                        tracing::info!(
+                            "qfex: auto-subscribing orderbook for {} symbols",
+                            symbols.len()
+                        );
                         bootstrap.orderbook_manager.subscribe_symbols(symbols).await;
                     }
                     Err(e) => tracing::warn!("qfex: auto-subscribe startup failed: {}", e),

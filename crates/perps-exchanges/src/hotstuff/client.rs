@@ -238,9 +238,7 @@ impl IPerps for HotstuffClient {
         instruments
             .iter()
             .filter(|i| !i.delisted)
-            .map(|i| {
-                super::conversions::instrument_to_market(i, self.normalize_symbol(&i.name))
-            })
+            .map(|i| super::conversions::instrument_to_market(i, self.normalize_symbol(&i.name)))
             .collect()
     }
 
@@ -298,7 +296,8 @@ impl IPerps for HotstuffClient {
         ob.bids.truncate(depth);
         ob.asks.truncate(depth);
 
-        let orderbook = super::conversions::orderbook_to_orderbook(ob, self.normalize_symbol(symbol))?;
+        let orderbook =
+            super::conversions::orderbook_to_orderbook(ob, self.normalize_symbol(symbol))?;
         Ok(MultiResolutionOrderbook::from_single(orderbook))
     }
 
@@ -379,7 +378,11 @@ impl IPerps for HotstuffClient {
         let result: Vec<Kline> = klines
             .iter()
             .map(|k| {
-                super::conversions::kline_to_kline(k, self.normalize_symbol(symbol), interval_str.clone())
+                super::conversions::kline_to_kline(
+                    k,
+                    self.normalize_symbol(symbol),
+                    interval_str.clone(),
+                )
             })
             .collect::<Result<Vec<_>>>()?;
 
@@ -435,7 +438,8 @@ impl IPerps for HotstuffClient {
         let mut result = Vec::new();
 
         for ht in &tickers {
-            match super::conversions::ticker_to_market_stats(ht, self.normalize_symbol(&ht.symbol)) {
+            match super::conversions::ticker_to_market_stats(ht, self.normalize_symbol(&ht.symbol))
+            {
                 Ok(s) => result.push(s),
                 Err(e) => {
                     tracing::warn!(
