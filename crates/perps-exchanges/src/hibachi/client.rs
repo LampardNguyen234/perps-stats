@@ -406,8 +406,11 @@ impl IPerps for HibachiClient {
             )?;
 
             let normalized = self.normalize_symbol(symbol);
-            let fine =
-                super::conversions::orderbook_to_orderbook_truncated(ob_fine, &normalized, depth_usize)?;
+            let fine = super::conversions::orderbook_to_orderbook_truncated(
+                ob_fine,
+                &normalized,
+                depth_usize,
+            )?;
             let coarse = super::conversions::orderbook_to_orderbook_truncated(
                 ob_coarse,
                 &normalized,
@@ -505,7 +508,11 @@ impl IPerps for HibachiClient {
             .and_then(|s| s.parse::<rust_decimal::Decimal>().ok())
             .unwrap_or(rust_decimal::Decimal::ZERO);
 
-        super::conversions::oi_response_to_open_interest(&oi, mark_price, self.normalize_symbol(symbol))
+        super::conversions::oi_response_to_open_interest(
+            &oi,
+            mark_price,
+            self.normalize_symbol(symbol),
+        )
     }
 
     async fn get_klines(

@@ -332,7 +332,7 @@ pub fn candle_to_kline(c: &CandleEntry, symbol: &str, interval: &str) -> Result<
 /// Idempotent: already-suffixed symbols pass through unchanged.
 pub fn to_qfex_symbol(symbol: &str) -> String {
     let upper = symbol.to_uppercase();
-    if upper.ends_with("-USD") || upper.ends_with("-KRW"){
+    if upper.ends_with("-USD") || upper.ends_with("-KRW") {
         upper
     } else {
         format!("{}-USD", upper)

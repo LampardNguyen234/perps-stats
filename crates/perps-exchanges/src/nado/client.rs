@@ -38,7 +38,10 @@ impl NadoClient {
         self.symbols_cache
             .get_or_init(|| async {
                 let markets = self.get_markets().await?;
-                Ok(markets.into_iter().map(|m| self.parse_symbol(&m.symbol)).collect())
+                Ok(markets
+                    .into_iter()
+                    .map(|m| self.parse_symbol(&m.symbol))
+                    .collect())
             })
             .await
     }
@@ -231,7 +234,8 @@ impl IPerps for NadoClient {
         let orderbook_response: OrderbookResponse = self.get(&url).await?;
 
         // Convert to perps_core::Orderbook
-        let mut orderbook = super::conversions::orderbook_response_to_orderbook(&orderbook_response)?;
+        let mut orderbook =
+            super::conversions::orderbook_response_to_orderbook(&orderbook_response)?;
         orderbook.symbol = self.normalize_symbol(&orderbook.symbol);
 
         Ok(MultiResolutionOrderbook::from_single(orderbook))

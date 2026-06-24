@@ -13,8 +13,19 @@ use crate::o1::O1Client;
 use crate::pacifica::PacificaClient;
 use crate::paradex::ParadexClient;
 use crate::qfex::QfexClient;
+use crate::risex::RiseXClient;
 use crate::tradexyz::TradexyzClient;
 use perps_core::traits::IPerps;
+
+/// Returns all supported exchange names. Single source of truth — keep in sync with
+/// `all_exchanges()` and `get_exchange()`.
+pub fn exchange_names() -> &'static [&'static str] {
+    &[
+        "01", "aster", "binance", "bybit", "extended", "gravity", "hibachi", "hotstuff",
+        "hyperliquid", "kucoin", "lighter", "nado", "pacifica", "paradex", "qfex", "risex",
+        "tradexyz",
+    ]
+}
 
 /// Returns a vector of all available exchange clients.
 /// For Aster, Binance, Extended, and KuCoin, automatically enables WebSocket streaming if DATABASE_URL is set.
@@ -36,6 +47,10 @@ pub async fn all_exchanges() -> Vec<(String, Box<dyn IPerps + Send + Sync>)> {
         (
             "qfex".to_string(),
             Box::new(QfexClient::new()) as Box<dyn IPerps + Send + Sync>,
+        ),
+        (
+            "risex".to_string(),
+            Box::new(RiseXClient::new()) as Box<dyn IPerps + Send + Sync>,
         ),
         (
             "hotstuff".to_string(),
@@ -141,8 +156,9 @@ pub async fn get_exchange(name: &str) -> anyhow::Result<Box<dyn IPerps + Send + 
         "pacifica" => Ok(Box::new(PacificaClient::new())),
         "paradex" => Ok(Box::new(ParadexClient::new())),
         "qfex" => Ok(Box::new(QfexClient::new())),
+        "risex" => Ok(Box::new(RiseXClient::new())),
         "tradexyz" => Ok(Box::new(TradexyzClient::new())),
-        _ => anyhow::bail!("Unsupported exchange: {}. Currently supported: 01, aster, binance, bybit, extended, gravity, hibachi, hotstuff, hyperliquid, kucoin, lighter, nado, pacifica, paradex, qfex, tradexyz", name),
+        _ => anyhow::bail!("Unsupported exchange: {}. Currently supported: 01, aster, binance, bybit, extended, gravity, hibachi, hotstuff, hyperliquid, kucoin, lighter, nado, pacifica, paradex, qfex, risex, tradexyz", name),
     }
 }
 
@@ -198,6 +214,28 @@ mod tests {
             }
         }
         panic!("Gravity not found in all_exchanges()");
+    }
+
+    #[tokio::test]
+    async fn test_get_exchange_risex() {
+        let result = get_exchange("risex").await;
+        assert!(result.is_ok(), "get_exchange(\"risex\") should succeed");
+        assert_eq!(result.unwrap().get_name(), "risex");
+    }
+
+    #[tokio::test]
+    async fn test_get_exchange_risex_case_insensitive() {
+        assert!(get_exchange("RISEX").await.is_ok());
+        assert!(get_exchange("RiseX").await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_all_exchanges_includes_risex() {
+        let exchanges = all_exchanges().await;
+        assert!(
+            exchanges.iter().any(|(name, _)| name == "risex"),
+            "risex missing from all_exchanges()"
+        );
     }
 
     /// Test that unknown exchange returns error
