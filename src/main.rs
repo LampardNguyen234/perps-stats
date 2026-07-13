@@ -165,6 +165,20 @@ async fn main() -> Result<()> {
             StatsCommands::Hist(args) => commands::stats::execute_hist(args).await?,
             StatsCommands::PriceDev(args) => commands::stats::execute_price_dev(args).await?,
         },
+        Commands::LiqDist {
+            exchange,
+            symbols,
+            bps,
+            format,
+        } => {
+            commands::liq_dist::execute(commands::liq_dist::LiqDistArgs {
+                exchange,
+                symbols,
+                bps,
+                format,
+            })
+            .await?;
+        }
     }
 
     Ok(())

@@ -1066,11 +1066,15 @@ mod tests {
             bid_5bps: Decimal::from_str("30000").unwrap(),
             bid_10bps: Decimal::from_str("40000").unwrap(),
             bid_20bps: Decimal::from_str("50000").unwrap(),
+            bid_50bps: Decimal::from_str("60000").unwrap(),
+            bid_100bps: Decimal::from_str("70000").unwrap(),
             ask_1bps: Decimal::from_str("10000").unwrap(),
             ask_2_5bps: Decimal::from_str("20000").unwrap(),
             ask_5bps: Decimal::from_str("30000").unwrap(),
             ask_10bps: Decimal::from_str("40000").unwrap(),
             ask_20bps: Decimal::from_str("50000").unwrap(),
+            ask_50bps: Decimal::from_str("60000").unwrap(),
+            ask_100bps: Decimal::from_str("70000").unwrap(),
         }
     }
 

@@ -179,6 +179,27 @@ pub enum Commands {
         #[command(subcommand)]
         command: StatsCommands,
     },
+
+    /// Show liquidity distribution of symbols across venues at given bps levels
+    LiqDist {
+        /// Comma-separated exchange names (e.g., binance,hyperliquid).
+        /// Multiple exchanges: only one bps level allowed.
+        #[arg(short, long)]
+        exchange: String,
+
+        /// Comma-separated list of global symbols (e.g., BTC,ETH,SOL)
+        #[arg(short, long)]
+        symbols: String,
+
+        /// Comma-separated bps levels from {1, 2.5, 5, 10, 20}.
+        /// Single exchange: multiple bps levels allowed.
+        #[arg(short, long, default_value = "5")]
+        bps: String,
+
+        /// Output format (table, json)
+        #[arg(short, long, default_value = "table")]
+        format: String,
+    },
 }
 
 #[derive(Subcommand)]

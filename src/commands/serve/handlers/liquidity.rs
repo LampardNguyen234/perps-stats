@@ -11,6 +11,7 @@ use crate::commands::serve::{
     state::AppState,
 };
 use perps_core::LiquidityDepthStats;
+use rust_decimal::Decimal;
 use perps_database::Repository;
 
 /// GET /api/v1/liquidity
@@ -75,11 +76,15 @@ pub async fn get_latest_liquidity(
                     bid_5bps: r.get("bid_5bps"),
                     bid_10bps: r.get("bid_10bps"),
                     bid_20bps: r.get("bid_20bps"),
+                    bid_50bps: Decimal::ZERO,
+                    bid_100bps: Decimal::ZERO,
                     ask_1bps: r.get("ask_1bps"),
                     ask_2_5bps: r.get("ask_2_5bps"),
                     ask_5bps: r.get("ask_5bps"),
                     ask_10bps: r.get("ask_10bps"),
                     ask_20bps: r.get("ask_20bps"),
+                    ask_50bps: Decimal::ZERO,
+                    ask_100bps: Decimal::ZERO,
                     timestamp: r.get("ts"),
                     max_bid_bps: r.get("max_bid_bps"),
                     max_ask_bps: r.get("max_ask_bps"),
@@ -198,11 +203,15 @@ pub async fn get_liquidity_history(
                     bid_5bps: r.get("bid_5bps"),
                     bid_10bps: r.get("bid_10bps"),
                     bid_20bps: r.get("bid_20bps"),
+                    bid_50bps: Decimal::ZERO,
+                    bid_100bps: Decimal::ZERO,
                     ask_1bps: r.get("ask_1bps"),
                     ask_2_5bps: r.get("ask_2_5bps"),
                     ask_5bps: r.get("ask_5bps"),
                     ask_10bps: r.get("ask_10bps"),
                     ask_20bps: r.get("ask_20bps"),
+                    ask_50bps: Decimal::ZERO,
+                    ask_100bps: Decimal::ZERO,
                     timestamp: r.get("ts"),
                     max_bid_bps: r.get("max_bid_bps"),
                     max_ask_bps: r.get("max_ask_bps"),

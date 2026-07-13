@@ -672,6 +672,8 @@ pub struct LiquidityDepthStats {
     pub bid_5bps: Decimal,
     pub bid_10bps: Decimal,
     pub bid_20bps: Decimal,
+    pub bid_50bps: Decimal,
+    pub bid_100bps: Decimal,
 
     // Ask notionals
     pub ask_1bps: Decimal,
@@ -679,6 +681,8 @@ pub struct LiquidityDepthStats {
     pub ask_5bps: Decimal,
     pub ask_10bps: Decimal,
     pub ask_20bps: Decimal,
+    pub ask_50bps: Decimal,
+    pub ask_100bps: Decimal,
 
     // Maximum orderbook depth (how far liquidity extends)
     pub max_bid_bps: Option<Decimal>,

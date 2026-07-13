@@ -59,7 +59,12 @@ pub async fn create_partitions_for_range(
     Ok(())
 }
 
-/// Create a partition for a specific table and date
+/// Create a partition for a specific table and date.
+///
+/// If the default partition contains rows in this date range, they are evacuated
+/// first. PostgreSQL rejects CREATE PARTITION when the default partition has rows
+/// that would belong to the new partition — this happens when data was ingested
+/// before the partition existed (e.g. service restart with a new exchange/symbol).
 pub async fn create_partition_for_date(pool: &PgPool, table: &str, date: NaiveDate) -> Result<()> {
     let partition_name = format!("{}_{}", table, date.format("%Y_%m_%d"));
     let start_date = date.format("%Y-%m-%d").to_string();
@@ -88,18 +93,75 @@ pub async fn create_partition_for_date(pool: &PgPool, table: &str, date: NaiveDa
         return Ok(());
     }
 
-    // Create the partition
-    let create_sql = format!(
-        "CREATE TABLE IF NOT EXISTS {} PARTITION OF {} FOR VALUES FROM ('{}') TO ('{}')",
-        partition_name, table, start_date, end_date
-    );
+    // All three names are safe to interpolate: `table` comes from the PARTITIONED_TABLES
+    // static constant, `partition_name` and `default_table` are derived from it and a
+    // typed NaiveDate — no user-controlled input reaches these strings.
+    let default_table = format!("{}_default", table);
+    // Temp table name is unique per (table, date) so concurrent calls don't collide.
+    let temp_table = format!("evac_{}_{}", table, date.format("%Y_%m_%d"));
 
-    sqlx::query(&create_sql)
-        .execute(pool)
+    let mut tx = pool.begin().await.context("Failed to begin transaction")?;
+
+    // Snapshot any conflicting rows from the default partition into a temp table that
+    // is automatically dropped when the transaction commits (ON COMMIT DROP).
+    sqlx::query(&format!(
+        "CREATE TEMP TABLE {temp} ON COMMIT DROP AS \
+         SELECT * FROM {default} WHERE ts >= '{start}' AND ts < '{end}'",
+        temp = temp_table,
+        default = default_table,
+        start = start_date,
+        end = end_date,
+    ))
+    .execute(&mut *tx)
+    .await
+    .context("Failed to snapshot default partition rows")?;
+
+    sqlx::query(&format!(
+        "DELETE FROM {default} WHERE ts >= '{start}' AND ts < '{end}'",
+        default = default_table,
+        start = start_date,
+        end = end_date,
+    ))
+    .execute(&mut *tx)
+    .await
+    .context("Failed to evacuate default partition")?;
+
+    sqlx::query(&format!(
+        "CREATE TABLE IF NOT EXISTS {part} PARTITION OF {table} FOR VALUES FROM ('{start}') TO ('{end}')",
+        part = partition_name,
+        table = table,
+        start = start_date,
+        end = end_date,
+    ))
+    .execute(&mut *tx)
+    .await
+    .with_context(|| format!("Failed to create partition {}", partition_name))?;
+
+    // Re-route evacuated rows into the parent table; they now land in the new partition.
+    let reinserted: u64 = sqlx::query(&format!(
+        "INSERT INTO {table} SELECT * FROM {temp}",
+        table = table,
+        temp = temp_table,
+    ))
+    .execute(&mut *tx)
+    .await
+    .context("Failed to reinsert evacuated rows")?
+    .rows_affected();
+
+    tx.commit()
         .await
-        .with_context(|| format!("Failed to create partition {}", partition_name))?;
+        .context("Failed to commit partition creation")?;
 
-    tracing::debug!("Created partition: {}", partition_name);
+    if reinserted > 0 {
+        tracing::info!(
+            "Created partition {} and migrated {} rows from default partition",
+            partition_name,
+            reinserted
+        );
+    } else {
+        tracing::debug!("Created partition: {}", partition_name);
+    }
+
     Ok(())
 }
 

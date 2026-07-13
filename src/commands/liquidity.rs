@@ -6,6 +6,8 @@ use perps_core::{IPerps, LiquidityDepthStats, MultiResolutionOrderbook, Orderboo
 use perps_database::Repository;
 use perps_exchanges::{all_exchanges, get_exchange};
 use prettytable::{format, Cell, Row, Table};
+use rust_decimal::Decimal;
+use rust_decimal::prelude::FromStr;
 use rust_xlsxwriter::{Format, Workbook};
 use serde_json;
 use std::collections::HashMap;
@@ -868,11 +870,15 @@ fn write_to_csv_liquidity_only(
             "Bid 5bps",
             "Bid 10bps",
             "Bid 20bps",
+            "Bid 50bps",
+            "Bid 100bps",
             "Ask 1bps",
             "Ask 2.5bps",
             "Ask 5bps",
             "Ask 10bps",
             "Ask 20bps",
+            "Ask 50bps",
+            "Ask 100bps",
         ])?;
 
         for stats in snapshots.iter().rev() {
@@ -886,11 +892,15 @@ fn write_to_csv_liquidity_only(
                 stats.bid_5bps.to_string(),
                 stats.bid_10bps.to_string(),
                 stats.bid_20bps.to_string(),
+                stats.bid_50bps.to_string(),
+                stats.bid_100bps.to_string(),
                 stats.ask_1bps.to_string(),
                 stats.ask_2_5bps.to_string(),
                 stats.ask_5bps.to_string(),
                 stats.ask_10bps.to_string(),
                 stats.ask_20bps.to_string(),
+                stats.ask_50bps.to_string(),
+                stats.ask_100bps.to_string(),
             ])?;
         }
 
@@ -936,11 +946,15 @@ fn write_to_excel_liquidity_only(
             "Bid 5bps",
             "Bid 10bps",
             "Bid 20bps",
+            "Bid 50bps",
+            "Bid 100bps",
             "Ask 1bps",
             "Ask 2.5bps",
             "Ask 5bps",
             "Ask 10bps",
             "Ask 20bps",
+            "Ask 50bps",
+            "Ask 100bps",
         ];
 
         for (col, header) in headers.iter().enumerate() {
@@ -957,67 +971,27 @@ fn write_to_excel_liquidity_only(
             )?;
             worksheet.write_string(row, 1, &stats.exchange)?;
             worksheet.write_string(row, 2, &stats.symbol)?;
-            worksheet.write_number(
-                row,
-                3,
-                stats.mid_price.to_string().parse::<f64>().unwrap_or(0.0),
-            )?;
-            worksheet.write_number(
-                row,
-                4,
-                stats.bid_1bps.to_string().parse::<f64>().unwrap_or(0.0),
-            )?;
-            worksheet.write_number(
-                row,
-                5,
-                stats.bid_2_5bps.to_string().parse::<f64>().unwrap_or(0.0),
-            )?;
-            worksheet.write_number(
-                row,
-                6,
-                stats.bid_5bps.to_string().parse::<f64>().unwrap_or(0.0),
-            )?;
-            worksheet.write_number(
-                row,
-                7,
-                stats.bid_10bps.to_string().parse::<f64>().unwrap_or(0.0),
-            )?;
-            worksheet.write_number(
-                row,
-                8,
-                stats.bid_20bps.to_string().parse::<f64>().unwrap_or(0.0),
-            )?;
-            worksheet.write_number(
-                row,
-                9,
-                stats.ask_1bps.to_string().parse::<f64>().unwrap_or(0.0),
-            )?;
-            worksheet.write_number(
-                row,
-                10,
-                stats.ask_2_5bps.to_string().parse::<f64>().unwrap_or(0.0),
-            )?;
-            worksheet.write_number(
-                row,
-                11,
-                stats.ask_5bps.to_string().parse::<f64>().unwrap_or(0.0),
-            )?;
-            worksheet.write_number(
-                row,
-                12,
-                stats.ask_10bps.to_string().parse::<f64>().unwrap_or(0.0),
-            )?;
-            worksheet.write_number(
-                row,
-                13,
-                stats.ask_20bps.to_string().parse::<f64>().unwrap_or(0.0),
-            )?;
+            worksheet.write_number(row, 3, stats.mid_price.to_string().parse::<f64>().unwrap_or(0.0))?;
+            worksheet.write_number(row, 4, stats.bid_1bps.to_string().parse::<f64>().unwrap_or(0.0))?;
+            worksheet.write_number(row, 5, stats.bid_2_5bps.to_string().parse::<f64>().unwrap_or(0.0))?;
+            worksheet.write_number(row, 6, stats.bid_5bps.to_string().parse::<f64>().unwrap_or(0.0))?;
+            worksheet.write_number(row, 7, stats.bid_10bps.to_string().parse::<f64>().unwrap_or(0.0))?;
+            worksheet.write_number(row, 8, stats.bid_20bps.to_string().parse::<f64>().unwrap_or(0.0))?;
+            worksheet.write_number(row, 9, stats.bid_50bps.to_string().parse::<f64>().unwrap_or(0.0))?;
+            worksheet.write_number(row, 10, stats.bid_100bps.to_string().parse::<f64>().unwrap_or(0.0))?;
+            worksheet.write_number(row, 11, stats.ask_1bps.to_string().parse::<f64>().unwrap_or(0.0))?;
+            worksheet.write_number(row, 12, stats.ask_2_5bps.to_string().parse::<f64>().unwrap_or(0.0))?;
+            worksheet.write_number(row, 13, stats.ask_5bps.to_string().parse::<f64>().unwrap_or(0.0))?;
+            worksheet.write_number(row, 14, stats.ask_10bps.to_string().parse::<f64>().unwrap_or(0.0))?;
+            worksheet.write_number(row, 15, stats.ask_20bps.to_string().parse::<f64>().unwrap_or(0.0))?;
+            worksheet.write_number(row, 16, stats.ask_50bps.to_string().parse::<f64>().unwrap_or(0.0))?;
+            worksheet.write_number(row, 17, stats.ask_100bps.to_string().parse::<f64>().unwrap_or(0.0))?;
         }
 
         worksheet.set_column_width(0, 25)?;
         worksheet.set_column_width(1, 12)?;
         worksheet.set_column_width(2, 15)?;
-        for col in 3..14 {
+        for col in 3..18 {
             worksheet.set_column_width(col, 15)?;
         }
     }
@@ -1059,11 +1033,15 @@ fn write_to_csv(
             "Bid 5bps",
             "Bid 10bps",
             "Bid 20bps",
+            "Bid 50bps",
+            "Bid 100bps",
             "Ask 1bps",
             "Ask 2.5bps",
             "Ask 5bps",
             "Ask 10bps",
             "Ask 20bps",
+            "Ask 50bps",
+            "Ask 100bps",
             "Slippage $1K Buy (bps)",
             "Slippage $1K Sell (bps)",
             "Slippage $10K Buy (bps)",
@@ -1094,11 +1072,15 @@ fn write_to_csv(
                 stats.bid_5bps.to_string(),
                 stats.bid_10bps.to_string(),
                 stats.bid_20bps.to_string(),
+                stats.bid_50bps.to_string(),
+                stats.bid_100bps.to_string(),
                 stats.ask_1bps.to_string(),
                 stats.ask_2_5bps.to_string(),
                 stats.ask_5bps.to_string(),
                 stats.ask_10bps.to_string(),
                 stats.ask_20bps.to_string(),
+                stats.ask_50bps.to_string(),
+                stats.ask_100bps.to_string(),
                 slippages
                     .first()
                     .and_then(|s| s.buy_slippage_bps)
@@ -1214,11 +1196,15 @@ fn write_to_excel(
             "Bid 5bps",
             "Bid 10bps",
             "Bid 20bps",
+            "Bid 50bps",
+            "Bid 100bps",
             "Ask 1bps",
             "Ask 2.5bps",
             "Ask 5bps",
             "Ask 10bps",
             "Ask 20bps",
+            "Ask 50bps",
+            "Ask 100bps",
             "Slip $1K Buy",
             "Slip $1K Sell",
             "Slip $10K Buy",
@@ -1285,32 +1271,52 @@ fn write_to_excel(
             worksheet.write_number(
                 row,
                 9,
-                stats.ask_1bps.to_string().parse::<f64>().unwrap_or(0.0),
+                stats.bid_50bps.to_string().parse::<f64>().unwrap_or(0.0),
             )?;
             worksheet.write_number(
                 row,
                 10,
-                stats.ask_2_5bps.to_string().parse::<f64>().unwrap_or(0.0),
+                stats.bid_100bps.to_string().parse::<f64>().unwrap_or(0.0),
             )?;
             worksheet.write_number(
                 row,
                 11,
-                stats.ask_5bps.to_string().parse::<f64>().unwrap_or(0.0),
+                stats.ask_1bps.to_string().parse::<f64>().unwrap_or(0.0),
             )?;
             worksheet.write_number(
                 row,
                 12,
-                stats.ask_10bps.to_string().parse::<f64>().unwrap_or(0.0),
+                stats.ask_2_5bps.to_string().parse::<f64>().unwrap_or(0.0),
             )?;
             worksheet.write_number(
                 row,
                 13,
+                stats.ask_5bps.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                14,
+                stats.ask_10bps.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                15,
                 stats.ask_20bps.to_string().parse::<f64>().unwrap_or(0.0),
             )?;
+            worksheet.write_number(
+                row,
+                16,
+                stats.ask_50bps.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                17,
+                stats.ask_100bps.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
 
-            // Write slippage columns
+            // Write slippage columns (start at col 18 now)
             for (i, slippage) in slippages.iter().take(7).enumerate() {
-                let base_col = 14 + i * 2;
+                let base_col = 18 + i * 2;
                 let buy_val = slippage
                     .buy_slippage_bps
                     .map(|v| v.to_string().parse::<f64>().unwrap_or(0.0))
@@ -1327,7 +1333,7 @@ fn write_to_excel(
         worksheet.set_column_width(0, 25)?;
         worksheet.set_column_width(1, 12)?;
         worksheet.set_column_width(2, 15)?;
-        for col in 3..28 {
+        for col in 3..32 {
             worksheet.set_column_width(col, 15)?;
         }
     }
@@ -1403,13 +1409,15 @@ fn _display_table(stats: &LiquidityDepthStats) -> Result<()> {
         Cell::new("Ask Notional").with_style(prettytable::Attr::Bold),
     ]));
 
-    let bps_labels = ["1 bps", "2.5 bps", "5 bps", "10 bps", "20 bps"];
+    let bps_labels = ["1 bps", "2.5 bps", "5 bps", "10 bps", "20 bps", "50 bps", "100 bps"];
     let bids = [
         stats.bid_1bps,
         stats.bid_2_5bps,
         stats.bid_5bps,
         stats.bid_10bps,
         stats.bid_20bps,
+        stats.bid_50bps,
+        stats.bid_100bps,
     ];
     let asks = [
         stats.ask_1bps,
@@ -1417,6 +1425,8 @@ fn _display_table(stats: &LiquidityDepthStats) -> Result<()> {
         stats.ask_5bps,
         stats.ask_10bps,
         stats.ask_20bps,
+        stats.ask_50bps,
+        stats.ask_100bps,
     ];
 
     for i in 0..bps_labels.len() {
@@ -1466,6 +1476,8 @@ fn display_aggregated_table(stats: &[LiquidityDepthStats]) -> Result<()> {
         Cell::new("5 bps").with_style(prettytable::Attr::Bold),
         Cell::new("10 bps").with_style(prettytable::Attr::Bold),
         Cell::new("20 bps").with_style(prettytable::Attr::Bold),
+        Cell::new("50 bps").with_style(prettytable::Attr::Bold),
+        Cell::new("100 bps").with_style(prettytable::Attr::Bold),
     ]));
 
     for stat in stats {
@@ -1490,6 +1502,14 @@ fn display_aggregated_table(stats: &[LiquidityDepthStats]) -> Result<()> {
             ),
             Cell::new_align(
                 &format!("${:.2}", stat.bid_20bps + stat.ask_20bps),
+                format::Alignment::RIGHT,
+            ),
+            Cell::new_align(
+                &format!("${:.2}", stat.bid_50bps + stat.ask_50bps),
+                format::Alignment::RIGHT,
+            ),
+            Cell::new_align(
+                &format!("${:.2}", stat.bid_100bps + stat.ask_100bps),
                 format::Alignment::RIGHT,
             ),
         ]));
@@ -1544,13 +1564,15 @@ fn display_table_combined(data: &LiquidityData) -> Result<()> {
         Cell::new("Ask Notional").with_style(prettytable::Attr::Bold),
     ]));
 
-    let bps_labels = ["1 bps", "2.5 bps", "5 bps", "10 bps", "20 bps"];
+    let bps_labels = ["1 bps", "2.5 bps", "5 bps", "10 bps", "20 bps", "50 bps", "100 bps"];
     let bids = [
         stats.bid_1bps,
         stats.bid_2_5bps,
         stats.bid_5bps,
         stats.bid_10bps,
         stats.bid_20bps,
+        stats.bid_50bps,
+        stats.bid_100bps,
     ];
     let asks = [
         stats.ask_1bps,
@@ -1558,13 +1580,36 @@ fn display_table_combined(data: &LiquidityData) -> Result<()> {
         stats.ask_5bps,
         stats.ask_10bps,
         stats.ask_20bps,
+        stats.ask_50bps,
+        stats.ask_100bps,
+    ];
+
+    // bps values as Decimal for price threshold calculation
+    let bps_values: [Decimal; 7] = [
+        Decimal::from(1),
+        Decimal::from_str("2.5").unwrap(),
+        Decimal::from(5),
+        Decimal::from(10),
+        Decimal::from(20),
+        Decimal::from(50),
+        Decimal::from(100),
     ];
 
     for i in 0..bps_labels.len() {
+        let bid_price = stats.mid_price
+            * (Decimal::ONE - bps_values[i] / Decimal::from(10000));
+        let ask_price = stats.mid_price
+            * (Decimal::ONE + bps_values[i] / Decimal::from(10000));
         table.add_row(Row::new(vec![
             Cell::new(bps_labels[i]),
-            Cell::new_align(&format!("${:.2}", bids[i]), format::Alignment::RIGHT),
-            Cell::new_align(&format!("${:.2}", asks[i]), format::Alignment::RIGHT),
+            Cell::new_align(
+                &format!("{:.4} (${:.2})", bid_price, bids[i]),
+                format::Alignment::RIGHT,
+            ),
+            Cell::new_align(
+                &format!("{:.4} (${:.2})", ask_price, asks[i]),
+                format::Alignment::RIGHT,
+            ),
         ]));
     }
 
@@ -1655,11 +1700,15 @@ mod tests {
             bid_5bps: Decimal::from_str("3000").unwrap(),
             bid_10bps: Decimal::from_str("4000").unwrap(),
             bid_20bps: Decimal::from_str("5000").unwrap(),
+            bid_50bps: Decimal::from_str("6000").unwrap(),
+            bid_100bps: Decimal::from_str("7000").unwrap(),
             ask_1bps: Decimal::from_str("1000").unwrap(),
             ask_2_5bps: Decimal::from_str("2000").unwrap(),
             ask_5bps: Decimal::from_str("3000").unwrap(),
             ask_10bps: Decimal::from_str("4000").unwrap(),
             ask_20bps: Decimal::from_str("5000").unwrap(),
+            ask_50bps: Decimal::from_str("6000").unwrap(),
+            ask_100bps: Decimal::from_str("7000").unwrap(),
         }
     }
 

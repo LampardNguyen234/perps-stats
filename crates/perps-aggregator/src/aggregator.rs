@@ -176,6 +176,8 @@ impl IAggregator for Aggregator {
             dec!(5),   // 5 bps
             dec!(10),  // 10 bps
             dec!(20),  // 20 bps
+            dec!(50),  // 50 bps
+            dec!(100), // 100 bps
         ];
 
         // Use MultiResolutionOrderbook's bid_notional/ask_notional methods
@@ -215,11 +217,15 @@ impl IAggregator for Aggregator {
             bid_5bps: bid_notionals[2],
             bid_10bps: bid_notionals[3],
             bid_20bps: bid_notionals[4],
+            bid_50bps: bid_notionals[5],
+            bid_100bps: bid_notionals[6],
             ask_1bps: ask_notionals[0],
             ask_2_5bps: ask_notionals[1],
             ask_5bps: ask_notionals[2],
             ask_10bps: ask_notionals[3],
             ask_20bps: ask_notionals[4],
+            ask_50bps: ask_notionals[5],
+            ask_100bps: ask_notionals[6],
             max_bid_bps,
             max_ask_bps,
         })
