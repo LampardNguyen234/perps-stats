@@ -183,7 +183,6 @@ pub enum Commands {
     /// Show liquidity distribution of symbols across venues at given bps levels
     LiqDist {
         /// Comma-separated exchange names (e.g., binance,hyperliquid).
-        /// Multiple exchanges: only one bps level allowed.
         #[arg(short, long)]
         exchange: String,
 
@@ -191,10 +190,13 @@ pub enum Commands {
         #[arg(short, long)]
         symbols: String,
 
-        /// Comma-separated bps levels from {1, 2.5, 5, 10, 20}.
-        /// Single exchange: multiple bps levels allowed.
+        /// Comma-separated bps levels (e.g., 1,2.5,5,10,20).
         #[arg(short, long, default_value = "5")]
         bps: String,
+
+        /// Which side(s) to display: bid, ask, combined, all
+        #[arg(long, default_value = "combined")]
+        side: String,
 
         /// Output format (table, json)
         #[arg(short, long, default_value = "table")]

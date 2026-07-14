@@ -504,42 +504,69 @@ impl MultiResolutionOrderbook {
             .find_map(|book| book.get_slippage(amount, side.clone()))
     }
 
-    /// Calculate bid notional within given bps spread, automatically selecting
-    /// the resolution with the highest liquidity.
+    /// Calculate bid notional within given bps spread, selecting the finest resolution
+    /// whose depth covers the requested spread.
     ///
-    /// Tries all resolutions and returns the maximum bid notional found.
-    /// This is useful for liquidity depth calculations where we want the
-    /// most accurate representation of available liquidity.
+    /// Iterates finest→coarsest and picks the first resolution where
+    /// `bps <= max_bid_bps` (meaning the book actually reaches that far from mid).
+    /// Falls back to coarsest if no resolution reaches the requested spread.
+    ///
+    /// This avoids the overcount bug with best-price-grouped coarse books (e.g.
+    /// Pacifica): using max() would pick a coarse bucket whose label is the best
+    /// price in the bucket, inflating liquidity at tight spreads.
     ///
     /// # Arguments
     /// * `bps` - Basis points spread from mid price (e.g., 5 = 0.05%)
-    ///
-    /// # Returns
-    /// Maximum bid notional across all resolutions
     pub fn bid_notional(&self, bps: Decimal) -> Decimal {
+        // Use finest resolution that covers the spread AND has nonzero data at that spread.
+        // The covers check (bps <= max_bid_bps) ensures the book reaches far enough.
+        // The nonzero check catches coarse books whose buckets are clustered at a wide
+        // spread (e.g. only at 100 bps), returning 0 for any tighter query even though
+        // max_bid_bps >= requested bps.
+        for book in &self.orderbooks {
+            if let Some(max_bps) = book.max_bid_bps() {
+                if bps <= max_bps {
+                    let n = book.bid_notional(bps);
+                    if n > Decimal::ZERO {
+                        return n;
+                    }
+                }
+            }
+        }
+        // No resolution has data within this spread. Fine's full sum (all fine levels
+        // are within bps since fine.max_bps < bps) is the best available estimate.
         self.orderbooks
             .iter()
-            .map(|book| book.bid_notional(bps))
+            .map(|b| b.bid_notional(bps))
             .max()
             .unwrap_or(Decimal::ZERO)
     }
 
-    /// Calculate ask notional within given bps spread, automatically selecting
-    /// the resolution with the highest liquidity.
+    /// Calculate ask notional within given bps spread, selecting the finest resolution
+    /// whose depth covers the requested spread.
     ///
-    /// Tries all resolutions and returns the maximum ask notional found.
-    /// This is useful for liquidity depth calculations where we want the
-    /// most accurate representation of available liquidity.
+    /// Iterates finest→coarsest and picks the first resolution where
+    /// `bps <= max_ask_bps`. Falls back to coarsest if none reach the spread.
     ///
     /// # Arguments
     /// * `bps` - Basis points spread from mid price (e.g., 5 = 0.05%)
-    ///
-    /// # Returns
-    /// Maximum ask notional across all resolutions
     pub fn ask_notional(&self, bps: Decimal) -> Decimal {
+        // Use finest resolution that covers the spread AND has nonzero data at that spread.
+        // See bid_notional for the rationale behind both checks.
+        for book in &self.orderbooks {
+            if let Some(max_bps) = book.max_ask_bps() {
+                if bps <= max_bps {
+                    let n = book.ask_notional(bps);
+                    if n > Decimal::ZERO {
+                        return n;
+                    }
+                }
+            }
+        }
+        // No resolution has data within this spread. Fine's full sum is the best estimate.
         self.orderbooks
             .iter()
-            .map(|book| book.ask_notional(bps))
+            .map(|b| b.ask_notional(bps))
             .max()
             .unwrap_or(Decimal::ZERO)
     }
@@ -1447,10 +1474,10 @@ mod tests {
             vec![fine, coarse],
         );
 
-        // bid_notional should return the maximum across all resolutions
+        // fine max_bid_bps ≈ 14.99 bps (deepest bid 99900, mid 100050) → doesn't cover 100 bps
+        // falls to coarse: mid=100500, threshold=99495; only 100000@1.0 qualifies (99000 < threshold)
         let notional = multi.bid_notional(dec!(100)); // 100 bps = 1% spread
-                                                      // Coarse orderbook should provide more liquidity
-        assert!(notional > dec!(100000)); // More than $100K
+        assert_eq!(notional, dec!(100000));
     }
 
     #[test]
@@ -1499,10 +1526,10 @@ mod tests {
             vec![fine, coarse],
         );
 
-        // ask_notional should return the maximum across all resolutions
+        // fine max_ask_bps ≈ 14.99 bps (deepest ask 100200, mid 100050) → doesn't cover 100 bps
+        // falls to coarse: mid=100000, threshold=101000; only 101000@1.0 qualifies (102000 > threshold)
         let notional = multi.ask_notional(dec!(100)); // 100 bps = 1% spread
-                                                      // Coarse orderbook should provide more liquidity
-        assert!(notional > dec!(100000)); // More than $100K
+        assert_eq!(notional, dec!(101000));
     }
 
     #[test]

@@ -10,9 +10,12 @@ pub struct LiqDistArgs {
     pub exchange: String,
     pub symbols: String,
     pub bps: String,
+    /// "bid", "ask", "combined", or "all"
+    pub side: String,
     pub format: String,
 }
 
+#[derive(Clone)]
 struct SymbolStats {
     bid: Decimal,
     ask: Decimal,
@@ -82,12 +85,7 @@ pub async fn execute(args: LiqDistArgs) -> Result<()> {
         .collect();
     let bps_levels = parse_bps(&args.bps)?;
 
-    if exchange_names.len() > 1 && bps_levels.len() > 1 {
-        anyhow::bail!(
-            "Multiple exchanges selected — only one bps level allowed. Got bps: {}",
-            args.bps
-        );
-    }
+    let sides = sides_to_print(&args.side);
 
     // Fetch raw orderbooks: exchange → symbol → MultiResolutionOrderbook
     let mut data: HashMap<String, HashMap<String, MultiResolutionOrderbook>> = HashMap::new();
@@ -148,34 +146,52 @@ pub async fn execute(args: LiqDistArgs) -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&entries)?);
         }
         _ => {
-            for &bps in &bps_levels {
-                let bps_label = bps_label(bps);
-                let all_stats: HashMap<String, HashMap<String, SymbolStats>> = exchange_names
+            if exchange_names.len() == 1 {
+                // Single exchange: bps levels as rows, symbols as columns.
+                let exchange = &exchange_names[0];
+                let per_bps: Vec<(f64, HashMap<String, SymbolStats>)> = bps_levels
                     .iter()
-                    .map(|e| (e.clone(), compute_stats(&data, e, &symbols, bps)))
+                    .map(|&bps| (bps, compute_stats(&data, exchange, &symbols, bps)))
                     .collect();
 
-                display_side_table(
-                    &format!("Bid Liquidity @ {} bps", bps_label),
-                    &all_stats,
-                    &exchange_names,
-                    &symbols,
-                    Side::Bid,
-                )?;
-                display_side_table(
-                    &format!("Ask Liquidity @ {} bps", bps_label),
-                    &all_stats,
-                    &exchange_names,
-                    &symbols,
-                    Side::Ask,
-                )?;
-                display_side_table(
-                    &format!("Combined Liquidity @ {} bps", bps_label),
-                    &all_stats,
-                    &exchange_names,
-                    &symbols,
-                    Side::Combined,
-                )?;
+                for side in &sides {
+                    display_bps_rows_table(exchange, &per_bps, &symbols, side)?;
+                }
+            } else {
+                // Compute once per bps level; reuse for both side tables and distribution.
+                let all_bps_stats: Vec<(f64, HashMap<String, HashMap<String, SymbolStats>>)> =
+                    bps_levels
+                        .iter()
+                        .map(|&bps| {
+                            let stats = exchange_names
+                                .iter()
+                                .map(|e| (e.clone(), compute_stats(&data, e, &symbols, bps)))
+                                .collect();
+                            (bps, stats)
+                        })
+                        .collect();
+
+                // Side tables: exchanges as rows, symbols as columns.
+                for (bps, all_stats) in &all_bps_stats {
+                    let label = bps_label(*bps);
+                    for side in &sides {
+                        let title = format!("{} Liquidity @ {} bps", side.label(), label);
+                        display_side_table(&title, all_stats, &exchange_names, &symbols, side)?;
+                    }
+                }
+
+                // Per-exchange tables at the end: bps as rows, symbols as columns.
+                for exchange in &exchange_names {
+                    let per_bps: Vec<(f64, HashMap<String, SymbolStats>)> = all_bps_stats
+                        .iter()
+                        .map(|(bps, all_stats)| {
+                            (*bps, all_stats.get(exchange.as_str()).cloned().unwrap_or_default())
+                        })
+                        .collect();
+                    for side in &sides {
+                        display_bps_rows_table(exchange, &per_bps, &symbols, side)?;
+                    }
+                }
             }
         }
     }
@@ -187,6 +203,25 @@ enum Side {
     Bid,
     Ask,
     Combined,
+}
+
+impl Side {
+    fn label(&self) -> &'static str {
+        match self {
+            Side::Bid => "Bid",
+            Side::Ask => "Ask",
+            Side::Combined => "Combined",
+        }
+    }
+}
+
+fn sides_to_print(side: &str) -> Vec<Side> {
+    match side {
+        "bid" => vec![Side::Bid],
+        "ask" => vec![Side::Ask],
+        "all" => vec![Side::Bid, Side::Ask, Side::Combined],
+        _ => vec![Side::Combined],
+    }
 }
 
 fn pct(n: Decimal, total: Decimal) -> f64 {
@@ -238,12 +273,89 @@ fn compute_stats(
     out
 }
 
+/// Single-exchange view: rows = bps levels, columns = symbols.
+fn display_bps_rows_table(
+    exchange: &str,
+    per_bps: &[(f64, HashMap<String, SymbolStats>)],
+    symbols: &[String],
+    side: &Side,
+) -> Result<()> {
+    let side_label = match side {
+        Side::Bid => "Bid",
+        Side::Ask => "Ask",
+        Side::Combined => "Combined",
+    };
+    let title = format!("{} Liquidity — {}", side_label, exchange.to_uppercase());
+
+    let mut table = Table::new();
+    table.set_format(*format::consts::FORMAT_NO_LINESEP_WITH_TITLE);
+
+    table.set_titles(Row::new(vec![Cell::new(&title)
+        .with_hspan(symbols.len() + 1)
+        .with_style(prettytable::Attr::Bold)
+        .style_spec("c")]));
+
+    let mut header = vec![Cell::new("BPS").with_style(prettytable::Attr::Bold)];
+    for sym in symbols {
+        header.push(Cell::new(sym).with_style(prettytable::Attr::Bold));
+    }
+    table.add_row(Row::new(header));
+
+    let mut any_partial = false;
+
+    for (bps, stats) in per_bps {
+        let total: Decimal = symbols
+            .iter()
+            .filter_map(|s| stats.get(s))
+            .map(|s| match side {
+                Side::Bid => s.bid,
+                Side::Ask => s.ask,
+                Side::Combined => s.bid + s.ask,
+            })
+            .sum();
+
+        let mut row = vec![Cell::new(&bps_label(*bps))];
+        for sym in symbols {
+            let cell = match stats.get(sym) {
+                Some(s) => {
+                    let (n, partial) = match side {
+                        Side::Bid => (s.bid, s.bid_partial),
+                        Side::Ask => (s.ask, s.ask_partial),
+                        Side::Combined => (s.bid + s.ask, s.bid_partial || s.ask_partial),
+                    };
+                    if partial {
+                        any_partial = true;
+                    }
+                    let p = pct(n, total);
+                    Cell::new_align(
+                        &format!("{} ({:.1}%)", format_notional(n, partial), p),
+                        format::Alignment::RIGHT,
+                    )
+                }
+                None => Cell::new_align("N/A", format::Alignment::RIGHT),
+            };
+            row.push(cell);
+        }
+        table.add_row(Row::new(row));
+    }
+
+    println!();
+    table.printstd();
+    if any_partial {
+        println!("  * orderbook shallower than requested bps — value is a lower bound");
+    }
+    println!();
+
+    Ok(())
+}
+
+/// Each exchange's % share of the cross-exchange total per symbol.
 fn display_side_table(
     title: &str,
     all_stats: &HashMap<String, HashMap<String, SymbolStats>>,
     exchanges: &[String],
     symbols: &[String],
-    side: Side,
+    side: &Side,
 ) -> Result<()> {
     // Compute totals per exchange for this side (for pct calculation)
     let mut table = Table::new();

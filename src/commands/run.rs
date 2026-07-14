@@ -183,7 +183,7 @@ pub async fn execute(args: RunArgs) -> Result<()> {
                         }
 
                         // Fetch orderbook and calculate liquidity
-                        match client_clone.get_orderbook(&symbol_clone, 100).await {
+                        match client_clone.get_orderbook(&symbol_clone, 1000).await {
                             Ok(multi_orderbook) => {
                                 // Extract global symbol
                                 let symbol_string = symbol_clone.to_string();

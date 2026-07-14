@@ -169,12 +169,14 @@ async fn main() -> Result<()> {
             exchange,
             symbols,
             bps,
+            side,
             format,
         } => {
             commands::liq_dist::execute(commands::liq_dist::LiqDistArgs {
                 exchange,
                 symbols,
                 bps,
+                side,
                 format,
             })
             .await?;
