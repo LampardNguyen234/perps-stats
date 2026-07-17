@@ -20,7 +20,7 @@ pub struct ApiMarketInfo {
     pub base_asset_symbol: String,
     pub quote_asset_symbol: String,
     pub display_name: String,
-    pub available: bool,
+    pub active: bool,
     pub visible: Option<bool>,
     pub config: ApiMarketConfig,
 

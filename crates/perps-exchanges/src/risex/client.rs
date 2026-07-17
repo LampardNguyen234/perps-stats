@@ -163,13 +163,13 @@ impl RiseXClient {
         let symbols: std::collections::HashSet<String> = resp
             .markets
             .iter()
-            .filter(|m| m.available && m.visible.unwrap_or(true))
+            .filter(|m| m.active && m.visible.unwrap_or(true))
             .map(|m| global_symbol_from_risex_symbol(&m.base_asset_symbol))
             .collect();
         let ids: HashMap<String, u64> = resp
             .markets
             .iter()
-            .filter(|m| m.available && m.visible.unwrap_or(true))
+            .filter(|m| m.active && m.visible.unwrap_or(true))
             .filter_map(|m| {
                 let id = m.market_id.parse::<u64>().ok()?;
                 Some((global_symbol_from_risex_symbol(&m.base_asset_symbol), id))
@@ -232,7 +232,7 @@ impl IPerps for RiseXClient {
         let markets = self.fetch_markets().await?;
         Ok(markets
             .iter()
-            .filter(|m| m.available && m.visible.unwrap_or(true))
+            .filter(|m| m.active && m.visible.unwrap_or(true))
             .map(to_market)
             .collect())
     }
@@ -264,7 +264,7 @@ impl IPerps for RiseXClient {
         let markets = self.fetch_markets().await?;
         let active: Vec<_> = markets
             .iter()
-            .filter(|m| m.available && m.visible.unwrap_or(true))
+            .filter(|m| m.active && m.visible.unwrap_or(true))
             .collect();
 
         let futures: Vec<_> = active
@@ -460,7 +460,7 @@ impl IPerps for RiseXClient {
         let markets = self.fetch_markets().await?;
         Ok(markets
             .iter()
-            .filter(|m| m.available && m.visible.unwrap_or(true))
+            .filter(|m| m.active && m.visible.unwrap_or(true))
             .map(to_market_stats)
             .collect())
     }

@@ -476,7 +476,7 @@ mod tests {
             base_asset_symbol: "BTC/USDC".to_string(),
             quote_asset_symbol: "USDC".to_string(),
             display_name: "BTC/USDC".to_string(),
-            available: true,
+            active: true,
             visible: Some(true),
             config: mock_config(),
             last_price: Some(last_price.to_string()),
