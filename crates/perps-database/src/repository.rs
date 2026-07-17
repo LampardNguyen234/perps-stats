@@ -502,7 +502,7 @@ impl Repository for PostgresRepository {
         let mut best_asks: Vec<Option<Decimal>> = Vec::with_capacity(orderbooks.len());
         let mut best_bid_qtys: Vec<Option<Decimal>> = Vec::with_capacity(orderbooks.len());
         let mut best_ask_qtys: Vec<Option<Decimal>> = Vec::with_capacity(orderbooks.len());
-        let mut spread_bpss: Vec<i32> = Vec::with_capacity(orderbooks.len());
+        let mut spread_bpss: Vec<f64> = Vec::with_capacity(orderbooks.len());
         let mut timestamps: Vec<DateTime<Utc>> = Vec::with_capacity(orderbooks.len());
 
         for orderbook in orderbooks {
@@ -517,7 +517,7 @@ impl Repository for PostgresRepository {
             best_asks.push(orderbook.best_ask());
             best_bid_qtys.push(orderbook.best_bid_qty());
             best_ask_qtys.push(orderbook.best_ask_qty());
-            spread_bpss.push(orderbook.spread().and_then(|s| s.to_i32()).unwrap_or(0));
+            spread_bpss.push(orderbook.spread().and_then(|s| s.to_f64()).unwrap_or(0.0));
             timestamps.push(orderbook.timestamp);
         }
 
@@ -531,7 +531,7 @@ impl Repository for PostgresRepository {
             SELECT $1, * FROM UNNEST(
                 $2::text[], $3::numeric[], $4::numeric[],
                 $5::int4[], $6::int4[], $7::numeric[], $8::numeric[], $9::numeric[], $10::numeric[],
-                $11::int4[], $12::timestamptz[]
+                $11::float8[], $12::timestamptz[]
             )
             ON CONFLICT DO NOTHING
             "#,
@@ -1719,7 +1719,7 @@ impl Repository for PostgresRepository {
         let mut best_asks: Vec<Option<Decimal>> = Vec::with_capacity(total);
         let mut best_bid_qtys: Vec<Option<Decimal>> = Vec::with_capacity(total);
         let mut best_ask_qtys: Vec<Option<Decimal>> = Vec::with_capacity(total);
-        let mut spread_bpss: Vec<i32> = Vec::with_capacity(total);
+        let mut spread_bpss: Vec<f64> = Vec::with_capacity(total);
         let mut timestamps: Vec<DateTime<Utc>> = Vec::with_capacity(total);
 
         for (exchange, orderbooks) in orderbooks_by_exchange {
@@ -1737,7 +1737,7 @@ impl Repository for PostgresRepository {
                 best_asks.push(orderbook.best_ask());
                 best_bid_qtys.push(orderbook.best_bid_qty());
                 best_ask_qtys.push(orderbook.best_ask_qty());
-                spread_bpss.push(orderbook.spread().and_then(|s| s.to_i32()).unwrap_or(0));
+                spread_bpss.push(orderbook.spread().and_then(|s| s.to_f64()).unwrap_or(0.0));
                 timestamps.push(orderbook.timestamp);
             }
         }
@@ -1752,7 +1752,7 @@ impl Repository for PostgresRepository {
             SELECT * FROM UNNEST(
                 $1::int4[], $2::text[], $3::numeric[], $4::numeric[],
                 $5::int4[], $6::int4[], $7::numeric[], $8::numeric[], $9::numeric[], $10::numeric[],
-                $11::int4[], $12::timestamptz[]
+                $11::float8[], $12::timestamptz[]
             )
             ON CONFLICT DO NOTHING
             "#,
