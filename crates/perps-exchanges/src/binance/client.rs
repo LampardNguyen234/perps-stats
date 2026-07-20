@@ -169,7 +169,7 @@ impl BinanceClient {
         self.symbols_cache
             .get_or_init(|| async {
                 let markets = self.get_markets().await?;
-                Ok(markets.into_iter().map(|m| m.symbol).collect())
+                Ok(markets.into_iter().map(|m| self.parse_symbol(&m.symbol)).collect())
             })
             .await
     }
@@ -255,7 +255,7 @@ impl BinanceClient {
         }
 
         Ok(Market {
-            symbol: normalize_symbol(symbol),
+            symbol: self.normalize_symbol(symbol),
             contract: contract_type.to_string(),
             contract_size: Decimal::ONE, // Binance uses 1:1 contract size for USDT futures
             price_scale: price_precision,
@@ -302,7 +302,7 @@ impl BinanceClient {
         let timestamp = Utc::now().timestamp_millis();
 
         Ok(Ticker {
-            symbol: normalize_symbol(symbol),
+            symbol: self.normalize_symbol(symbol),
             last_price,
             mark_price,
             index_price,
@@ -360,7 +360,7 @@ impl BinanceClient {
             .unwrap_or_else(|| Utc::now().timestamp_millis());
 
         Ok(Orderbook {
-            symbol: normalize_symbol(symbol),
+            symbol: self.normalize_symbol(symbol),
             bids,
             asks,
             timestamp: timestamp_to_datetime(timestamp)?,
@@ -409,7 +409,7 @@ impl BinanceClient {
             .unwrap_or(funding_time + 8 * 3600 * 1000); // Default: 8 hours later
 
         Ok(FundingRate {
-            symbol: normalize_symbol(symbol),
+            symbol: self.normalize_symbol(symbol),
             funding_rate,
             predicted_rate: funding_rate, // Binance doesn't provide predicted rate separately
             funding_time: timestamp_to_datetime(funding_time)?,
@@ -440,7 +440,7 @@ impl BinanceClient {
         let next_funding_time = funding_time + 8 * 3600 * 1000; // 8 hours later
 
         Ok(FundingRate {
-            symbol: normalize_symbol(symbol),
+            symbol: self.normalize_symbol(symbol),
             funding_rate,
             predicted_rate: funding_rate, // Binance doesn't provide predicted rate separately
             funding_time: timestamp_to_datetime(funding_time)?,
@@ -471,7 +471,7 @@ impl BinanceClient {
         let quote_volume = str_to_decimal(data[7].as_str().unwrap_or("0"))?;
 
         Ok(Kline {
-            symbol: normalize_symbol(symbol),
+            symbol: self.normalize_symbol(symbol),
             interval: interval.to_string(),
             open_time: timestamp_to_datetime(open_time)?,
             close_time: timestamp_to_datetime(close_time)?,
@@ -517,7 +517,7 @@ impl BinanceClient {
 
         Ok(Trade {
             id,
-            symbol: normalize_symbol(symbol),
+            symbol: self.normalize_symbol(symbol),
             price,
             quantity: qty,
             side,

@@ -51,9 +51,10 @@ pub fn interval_to_nanos(interval: &str) -> Result<i64> {
     }
 }
 
-/// RISEx API symbol → global symbol. "BTC/USDC" → "BTC"; "BTC" → "BTC".
+/// RISEx API symbol → global symbol. "BTC/USDC" → "BTC"; "BZ/USDC" → "BRENTOIL".
 pub fn global_symbol_from_risex_symbol(symbol: &str) -> String {
-    symbol.split('/').next().unwrap_or(symbol).to_uppercase()
+    let base = symbol.split('/').next().unwrap_or(symbol).to_uppercase();
+    crate::symbol_aliases::unresolve_alias("risex", &base).to_string()
 }
 
 /// User/global symbol → RISEx symbol. "BTC" → "BTC/USDC"; "BTC/USDC" → "BTC/USDC".

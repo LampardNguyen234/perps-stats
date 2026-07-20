@@ -9,6 +9,11 @@
 #
 # Adding new tokens requires only editing this file — no code changes needed.
 
+[aster]
+PLATINUM = "XPT"
+PALLADIUM = "XPD"
+BRENTOIL = "BZ"
+
 [binance]
 XCU = "COPPER"
 PLATINUM = "XPT"
