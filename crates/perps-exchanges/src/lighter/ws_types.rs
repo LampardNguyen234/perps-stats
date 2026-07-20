@@ -20,6 +20,10 @@ pub struct LighterWsOrderbook {
 pub struct LighterOrderBook {
     pub asks: Vec<LighterOrderbookLevel>,
     pub bids: Vec<LighterOrderbookLevel>,
+    /// Monotonically increasing per matching engine update.
+    pub nonce: u64,
+    /// Must equal the previous message's `nonce`; gap → reconnect.
+    pub begin_nonce: u64,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

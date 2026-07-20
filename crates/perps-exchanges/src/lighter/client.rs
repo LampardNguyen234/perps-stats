@@ -16,6 +16,7 @@ use tracing;
 
 use super::conversions;
 use super::models::*;
+use super::ws_client::LighterOrderbookManager;
 
 const ORDER_BOOK_DETAILS_CACHE_TTL: Duration = Duration::from_secs(10);
 
@@ -29,14 +30,18 @@ struct OrderBookDetailsCache {
 pub struct LighterClient {
     client: Client,
     base_url: String,
-    // Cache for market_id lookups
-    symbol_to_market_id: HashMap<String, u64>,
+    /// symbol → market_id; shared with the WS manager so it can resolve IDs
+    /// without a separate REST call when the manager starts.
+    market_id_cache: Arc<RwLock<HashMap<String, u64>>>,
     /// Cached set of supported symbols
     symbols_cache: SymbolsCache,
     /// Rate limiter for API requests
     rate_limiter: Arc<RateLimiter>,
     /// TTL cache for orderBookDetails (shared across clones)
     order_book_details_cache: Arc<RwLock<Option<OrderBookDetailsCache>>>,
+    /// Present when ENABLE_ORDERBOOK_STREAMING=true.  get_orderbook delegates
+    /// to this instead of making a REST call.
+    orderbook_manager: Option<Arc<LighterOrderbookManager>>,
 }
 
 impl LighterClient {
@@ -54,13 +59,29 @@ impl LighterClient {
     }
 
     pub fn new() -> Self {
+        let market_id_cache: Arc<RwLock<HashMap<String, u64>>> =
+            Arc::new(RwLock::new(HashMap::new()));
+        let orderbook_manager = if std::env::var("DATABASE_URL").is_ok()
+            && std::env::var("ENABLE_ORDERBOOK_STREAMING")
+                .unwrap_or_default()
+                .to_lowercase()
+                == "true"
+        {
+            Some(Arc::new(LighterOrderbookManager::new(
+                market_id_cache.clone(),
+                BASE_URL.to_string(),
+            )))
+        } else {
+            None
+        };
         Self {
             client: Client::new(),
             base_url: BASE_URL.to_string(),
-            symbol_to_market_id: HashMap::new(),
+            market_id_cache,
             symbols_cache: SymbolsCache::new(),
             rate_limiter: Arc::new(RateLimiter::lighter()),
             order_book_details_cache: Arc::new(RwLock::new(None)),
+            orderbook_manager,
         }
     }
 
@@ -132,30 +153,27 @@ impl LighterClient {
         .await
     }
 
-    /// Get market ID for a symbol
-    async fn get_market_id(&mut self, symbol: &str) -> Result<u64> {
-        // Check cache first
-        if let Some(&market_id) = self.symbol_to_market_id.get(&self.parse_symbol(symbol)) {
-            return Ok(market_id);
+    /// Get market ID for a symbol (populates shared cache on first call).
+    async fn get_market_id(&self, symbol: &str) -> Result<u64> {
+        let sym = self.parse_symbol(symbol);
+        {
+            if let Some(&id) = self.market_id_cache.read().await.get(&sym) {
+                return Ok(id);
+            }
         }
 
-        // Fetch all markets and find the symbol
         let url = format!("{}/orderBooks", self.base_url);
         let response: LighterResponse<OrderBooksResponse> = self.get(&url).await?;
-
         if response.code != 200 {
             return Err(anyhow!("API error: code {}", response.code));
         }
 
-        // Build cache
-        for orderbook in &response.data.order_books {
-            self.symbol_to_market_id
-                .insert(self.parse_symbol(&orderbook.symbol), orderbook.market_id);
+        let mut cache = self.market_id_cache.write().await;
+        for ob in &response.data.order_books {
+            cache.insert(self.parse_symbol(&ob.symbol), ob.market_id);
         }
-
-        // Try again from cache
-        self.symbol_to_market_id
-            .get(&self.parse_symbol(symbol))
+        cache
+            .get(&sym)
             .copied()
             .ok_or_else(|| anyhow!("Symbol {} not found", symbol))
     }
@@ -293,6 +311,19 @@ impl IPerps for LighterClient {
 
     async fn get_orderbook(&self, symbol: &str, depth: u32) -> Result<MultiResolutionOrderbook> {
         let symbol = self.parse_symbol(symbol);
+
+        if let Some(mgr) = &self.orderbook_manager {
+            let mut mob = mgr.get_orderbook(&symbol, depth).await?;
+            // symbol passed to manager is exchange-level (post parse_symbol, e.g. "WTI").
+            // Normalize back to global symbol ("CL") so stored data is consistent with REST path.
+            let global = self.normalize_symbol(&symbol);
+            mob.symbol = global.clone();
+            for ob in &mut mob.orderbooks {
+                ob.symbol = global.clone();
+            }
+            return Ok(mob);
+        }
+
         // Lighter API has a maximum limit of 100
         let capped_depth = depth.min(100);
         tracing::debug!(
@@ -302,8 +333,7 @@ impl IPerps for LighterClient {
             capped_depth
         );
 
-        // Need to get market_id first
-        let market_id = self.clone().get_market_id(&symbol).await?;
+        let market_id = self.get_market_id(&symbol).await?;
 
         let url = format!(
             "{}/orderBookOrders?market_id={}&limit={}",
@@ -393,7 +423,7 @@ impl IPerps for LighterClient {
 
         let symbol = self.parse_symbol(symbol);
         // Get market_id for the symbol
-        let market_id = self.clone().get_market_id(&symbol).await?;
+        let market_id = self.get_market_id(&symbol).await?;
 
         // Lighter API requires start_timestamp, end_timestamp, AND count_back
         // If not provided, use sensible defaults
@@ -540,16 +570,16 @@ impl IPerps for LighterClient {
     }
 }
 
-// Need to implement Clone for the mut method
 impl Clone for LighterClient {
     fn clone(&self) -> Self {
         Self {
             client: self.client.clone(),
             base_url: self.base_url.clone(),
-            symbol_to_market_id: self.symbol_to_market_id.clone(),
+            market_id_cache: self.market_id_cache.clone(),
             symbols_cache: self.symbols_cache.clone(),
             rate_limiter: self.rate_limiter.clone(),
             order_book_details_cache: self.order_book_details_cache.clone(),
+            orderbook_manager: self.orderbook_manager.clone(),
         }
     }
 }
