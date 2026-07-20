@@ -15,6 +15,7 @@ use tokio::sync::RwLock;
 
 use super::conversions::*;
 use super::types::*;
+use super::ws_client::RisexOrderbookManager;
 
 const BASE_URL: &str = "https://api.rise.trade";
 /// Responses reused for this long before a fresh fetch is made.
@@ -30,6 +31,9 @@ const ORDERBOOK_MAX_DEPTH: u32 = 250;
 /// `GET /v1/markets` call cached with a 5-second TTL.  Bid/ask prices require
 /// a separate `GET /v1/orderbook` per symbol, also cached at the same TTL.
 ///
+/// When `ENABLE_ORDERBOOK_STREAMING=true` (and `DATABASE_URL` is set), `get_orderbook`
+/// uses a persistent WebSocket connection via `RisexOrderbookManager` instead of REST.
+///
 /// Rate limit: conservative 20 req/s (undocumented by API).
 #[derive(Clone)]
 pub struct RiseXClient {
@@ -42,17 +46,32 @@ pub struct RiseXClient {
     /// Short-lived response cache: canonical URL key → (inserted_at, raw JSON body).
     response_cache: Arc<RwLock<HashMap<String, (Instant, String)>>>,
     rate_limiter: Arc<RateLimiter>,
+    /// Present when ENABLE_ORDERBOOK_STREAMING=true. Shares market_id_cache Arc so it
+    /// sees populated ids as soon as ensure_cache_initialized() runs.
+    orderbook_manager: Option<Arc<RisexOrderbookManager>>,
 }
 
 impl RiseXClient {
     pub fn new() -> Self {
+        let market_id_cache = ContractCache::new();
+        let orderbook_manager = if std::env::var("DATABASE_URL").is_ok()
+            && std::env::var("ENABLE_ORDERBOOK_STREAMING")
+                .map(|v| v.to_lowercase() == "true")
+                .unwrap_or(false)
+        {
+            tracing::info!("RiseXClient: WebSocket orderbook streaming enabled");
+            Some(Arc::new(RisexOrderbookManager::new(market_id_cache.clone())))
+        } else {
+            None
+        };
         Self {
             http: Client::new(),
             base_url: BASE_URL.to_string(),
             symbols_cache: SymbolsCache::new(),
-            market_id_cache: ContractCache::new(),
+            market_id_cache,
             response_cache: Arc::new(RwLock::new(HashMap::new())),
             rate_limiter: Arc::new(RateLimiter::risex()),
+            orderbook_manager,
         }
     }
 
@@ -154,8 +173,13 @@ impl RiseXClient {
         Self::decode_envelope(&body, path)
     }
 
+    /// Return a clone of the market_id_cache for use by the WS client.
+    pub fn market_id_cache(&self) -> ContractCache<u64> {
+        self.market_id_cache.clone()
+    }
+
     /// Initialize symbols_cache and market_id_cache from /v1/markets.  Idempotent.
-    async fn ensure_cache_initialized(&self) -> Result<()> {
+    pub async fn ensure_cache_initialized(&self) -> Result<()> {
         if self.symbols_cache.is_initialized() {
             return Ok(());
         }
@@ -302,6 +326,11 @@ impl IPerps for RiseXClient {
 
     async fn get_orderbook(&self, symbol: &str, depth: u32) -> Result<MultiResolutionOrderbook> {
         let sym = self.normalize_symbol(symbol);
+        // Use WS manager when streaming is enabled; otherwise fall back to REST.
+        if let Some(mgr) = &self.orderbook_manager {
+            self.ensure_cache_initialized().await?;
+            return mgr.get_orderbook(&sym, depth.clamp(1, ORDERBOOK_MAX_DEPTH) as usize).await;
+        }
         let market_id = self.market_id_for(&sym).await?;
         let depth = depth.clamp(1, ORDERBOOK_MAX_DEPTH) as usize;
         let ob_resp = self.fetch_orderbook(market_id).await?;

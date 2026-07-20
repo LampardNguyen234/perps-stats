@@ -2295,6 +2295,7 @@ dependencies = [
  "async-stream",
  "async-trait",
  "chrono",
+ "crc32fast",
  "futures",
  "once_cell",
  "perps-core",

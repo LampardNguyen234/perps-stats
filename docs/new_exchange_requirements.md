@@ -170,13 +170,33 @@ Delegate to `get_markets()`. This is the standard pattern across all clients. Do
 a separate raw HTTP call — it duplicates endpoint logic, misses the `ACTIVE` status filter
 already applied in `get_markets()`, and bypasses any caching.
 
+`m.symbol` from `get_markets()` is always the **global** symbol (set by `self.normalize_symbol()`).
+Compare against the input global symbol directly — do **not** call `parse_symbol` on the input,
+as that produces an exchange-specific format that will never match the global `m.symbol`.
+
 ```rust
 async fn is_supported(&self, symbol: &str) -> anyhow::Result<bool> {
     let markets = self.get_markets().await?;
-    let exchange_sym = self.parse_symbol(symbol);
-    Ok(markets.iter().any(|m| m.symbol == exchange_sym))
+    // m.symbol is the global symbol (e.g. "BTC", "BRENTOIL") set by self.normalize_symbol().
+    // Compare directly — do NOT use self.parse_symbol() here, that returns exchange format.
+    Ok(markets.iter().any(|m| m.symbol.eq_ignore_ascii_case(symbol)))
 }
 ```
+
+If the client uses a **symbol cache** (populated from `get_markets()` then stored separately),
+the cache must store the same format used in the lookup. The standard approach is to store
+`self.parse_symbol(&m.symbol)` (exchange-internal format) and look up with `self.parse_symbol(symbol)`:
+
+```rust
+// ensure_cache_initialized — store exchange-internal format
+Ok(markets.into_iter().map(|m| self.parse_symbol(&m.symbol)).collect())
+
+// is_supported — look up using the same exchange-internal format
+Ok(self.symbols_cache.contains(&self.parse_symbol(symbol)).await)
+```
+
+Both sides must use the same format. Mixing global on one side and exchange-specific on the
+other is the most common cause of "Symbol X not supported" bugs after alias changes.
 
 ### 1.4 Rate Limiting
 
@@ -917,7 +937,9 @@ curl http://127.0.0.1:8080/api/v1/exchanges | jq '.[] | select(.name == "<exchan
 - [ ] `parse_symbol()` calls `resolve_alias(exchange_name, symbol)` for alias support
 - [ ] `normalize_symbol()` inverts `parse_symbol()` — round-trip test passes
 - [ ] `normalize_symbol()` calls `unresolve_alias(exchange_name, base)` for alias support
+- [ ] **Every** conversion method (`convert_ticker`, `convert_market`, `convert_trade`, `convert_kline`, etc.) uses `self.normalize_symbol()`, NOT a free/module-level `normalize_symbol()` function — verify with `grep "normalize_symbol(symbol)" client.rs` (no bare hits allowed)
 - [ ] `is_supported()` delegates to `get_markets()` — does NOT make a raw HTTP call
+- [ ] If using a symbols cache: `ensure_cache_initialized` stores `self.parse_symbol(&m.symbol)` (exchange-internal), and `is_supported` looks up `self.parse_symbol(symbol)` — both sides same format
 - [ ] Symbol aliases added to `symbol_aliases.toml` if exchange uses non-standard base names
 - [ ] Rate limiting implemented and rate limit researched from API docs
 - [ ] Response caching implemented (if exchange has per-symbol endpoints)
@@ -1452,6 +1474,81 @@ async fn is_supported(&self, symbol: &str) -> Result<bool> {
 
 This approach is correct by construction: any market returned by `get_markets()` is guaranteed
 to be active, and the logic is defined in exactly one place.
+
+### 23. **Using Free `normalize_symbol` Instead of `self.normalize_symbol()` in Conversion Methods**
+
+> **Binance retrospective (2026-07):** `convert_ticker`, `convert_market`, `convert_trade`, and
+> four other conversion methods all called the free function `normalize_symbol(symbol)` (from
+> `conversions.rs`) which only strips the exchange suffix (`BTCUSDT` → `BTC`). They never called
+> `unresolve_alias`, so aliased symbols like `BZ` were stored in the DB instead of `BRENTOIL`.
+> The liquidity table was correct (its path used `self.normalize_symbol`) while tickers were wrong —
+> making the mismatch invisible until a cross-table join failed.
+
+The free `normalize_symbol` helper and `self.normalize_symbol()` method often coexist in the same
+file. The free function handles only suffix stripping; `self.normalize_symbol()` additionally calls
+`unresolve_alias`. Always use the method in conversion output.
+
+❌ **Wrong:** call the free function — alias mapping silently skipped
+```rust
+// conversions.rs:
+pub fn normalize_symbol(exchange_sym: &str) -> String {
+    exchange_sym.strip_suffix("USDT").unwrap_or(exchange_sym).to_uppercase()
+    // No unresolve_alias call — "BZ" stays as "BZ"
+}
+
+// client.rs — in convert_ticker, convert_market, convert_trade, etc.:
+Ok(Ticker { symbol: normalize_symbol(symbol), .. })  // BZ stored in DB
+```
+
+✅ **Right:** always use the method, which calls `unresolve_alias`
+```rust
+// client.rs:
+fn normalize_symbol(&self, exchange_symbol: &str) -> String {
+    let base = exchange_symbol.strip_suffix("USDT").unwrap_or(exchange_symbol).to_uppercase();
+    crate::symbol_aliases::unresolve_alias("exchange_name", &base).to_string()
+    // "BZ" → "BRENTOIL"
+}
+
+// In every conversion method:
+Ok(Ticker { symbol: self.normalize_symbol(symbol), .. })  // BRENTOIL stored in DB
+```
+
+**How to audit:** `grep -n "normalize_symbol(symbol)" client.rs` — any hit that is NOT
+prefixed with `self.` is a bug if the exchange has entries in `symbol_aliases.toml`.
+
+### 24. **Symbols Cache Format Mismatch with `is_supported` Lookup**
+
+> **Binance retrospective (2026-07):** After fixing pitfall #23, `convert_market` produced
+> global symbols (`"BTC"`) in `m.symbol`. The cache was populated with `m.symbol` (global),
+> but `is_supported` looked up `self.parse_symbol(symbol)` (exchange-internal: `"BTC-USDT"`).
+> `"BTC" != "BTC-USDT"` → every symbol reported as unsupported.
+
+The cache and the lookup **must use the same format**. The standard pattern used across all
+other exchanges (lighter, tradexyz, hotstuff, kucoin) is exchange-internal format on both sides:
+
+❌ **Wrong:** cache stores global, lookup uses exchange-internal — they never match
+```rust
+// ensure_cache_initialized:
+Ok(markets.into_iter().map(|m| m.symbol).collect())  // "BTC" (global)
+
+// is_supported:
+Ok(self.symbols_cache.contains(&self.parse_symbol(symbol)).await)  // "BTC-USDT" (exchange)
+// "BTC" ≠ "BTC-USDT" → always false
+```
+
+✅ **Right:** both sides use exchange-internal format via `parse_symbol`
+```rust
+// ensure_cache_initialized:
+Ok(markets.into_iter().map(|m| self.parse_symbol(&m.symbol)).collect())  // "BTC-USDT"
+
+// is_supported:
+Ok(self.symbols_cache.contains(&self.parse_symbol(symbol)).await)  // "BTC-USDT"
+// match ✓
+```
+
+`parse_symbol` is its own inverse for exchange-format input (idempotent), so calling
+`parse_symbol(global_symbol)` → exchange format, and `parse_symbol(exchange_format)` →
+same exchange format (no double-wrapping).
 
 ---
 
