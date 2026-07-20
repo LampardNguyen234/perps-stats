@@ -8,10 +8,14 @@ use perps_core::{execute_with_retry, IPerps, RateLimiter, RetryConfig};
 use rust_decimal::Decimal;
 use std::collections::HashSet;
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tokio::sync::RwLock;
 
 const BASE_URL: &str = "https://api.starknet.extended.exchange/api/v1";
+
+/// Shared StreamManager — one per process regardless of how many ExtendedClient instances exist.
+#[cfg(feature = "streaming")]
+static STREAM_MANAGER: OnceLock<Arc<perps_core::StreamManager>> = OnceLock::new();
 
 /// A client for the Extended Exchange (Starknet L2 DEX).
 #[derive(Clone)]
@@ -98,14 +102,15 @@ impl ExtendedClient {
             .build()
             .expect("Failed to build HTTP client");
 
-        // Create WebSocket client
-        let ws_client = Arc::new(ExtendedWsClient::new());
-
-        // Create StreamManager with default config
-        let stream_manager = Arc::new(StreamManager::new(
-            ws_client as Arc<dyn perps_core::OrderbookStreamer>,
-            StreamConfig::default(),
-        ));
+        // Reuse the shared StreamManager if already created (avoids duplicate WS connections
+        // when start.rs creates separate clients for ticker and liquidity tasks).
+        let stream_manager = Arc::clone(STREAM_MANAGER.get_or_init(|| {
+            let ws_client = Arc::new(ExtendedWsClient::new());
+            Arc::new(StreamManager::new(
+                ws_client as Arc<dyn perps_core::OrderbookStreamer>,
+                StreamConfig::default(),
+            ))
+        }));
 
         Ok(Self {
             http,
@@ -404,11 +409,37 @@ impl IPerps for ExtendedClient {
             // Subscribe (idempotent, auto-starts streaming)
             manager.subscribe(exchange_symbol.clone()).await?;
 
-            // Get orderbook (auto cache + fallback)
+            // Get orderbook (auto cache + fallback).
+            // Extended REST has no sequence number; use current timestamp (ms) as lastUpdateId
+            // so all buffered WS events (lower timestamps) are treated stale and the next WS
+            // snapshot takes over cleanly.
+            let http = self.http.clone();
+            let exchange_symbol_clone = exchange_symbol.clone();
+            let base_url = BASE_URL.to_string();
             let mut orderbook = manager
                 .get_orderbook(&exchange_symbol, depth, || async move {
-                    // REST fallback returns (Orderbook, lastUpdateId) for snapshot initialization
-                    Err(anyhow!("REST fallback not set"))
+                    let url = format!("{}/info/markets/{}/orderbook", base_url, exchange_symbol_clone);
+                    let resp: ExtendedOrderbook = http.get(&url).send().await?.json().await?;
+                    let bids = resp.bid.iter().map(|l| {
+                        Ok(OrderbookLevel {
+                            price: Decimal::from_str(&l.price)?,
+                            quantity: Decimal::from_str(&l.qty)?,
+                        })
+                    }).collect::<Result<Vec<_>>>()?;
+                    let asks = resp.ask.iter().map(|l| {
+                        Ok(OrderbookLevel {
+                            price: Decimal::from_str(&l.price)?,
+                            quantity: Decimal::from_str(&l.qty)?,
+                        })
+                    }).collect::<Result<Vec<_>>>()?;
+                    let ob = Orderbook {
+                        symbol: exchange_symbol_clone,
+                        bids,
+                        asks,
+                        timestamp: Utc::now(),
+                    };
+                    let last_update_id = Utc::now().timestamp_millis() as u64;
+                    Ok((ob, last_update_id))
                 })
                 .await?;
             orderbook.symbol = self.normalize_symbol(symbol);

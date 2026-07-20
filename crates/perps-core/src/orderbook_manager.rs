@@ -508,18 +508,16 @@ impl LocalOrderbook {
             if should_remove {
                 data.asks.remove(&level.price);
                 ask_removes += 1;
-                tracing::trace!(
-                    "[WS Update] {}/{} ASK REMOVED: price={}, final_qty={}, mode={}",
-                    data.exchange,
-                    data.symbol,
-                    level.price,
-                    final_quantity,
-                    if is_incremental_delta {
-                        "incremental"
-                    } else {
-                        "full_price"
-                    }
-                );
+                if final_quantity < Decimal::ZERO {
+                    tracing::warn!(
+                        "[WS Update] {}/{} ASK REMOVED: price={}, final_qty={}, mode={}",
+                        data.exchange,
+                        data.symbol,
+                        level.price,
+                        final_quantity,
+                        if is_incremental_delta { "incremental" } else { "full_price" }
+                    );
+                }
             } else {
                 let is_new = !data.asks.contains_key(&level.price);
                 data.asks.insert(level.price, final_quantity);
@@ -548,9 +546,8 @@ impl LocalOrderbook {
         let new_best_bid = data.bids.iter().next_back().map(|(p, q)| (*p, *q));
         let new_best_ask = data.asks.iter().next().map(|(p, q)| (*p, *q));
 
-        // Log best bid/ask changes
         if old_best_bid != new_best_bid {
-            tracing::debug!(
+            tracing::trace!(
                 "[WS Update] {}/{} BEST BID CHANGED: {:?} -> {:?}",
                 data.exchange,
                 data.symbol,
@@ -559,7 +556,7 @@ impl LocalOrderbook {
             );
         }
         if old_best_ask != new_best_ask {
-            tracing::debug!(
+            tracing::trace!(
                 "[WS Update] {}/{} BEST ASK CHANGED: {:?} -> {:?}",
                 data.exchange,
                 data.symbol,
@@ -569,7 +566,6 @@ impl LocalOrderbook {
         }
 
         if new_best_ask < new_best_bid {
-            // Log top 5 bids and asks to understand what happened
             let top_bids: Vec<String> = data
                 .bids
                 .iter()
@@ -597,22 +593,22 @@ impl LocalOrderbook {
             );
         }
 
+        let bid_liq: Decimal = data.bids.iter().map(|(p, q)| p * q).sum();
+        let ask_liq: Decimal = data.asks.iter().map(|(p, q)| p * q).sum();
+        let mid = new_best_bid
+            .zip(new_best_ask)
+            .map(|((bp, _), (ap, _))| (bp + ap) / Decimal::TWO);
         tracing::debug!(
-            "[WS Update] {}/{} APPLIED: U={}, u={} | Bids: {} levels (+{} -{}) | Asks: {} levels (+{} -{}) | Best: {}@{} / {}@{}",
+            "[{}] {} upd bestBid={} bestAsk={} mid={} bidLiq={:.4} askLiq={:.4} +{}/−{}",
             data.exchange,
             data.symbol,
-            first_update_id,
-            final_update_id,
-            data.bids.len(),
-            bid_adds_or_updates,
-            bid_removes,
-            data.asks.len(),
-            ask_adds_or_updates,
-            ask_removes,
-            new_best_bid.map(|(p, _)| p.to_string()).unwrap_or_else(|| "N/A".to_string()),
-            new_best_bid.map(|(_, q)| q.to_string()).unwrap_or_else(|| "N/A".to_string()),
-            new_best_ask.map(|(p, _)| p.to_string()).unwrap_or_else(|| "N/A".to_string()),
-            new_best_ask.map(|(_, q)| q.to_string()).unwrap_or_else(|| "N/A".to_string())
+            new_best_bid.map(|(p, _)| format!("{:.2}", p)).unwrap_or_else(|| "-".to_string()),
+            new_best_ask.map(|(p, _)| format!("{:.2}", p)).unwrap_or_else(|| "-".to_string()),
+            mid.map(|m| format!("{:.2}", m)).unwrap_or_else(|| "-".to_string()),
+            bid_liq,
+            ask_liq,
+            bid_adds_or_updates + ask_adds_or_updates,
+            bid_removes + ask_removes,
         );
 
         Ok(true)
