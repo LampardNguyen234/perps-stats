@@ -1,11 +1,9 @@
 use crate::cache::SymbolsCache;
 use crate::pacifica::types::*;
-use crate::pacifica::ws_client::PacificaWsClient;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, TimeZone, Utc};
-use perps_core::stream_manager::{StreamConfig, StreamManager};
-use perps_core::streaming::OrderbookStreamer;
+use perps_core::stream_manager::StreamManager;
 use perps_core::types::*;
 use perps_core::{execute_with_retry, IPerps, RateLimiter, RetryConfig};
 use rust_decimal::Decimal;
@@ -34,25 +32,8 @@ impl PacificaClient {
             .build()
             .expect("Failed to build HTTP client");
 
-        // Initialize StreamManager if DATABASE_URL is set and ENABLE_ORDERBOOK_STREAMING=true
-        let stream_manager = if std::env::var("DATABASE_URL").is_ok() {
-            if std::env::var("ENABLE_ORDERBOOK_STREAMING")
-                .unwrap_or_else(|_| "false".to_string())
-                .to_lowercase()
-                == "true"
-            {
-                let ws_client: Arc<dyn OrderbookStreamer> = Arc::new(PacificaWsClient::new());
-                let stream_manager =
-                    Arc::new(StreamManager::new(ws_client, StreamConfig::default()));
-
-                tracing::info!("[Pacifica] StreamManager initialized");
-                Some(stream_manager)
-            } else {
-                None
-            }
-        } else {
-            None
-        };
+        // WS disabled until multi-agg-level support is implemented
+        let stream_manager: Option<Arc<StreamManager>> = None;
 
         Self {
             http,
@@ -427,15 +408,18 @@ impl IPerps for PacificaClient {
 
         let symbol_clone = exchange_symbol.clone();
         let self_fine = self.clone();
+        let self_mid = self.clone();
         let self_coarse = self.clone();
 
-        let (fine_result, coarse_result) = match symbol {
+        let (fine_result, mid_result, coarse_result) = match symbol {
             "ETH" | "BTC" => tokio::join!(
                 self_fine.fetch_orderbook_with_agg_level(&symbol_clone, 1),
-                self_coarse.fetch_orderbook_with_agg_level(&symbol_clone, 20)
+                self_mid.fetch_orderbook_with_agg_level(&symbol_clone, 10),
+                self_coarse.fetch_orderbook_with_agg_level(&symbol_clone, 100)
             ),
             _ => tokio::join!(
                 self_fine.fetch_orderbook_with_agg_level(&symbol_clone, 1),
+                self_mid.fetch_orderbook_with_agg_level(&symbol_clone, 20),
                 self_coarse.fetch_orderbook_with_agg_level(&symbol_clone, 100)
             ),
         };
@@ -460,6 +444,24 @@ impl IPerps for PacificaClient {
             orderbooks.push(fine_book);
         } else if let Err(e) = fine_result {
             tracing::warn!("[Pacifica] Fine orderbook failed for {}: {}", symbol, e);
+        }
+
+        if let Ok((mut mid_book, _)) = mid_result {
+            mid_book.symbol = self.normalize_symbol(symbol);
+            tracing::debug!(
+                "[Pacifica] ✓ Mid orderbook fetched for {} (notional={}): {} bids, {} asks | Best bid: {} @ {} | Best ask: {} @ {}",
+                symbol,
+                mid_book.total_notional().0,
+                mid_book.bids.len(),
+                mid_book.asks.len(),
+                mid_book.bids.first().map(|l| l.price).unwrap_or_default(),
+                mid_book.bids.first().map(|l| l.quantity).unwrap_or_default(),
+                mid_book.asks.first().map(|l| l.price).unwrap_or_default(),
+                mid_book.asks.first().map(|l| l.quantity).unwrap_or_default()
+            );
+            orderbooks.push(mid_book);
+        } else if let Err(e) = mid_result {
+            tracing::warn!("[Pacifica] Mid orderbook failed for {}: {}", symbol, e);
         }
 
         if let Ok((mut coarse_book, _)) = coarse_result {

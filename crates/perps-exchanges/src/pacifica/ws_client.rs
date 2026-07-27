@@ -117,7 +117,7 @@ impl PacificaWsClient {
             previous_id: 0, // Gap detection mode
             bids,
             asks,
-            is_snapshot: false, // Pacifica sends full snapshots, not incremental deltas
+            is_snapshot: true, // Each Pacifica message is a full L2 snapshot; use apply_snapshot to clear stale levels
         })
     }
 }
@@ -143,7 +143,7 @@ impl OrderbookStreamer for PacificaWsClient {
         let mut ws_stream = self.connect().await?;
 
         // Subscribe to orderbook with agg_level=10 as specified
-        self.subscribe(&mut ws_stream, symbol.clone(), 10).await?;
+        self.subscribe(&mut ws_stream, symbol.clone(), 1).await?;
 
         let symbol_clone = symbol.clone();
         let client_clone = self.clone();

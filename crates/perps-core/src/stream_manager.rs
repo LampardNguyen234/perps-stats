@@ -494,7 +494,7 @@ impl StreamManager {
                 .await
             {
                 Ok(replayed_count) => {
-                    info!(
+                    debug!(
                         "[{}] Snapshot applied for {} (lastUpdateId={}, replayed {} buffered events)",
                         exchange,
                         depth_update.symbol,

@@ -149,7 +149,7 @@ impl LocalOrderbook {
         // Acquire write lock on data
         let mut data = self.data.write();
 
-        tracing::info!(
+        tracing::debug!(
             "[Snapshot] {}/{} applying snapshot: lastUpdateId={}, bids={} levels, asks={} levels, buffered_events={}",
             data.exchange,
             data.symbol,
@@ -254,7 +254,7 @@ impl LocalOrderbook {
             }
         }
 
-        tracing::info!(
+        tracing::debug!(
             "[Snapshot] {}/{} replay complete: replayed={}, skipped={}, final_lastUpdateId={}",
             data.exchange,
             data.symbol,
