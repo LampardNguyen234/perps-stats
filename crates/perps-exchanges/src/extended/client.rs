@@ -54,39 +54,9 @@ impl ExtendedClient {
         }
     }
 
-    /// Create a new client with optional WebSocket streaming
-    /// Automatically enables streaming if DATABASE_URL is set and ENABLE_ORDERBOOK_STREAMING=true
+    /// Create a new client. WS disabled pending multi-agg-level orderbook support.
     pub async fn new() -> Result<Self> {
-        let should_enable_streaming = std::env::var("DATABASE_URL").is_ok()
-            && std::env::var("ENABLE_ORDERBOOK_STREAMING")
-                .map(|v| v.to_lowercase() == "true")
-                .unwrap_or(false);
-
-        if !should_enable_streaming {
-            tracing::debug!("ExtendedClient: Streaming disabled, using REST-only mode");
-            return Ok(Self::new_rest_only());
-        }
-
-        #[cfg(feature = "streaming")]
-        {
-            match Self::try_init_streaming().await {
-                Ok(client) => {
-                    tracing::info!("✓ ExtendedClient initialized with WebSocket streaming");
-                    Ok(client)
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to initialize streaming for ExtendedClient: {}", e);
-                    tracing::warn!("Falling back to REST-only mode");
-                    Ok(Self::new_rest_only())
-                }
-            }
-        }
-
-        #[cfg(not(feature = "streaming"))]
-        {
-            tracing::debug!("ExtendedClient: Streaming feature not enabled, using REST-only mode");
-            Ok(Self::new_rest_only())
-        }
+        Ok(Self::new_rest_only())
     }
 
     /// Try to initialize with streaming support using StreamManager

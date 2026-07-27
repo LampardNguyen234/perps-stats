@@ -594,7 +594,7 @@ async fn run_manager_task(
     let mut id_counter: u32 = 1;
 
     loop {
-        tracing::debug!("ParadexOrderbookManager: connecting to {}", WS_BASE_URL);
+        tracing::info!("ParadexOrderbookManager: connecting to {}", WS_BASE_URL);
 
         let (ws_stream, _) = match connect_async(WS_BASE_URL).await {
             Ok(pair) => pair,

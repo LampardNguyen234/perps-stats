@@ -328,7 +328,7 @@ async fn run_background_task(
     mut subscribe_rx: mpsc::Receiver<Vec<String>>,
 ) {
     loop {
-        tracing::debug!("RisexOrderbookManager: connecting to {}", WS_URL);
+        tracing::info!("RisexOrderbookManager: connecting to {}", WS_URL);
 
         let (ws_stream, _) = match connect_async(WS_URL).await {
             Ok(pair) => pair,

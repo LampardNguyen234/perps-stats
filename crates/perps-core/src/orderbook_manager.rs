@@ -760,7 +760,7 @@ impl OrderbookManager {
         let mut orderbooks = self.orderbooks.write().await;
         orderbooks.insert(symbol.clone(), Arc::new(local_orderbook));
 
-        tracing::info!(
+        tracing::debug!(
             "[WS Init] {}/{} empty orderbook created (buffering mode, buffer_size={})",
             self.exchange,
             symbol,
@@ -842,7 +842,7 @@ impl OrderbookManager {
         let mut orderbooks = self.orderbooks.write().await;
         orderbooks.insert(symbol.clone(), Arc::new(local_orderbook));
 
-        tracing::info!(
+        tracing::debug!(
             "[WS Snapshot] {}/{} initialized (legacy): lastUpdateId={}, bids={} levels, asks={} levels, best_bid={}, best_ask={}",
             self.exchange,
             symbol,

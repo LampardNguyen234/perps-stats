@@ -33,7 +33,7 @@ impl ExtendedWsClient {
         ws_orderbook: &ExtendedWsOrderbook,
     ) -> Result<(String, bool, Vec<OrderbookLevel>, Vec<OrderbookLevel>, u64)> {
         let is_snapshot = ws_orderbook.data.update_type == "SNAPSHOT";
-        tracing::info!("convert_orderbook: {:?}", ws_orderbook);
+        tracing::trace!("convert_orderbook: {:?}", ws_orderbook);
 
         let bids: Vec<OrderbookLevel> = ws_orderbook
             .data

@@ -143,7 +143,7 @@ impl StreamManager {
             return Ok(());
         }
 
-        info!("Subscribing to {} orderbook stream", symbol);
+        debug!("Subscribing to {} orderbook stream", symbol);
 
         // Step 1: Initialize empty orderbook for this symbol (starts buffering)
         self.orderbook_manager
@@ -262,7 +262,7 @@ impl StreamManager {
             .await
         {
             Ok(replayed_count) => {
-                info!(
+                debug!(
                     "[{}] Snapshot applied for {} (lastUpdateId={}, replayed {} buffered events)",
                     self.streamer.exchange_name(),
                     symbol,
@@ -391,7 +391,7 @@ impl StreamManager {
         }
 
         Ok(async move {
-            info!("{}: Started streaming task for {}", exchange, symbol);
+            debug!("{}: Started streaming task for {}", exchange, symbol);
 
             // Update stats
             {
