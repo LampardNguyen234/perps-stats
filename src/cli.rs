@@ -64,6 +64,21 @@ pub enum Commands {
         database_url: Option<String>,
     },
 
+    /// List markets with tick/step sizes for one or more exchanges
+    Markets {
+        /// Comma-separated exchange names (e.g., binance,bybit,extended)
+        #[arg(short, long, default_value = "binance")]
+        exchanges: String,
+
+        /// Comma-separated list of symbols to filter (e.g., BTC,ETH). Omit to list all.
+        #[arg(short, long)]
+        symbols: Option<String>,
+
+        /// Output format (table, json, csv)
+        #[arg(short, long, default_value = "table")]
+        format: String,
+    },
+
     /// Retrieve L1 market data for contracts
     Market {
         /// Exchange name (e.g., binance)

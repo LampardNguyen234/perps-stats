@@ -15,8 +15,8 @@ pub fn to_market(orderbook: &OrderBook) -> Result<CoreMarket> {
         symbol: orderbook.symbol.clone(),
         contract: format!("{}-PERP", orderbook.symbol), // Lighter perps format
         contract_size: Decimal::from(1),                // 1:1 for most perps
-        price_scale: -(orderbook.supported_price_decimals as i32),
-        quantity_scale: -(orderbook.supported_size_decimals as i32),
+        price_scale: orderbook.supported_price_decimals as i32,
+        quantity_scale: orderbook.supported_size_decimals as i32,
         min_order_qty: Decimal::from_str(&orderbook.min_base_amount)?,
         max_order_qty: Decimal::from(1000000), // Default max, not provided by API
         min_order_value: Decimal::from_str(&orderbook.min_quote_amount)?,

@@ -221,13 +221,13 @@ impl BinanceClient {
             .as_str()
             .ok_or_else(|| BinanceError::ConversionError("Missing symbol".to_string()))?;
 
-        let contract_type = info["contractType"].as_str().unwrap_or("PERPETUAL");
+        let _contract_type = info["contractType"].as_str().unwrap_or("PERPETUAL");
 
-        let price_precision = info["pricePrecision"].as_i64().unwrap_or(2) as i32;
+        let fallback_price_scale = info["pricePrecision"].as_i64().unwrap_or(2) as i32;
+        let fallback_qty_scale = info["quantityPrecision"].as_i64().unwrap_or(3) as i32;
 
-        let quantity_precision = info["quantityPrecision"].as_i64().unwrap_or(3) as i32;
-
-        // Extract filter information
+        let mut price_scale = fallback_price_scale;
+        let mut quantity_scale = fallback_qty_scale;
         let mut min_qty = Decimal::ZERO;
         let mut max_qty = Decimal::MAX;
         let mut min_notional = Decimal::ZERO;
@@ -236,7 +236,23 @@ impl BinanceClient {
         if let Some(filters) = info["filters"].as_array() {
             for filter in filters {
                 match filter["filterType"].as_str() {
+                    Some("PRICE_FILTER") => {
+                        if let Some(tick) = filter["tickSize"].as_str() {
+                            if let Ok(tick_size) = str_to_decimal(tick) {
+                                if tick_size > Decimal::ZERO {
+                                    price_scale = tick_size.scale() as i32;
+                                }
+                            }
+                        }
+                    }
                     Some("LOT_SIZE") => {
+                        if let Some(step) = filter["stepSize"].as_str() {
+                            if let Ok(step_size) = str_to_decimal(step) {
+                                if step_size > Decimal::ZERO {
+                                    quantity_scale = step_size.scale() as i32;
+                                }
+                            }
+                        }
                         if let Some(min) = filter["minQty"].as_str() {
                             min_qty = str_to_decimal(min)?;
                         }
@@ -256,10 +272,10 @@ impl BinanceClient {
 
         Ok(Market {
             symbol: self.normalize_symbol(symbol),
-            contract: contract_type.to_string(),
+            contract: symbol.to_string(),
             contract_size: Decimal::ONE, // Binance uses 1:1 contract size for USDT futures
-            price_scale: price_precision,
-            quantity_scale: quantity_precision,
+            price_scale,
+            quantity_scale,
             min_order_qty: min_qty,
             max_order_qty: max_qty,
             min_order_value: min_notional,
