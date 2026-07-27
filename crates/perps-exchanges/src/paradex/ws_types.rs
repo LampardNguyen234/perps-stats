@@ -1,135 +1,108 @@
 use serde::{Deserialize, Serialize};
 
-/// Paradex WebSocket subscription request
+/// Paradex WebSocket subscription request (JSON-RPC 2.0)
 #[derive(Debug, Clone, Serialize)]
 pub struct ParadexWsSubscribeRequest {
-    pub method: String, // "SUBSCRIBE"
+    pub jsonrpc: String, // "2.0"
+    pub method: String,  // "subscribe"
+    pub id: u32,
     pub params: ParadexWsSubscribeParams,
+}
+
+impl ParadexWsSubscribeRequest {
+    pub fn new(id: u32, channel: String) -> Self {
+        Self {
+            jsonrpc: "2.0".to_string(),
+            method: "subscribe".to_string(),
+            id,
+            params: ParadexWsSubscribeParams { channel },
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ParadexWsSubscribeParams {
-    pub channel: String, // e.g., "markets_summary", "order_book", "trades"
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub market: Option<String>, // e.g., "BTC-USD-PERP"
+    /// Dotted channel name, e.g. "markets_summary.BTC-USD-PERP",
+    /// "order_book.BTC-USD-PERP.snapshot@15@100ms", "trades.BTC-USD-PERP"
+    pub channel: String,
 }
 
-/// Paradex WebSocket subscription response
+/// Top-level incoming message envelope
 #[derive(Debug, Clone, Deserialize)]
-pub struct ParadexWsSubscribeResponse {
+pub struct ParadexWsMessage {
+    pub method: Option<String>,
+    pub id: Option<u32>,
+    pub params: Option<ParadexWsSubscriptionParams>,
+    pub result: Option<serde_json::Value>,
+    pub error: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ParadexWsSubscriptionParams {
     pub channel: String,
-    pub result: bool,
+    pub data: serde_json::Value,
 }
 
-/// Paradex WebSocket market summary message
-/// Channel: markets_summary
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct ParadexWsMarketSummary {
-    pub channel: String,
-    pub params: ParadexMarketSummaryData,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct ParadexMarketSummaryData {
-    pub data: ParadexMarketSummaryItem,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
+/// markets_summary.{market} data payload
+#[derive(Debug, Clone, Deserialize)]
 pub struct ParadexMarketSummaryItem {
     pub symbol: String,
     pub last_traded_price: String,
     pub mark_price: String,
-    pub underlying_price: String, // index_price
+    pub underlying_price: String,
     pub volume_24h: String,
     pub price_change_rate_24h: String,
     pub open_interest: String,
     pub funding_rate: String,
-    pub created_at: u64, // Milliseconds
+    pub created_at: u64,
+    // bid/ask present in WS but may be empty strings when no liquidity
+    pub bid: Option<String>,
+    pub bid_size: Option<String>,
+    pub ask: Option<String>,
+    pub ask_size: Option<String>,
 }
 
-/// Paradex WebSocket order book message
-/// Channel: order_book
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct ParadexWsOrderbook {
-    pub channel: String,
-    pub params: ParadexOrderbookData,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct ParadexOrderbookData {
-    pub data: ParadexOrderbookSnapshot,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct ParadexOrderbookSnapshot {
-    pub market: String,
-    pub bids: Vec<(String, String)>, // (price, quantity)
-    pub asks: Vec<(String, String)>, // (price, quantity)
-    pub last_updated_at: u64,        // Milliseconds
-}
-
-/// Paradex WebSocket trades message
-/// Channel: trades
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct ParadexWsTrades {
-    pub channel: String,
-    pub params: ParadexTradesData,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct ParadexTradesData {
-    pub data: Vec<ParadexTradeItem>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct ParadexTradeItem {
-    pub market: String,
+/// order_book.{market}.snapshot@15@100ms — single level entry in inserts/deletes
+#[derive(Debug, Clone, Deserialize)]
+pub struct ParadexOrderbookLevel {
+    pub side: String, // "BUY" or "SELL"
     pub price: String,
     pub size: String,
-    pub side: String,   // "buy" or "sell"
-    pub timestamp: i64, // Unix timestamp in seconds
 }
 
-/// Paradex WebSocket funding data message
-/// Channel: funding_data
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct ParadexWsFundingData {
-    pub channel: String,
-    pub params: ParadexFundingDataParams,
+/// order_book snapshot payload
+#[derive(Debug, Clone, Deserialize)]
+pub struct ParadexOrderbookSnapshot {
+    pub market: String,
+    pub last_updated_at: u64,
+    /// "s" = full snapshot, "d" = delta
+    pub update_type: String,
+    pub inserts: Vec<ParadexOrderbookLevel>,
+    #[serde(default)]
+    pub deletes: Vec<ParadexOrderbookLevel>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct ParadexFundingDataParams {
-    pub data: ParadexFundingDataItem,
+/// trades.{market} — single trade
+#[derive(Debug, Clone, Deserialize)]
+pub struct ParadexTradeItem {
+    pub market: Option<String>,
+    pub price: String,
+    pub size: String,
+    pub side: String,   // "BUY" or "SELL"
+    pub timestamp: i64, // Unix seconds
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+/// funding_data.{market} payload
+#[derive(Debug, Clone, Deserialize)]
 pub struct ParadexFundingDataItem {
     pub market: String,
     pub funding_rate: String,
-    pub created_at: u64, // Milliseconds
+    pub created_at: u64,
 }
 
-/// Paradex WebSocket ping message
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct ParadexWsPing {
-    #[serde(rename = "type")]
-    pub msg_type: String, // "ping"
-}
-
-/// Paradex WebSocket pong response
+/// Pong response to server ping
 #[derive(Debug, Clone, Serialize)]
 pub struct ParadexWsPong {
     #[serde(rename = "type")]
     pub msg_type: String, // "pong"
-}
-
-/// Generic WebSocket response wrapper
-#[derive(Debug, Clone, Deserialize)]
-pub struct ParadexWsResponse {
-    #[serde(rename = "type")]
-    pub msg_type: Option<String>,
-    pub channel: Option<String>,
-    #[serde(flatten)]
-    pub data: serde_json::Value,
 }

@@ -6,26 +6,107 @@ use futures::{SinkExt, StreamExt};
 use perps_core::streaming::*;
 use perps_core::types::*;
 use rust_decimal::Decimal;
+use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::net::TcpStream;
+use tokio::sync::{mpsc, Mutex, Notify, RwLock};
+use tokio::time;
 use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
 
 const WS_BASE_URL: &str = "wss://ws.api.prod.paradex.trade/v1";
 
-/// Paradex WebSocket streaming client
+// Max depth Paradex allows for snapshot channel (only valid value is 15).
+const ORDERBOOK_DEPTH: u32 = 15;
+// Snapshot update frequency.
+const ORDERBOOK_FREQ_MS: u32 = 100;
+
+// OrderbookManager tuning
+const SNAPSHOT_TTL_SECS: u64 = 30;
+const FIRST_DATA_TIMEOUT_SECS: u64 = 15;
+const RECONNECT_DELAY_SECS: u64 = 2;
+const INACTIVITY_TIMEOUT_SECS: u64 = 60;
+const WATCHDOG_TICK_SECS: u64 = 15;
+
+// ─── Shared helpers ───────────────────────────────────────────────────────────
+
+fn orderbook_channel(market: &str) -> String {
+    format!(
+        "order_book.{}.snapshot@{}@{}ms",
+        market, ORDERBOOK_DEPTH, ORDERBOOK_FREQ_MS
+    )
+}
+
+fn clip_orderbook(ob: &MultiResolutionOrderbook, depth: usize) -> MultiResolutionOrderbook {
+    if depth == 0 {
+        return ob.clone();
+    }
+    let books = ob
+        .orderbooks
+        .iter()
+        .map(|book| Orderbook {
+            symbol: book.symbol.clone(),
+            bids: book.bids.iter().take(depth).cloned().collect(),
+            asks: book.asks.iter().take(depth).cloned().collect(),
+            timestamp: book.timestamp,
+        })
+        .collect();
+    MultiResolutionOrderbook {
+        symbol: ob.symbol.clone(),
+        timestamp: ob.timestamp,
+        orderbooks: books,
+    }
+}
+
+/// Split a full snapshot into bids/asks by level.side ("BUY"/"SELL").
+fn parse_snapshot(snap: &ParadexOrderbookSnapshot) -> Result<Orderbook> {
+    let mut bids = Vec::new();
+    let mut asks = Vec::new();
+    for level in &snap.inserts {
+        let entry = OrderbookLevel {
+            price: Decimal::from_str(&level.price)?,
+            quantity: Decimal::from_str(&level.size)?,
+        };
+        if level.side == "BUY" {
+            bids.push(entry);
+        } else {
+            asks.push(entry);
+        }
+    }
+    // Sort: bids descending (highest price first), asks ascending (lowest price first).
+    bids.sort_by(|a, b| b.price.cmp(&a.price));
+    asks.sort_by(|a, b| a.price.cmp(&b.price));
+    Ok(Orderbook {
+        symbol: snap.market.clone(),
+        bids,
+        asks,
+        timestamp: Utc.timestamp_millis_opt(snap.last_updated_at as i64).unwrap(),
+    })
+}
+
+// ─── ParadexWsClient (IPerpsStream) ──────────────────────────────────────────
+
+/// Streaming client for the `stream` command. Implements IPerpsStream.
 #[derive(Clone)]
 pub struct ParadexWsClient {
     base_url: String,
+    id_counter: Arc<AtomicU32>,
 }
 
 impl ParadexWsClient {
     pub fn new() -> Self {
         Self {
             base_url: WS_BASE_URL.to_string(),
+            id_counter: Arc::new(AtomicU32::new(1)),
         }
     }
 
-    /// Connect to WebSocket and return the stream
+    fn next_id(&self) -> u32 {
+        self.id_counter.fetch_add(1, Ordering::Relaxed)
+    }
+
     async fn connect(&self) -> Result<WebSocketStream<MaybeTlsStream<TcpStream>>> {
         tracing::info!("Connecting to Paradex WebSocket: {}", self.base_url);
         let (ws_stream, response) = connect_async(&self.base_url).await?;
@@ -36,75 +117,70 @@ impl ParadexWsClient {
         Ok(ws_stream)
     }
 
-    /// Subscribe to a channel
     async fn subscribe(
         &self,
         ws_stream: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
         channel: String,
-        market: Option<String>,
     ) -> Result<()> {
-        let request = ParadexWsSubscribeRequest {
-            method: "SUBSCRIBE".to_string(),
-            params: ParadexWsSubscribeParams { channel, market },
-        };
-        let sub_message = serde_json::to_string(&request)?;
-        tracing::debug!("Subscribing: {}", sub_message);
-        ws_stream.send(Message::Text(sub_message)).await?;
+        let req = ParadexWsSubscribeRequest::new(self.next_id(), channel.clone());
+        let json = serde_json::to_string(&req)?;
+        tracing::debug!("Paradex subscribing: {}", json);
+        ws_stream.send(Message::Text(json)).await?;
         Ok(())
     }
 
-    /// Convert Paradex market summary to our Ticker type
-    fn convert_ticker(&self, summary: &ParadexMarketSummaryItem) -> Result<Ticker> {
-        let last_price = Decimal::from_str(&summary.last_traded_price)?;
-        let mark_price = Decimal::from_str(&summary.mark_price)?;
-        let index_price = Decimal::from_str(&summary.underlying_price)?;
-
-        // Calculate 24h price change from rate
-        let price_change_rate = Decimal::from_str(&summary.price_change_rate_24h)?;
+    fn convert_ticker(&self, item: &ParadexMarketSummaryItem) -> Result<Ticker> {
+        let last_price = Decimal::from_str(&item.last_traded_price).unwrap_or(Decimal::ZERO);
+        let mark_price = Decimal::from_str(&item.mark_price)?;
+        let index_price = Decimal::from_str(&item.underlying_price)?;
+        let price_change_rate =
+            Decimal::from_str(&item.price_change_rate_24h).unwrap_or(Decimal::ZERO);
         let price_change_24h = if price_change_rate != Decimal::ZERO {
             last_price * price_change_rate / (Decimal::ONE + price_change_rate)
         } else {
             Decimal::ZERO
         };
-
-        // Estimate high/low from price change
         let price_change_abs = price_change_24h.abs();
-        let high_price_24h = last_price + price_change_abs;
-        let low_price_24h = if last_price > price_change_abs {
-            last_price - price_change_abs
-        } else {
-            Decimal::ZERO
+
+        let parse_opt = |s: &Option<String>| -> Decimal {
+            s.as_deref()
+                .filter(|v| !v.is_empty())
+                .and_then(|v| Decimal::from_str(v).ok())
+                .unwrap_or(Decimal::ZERO)
         };
 
         Ok(Ticker {
-            symbol: summary.symbol.clone(),
+            symbol: item.symbol.clone(),
             last_price,
             mark_price,
             index_price,
-            best_bid_price: Decimal::ZERO, // Not available in market summary
-            best_bid_qty: Decimal::ZERO,
-            best_ask_price: Decimal::ZERO,
-            best_ask_qty: Decimal::ZERO,
-            volume_24h: Decimal::ZERO, // Paradex provides notional volume
-            turnover_24h: Decimal::from_str(&summary.volume_24h)?,
+            best_bid_price: parse_opt(&item.bid),
+            best_bid_qty: parse_opt(&item.bid_size),
+            best_ask_price: parse_opt(&item.ask),
+            best_ask_qty: parse_opt(&item.ask_size),
+            volume_24h: Decimal::ZERO,
+            turnover_24h: Decimal::from_str(&item.volume_24h).unwrap_or(Decimal::ZERO),
             open_interest: Decimal::ZERO,
             open_interest_notional: Decimal::ZERO,
             price_change_24h,
             price_change_pct: price_change_rate,
-            high_price_24h,
-            low_price_24h,
-            timestamp: Utc.timestamp_millis_opt(summary.created_at as i64).unwrap(),
+            high_price_24h: last_price + price_change_abs,
+            low_price_24h: if last_price > price_change_abs {
+                last_price - price_change_abs
+            } else {
+                Decimal::ZERO
+            },
+            timestamp: Utc.timestamp_millis_opt(item.created_at as i64).unwrap(),
         })
     }
 
-    /// Convert Paradex trade to our Trade type
-    fn convert_trade(&self, trade: &ParadexTradeItem) -> Result<Trade> {
+    fn convert_trade(&self, trade: &ParadexTradeItem, market: &str) -> Result<Trade> {
         Ok(Trade {
             id: trade.timestamp.to_string(),
-            symbol: trade.market.clone(),
+            symbol: trade.market.clone().unwrap_or_else(|| market.to_string()),
             price: Decimal::from_str(&trade.price)?,
             quantity: Decimal::from_str(&trade.size)?,
-            side: if trade.side == "buy" {
+            side: if trade.side == "BUY" {
                 OrderSide::Buy
             } else {
                 OrderSide::Sell
@@ -113,39 +189,6 @@ impl ParadexWsClient {
         })
     }
 
-    /// Convert Paradex orderbook to our Orderbook type
-    fn convert_orderbook(&self, ob: &ParadexOrderbookSnapshot) -> Result<Orderbook> {
-        let bids: Vec<OrderbookLevel> = ob
-            .bids
-            .iter()
-            .map(|(price, quantity)| {
-                Ok(OrderbookLevel {
-                    price: Decimal::from_str(price)?,
-                    quantity: Decimal::from_str(quantity)?,
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
-
-        let asks: Vec<OrderbookLevel> = ob
-            .asks
-            .iter()
-            .map(|(price, quantity)| {
-                Ok(OrderbookLevel {
-                    price: Decimal::from_str(price)?,
-                    quantity: Decimal::from_str(quantity)?,
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
-
-        Ok(Orderbook {
-            symbol: ob.market.clone(),
-            bids,
-            asks,
-            timestamp: Utc.timestamp_millis_opt(ob.last_updated_at as i64).unwrap(),
-        })
-    }
-
-    /// Convert Paradex funding data to our FundingRate type
     fn convert_funding_rate(&self, data: &ParadexFundingDataItem) -> Result<FundingRate> {
         Ok(FundingRate {
             symbol: data.market.clone(),
@@ -156,6 +199,23 @@ impl ParadexWsClient {
             funding_interval: 0,
             funding_rate_cap_floor: Decimal::ZERO,
         })
+    }
+
+    async fn handle_text_ping(
+        &self,
+        text: &str,
+        ws_stream: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
+    ) -> Result<bool> {
+        if text.contains("\"type\":\"ping\"") {
+            let pong = ParadexWsPong {
+                msg_type: "pong".to_string(),
+            };
+            ws_stream
+                .send(Message::Text(serde_json::to_string(&pong)?))
+                .await?;
+            return Ok(true);
+        }
+        Ok(false)
     }
 }
 
@@ -173,237 +233,569 @@ impl IPerpsStream for ParadexWsClient {
 
     async fn stream_tickers(&self, symbols: Vec<String>) -> Result<DataStream<Ticker>> {
         let mut ws_stream = self.connect().await?;
-
-        // Subscribe to market summary for each symbol
         for symbol in &symbols {
-            self.subscribe(
-                &mut ws_stream,
-                "markets_summary".to_string(),
-                Some(symbol.clone()),
-            )
-            .await?;
+            self.subscribe(&mut ws_stream, format!("markets_summary.{}", symbol))
+                .await?;
         }
 
         let client = self.clone();
-
         let stream = async_stream::stream! {
             while let Some(msg) = ws_stream.next().await {
                 match msg {
                     Ok(Message::Text(text)) => {
-                        tracing::debug!("Received message: {}", &text[..text.len().min(200)]);
-
-                        // Check for ping
-                        if text.contains("\"type\":\"ping\"") {
-                            let pong = ParadexWsPong { msg_type: "pong".to_string() };
-                            if let Ok(pong_msg) = serde_json::to_string(&pong) {
-                                if let Err(e) = ws_stream.send(Message::Text(pong_msg)).await {
-                                    tracing::error!("Failed to send pong: {}", e);
-                                    yield Err(anyhow!("Failed to send pong: {}", e));
-                                    break;
-                                }
-                            }
+                        if client.handle_text_ping(&text, &mut ws_stream).await.unwrap_or(false) {
                             continue;
                         }
-
-                        if let Ok(summary_msg) = serde_json::from_str::<ParadexWsMarketSummary>(&text) {
-                            match client.convert_ticker(&summary_msg.params.data) {
-                                Ok(ticker) => yield Ok(ticker),
-                                Err(e) => yield Err(anyhow!("Failed to convert ticker: {}", e)),
+                        if let Ok(envelope) = serde_json::from_str::<ParadexWsMessage>(&text) {
+                            if envelope.method.as_deref() == Some("subscription") {
+                                if let Some(params) = envelope.params {
+                                    if params.channel.starts_with("markets_summary") {
+                                        match serde_json::from_value::<ParadexMarketSummaryItem>(params.data) {
+                                            Ok(item) => match client.convert_ticker(&item) {
+                                                Ok(ticker) => yield Ok(ticker),
+                                                Err(e) => tracing::warn!("Paradex: ticker convert error: {}", e),
+                                            },
+                                            Err(e) => tracing::warn!("Paradex: markets_summary parse error: {}", e),
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
                     Ok(Message::Close(frame)) => {
-                        tracing::info!("WebSocket connection closed: {:?}", frame);
+                        tracing::info!("Paradex WebSocket closed: {:?}", frame);
                         break;
                     }
                     Err(e) => {
-                        yield Err(anyhow!("WebSocket error: {}", e));
+                        yield Err(anyhow!("Paradex WebSocket error: {}", e));
                         break;
                     }
                     _ => {}
                 }
             }
         };
-
         Ok(Box::pin(stream))
     }
 
     async fn stream_trades(&self, symbols: Vec<String>) -> Result<DataStream<Trade>> {
         let mut ws_stream = self.connect().await?;
-
-        // Subscribe to trades for each symbol
         for symbol in &symbols {
-            self.subscribe(&mut ws_stream, "trades".to_string(), Some(symbol.clone()))
+            self.subscribe(&mut ws_stream, format!("trades.{}", symbol))
                 .await?;
         }
 
         let client = self.clone();
-
         let stream = async_stream::stream! {
             while let Some(msg) = ws_stream.next().await {
                 match msg {
                     Ok(Message::Text(text)) => {
-                        // Check for ping
-                        if text.contains("\"type\":\"ping\"") {
-                            let pong = ParadexWsPong { msg_type: "pong".to_string() };
-                            if let Ok(pong_msg) = serde_json::to_string(&pong) {
-                                if let Err(e) = ws_stream.send(Message::Text(pong_msg)).await {
-                                    yield Err(anyhow!("Failed to send pong: {}", e));
-                                    break;
-                                }
-                            }
+                        if client.handle_text_ping(&text, &mut ws_stream).await.unwrap_or(false) {
                             continue;
                         }
-
-                        if let Ok(trades_msg) = serde_json::from_str::<ParadexWsTrades>(&text) {
-                            for trade in &trades_msg.params.data {
-                                match client.convert_trade(trade) {
-                                    Ok(trade) => yield Ok(trade),
-                                    Err(e) => yield Err(anyhow!("Failed to convert trade: {}", e)),
+                        if let Ok(envelope) = serde_json::from_str::<ParadexWsMessage>(&text) {
+                            if envelope.method.as_deref() == Some("subscription") {
+                                if let Some(params) = envelope.params {
+                                    if params.channel.starts_with("trades") {
+                                        let market = params.channel
+                                            .strip_prefix("trades.")
+                                            .unwrap_or("")
+                                            .to_string();
+                                        match serde_json::from_value::<Vec<ParadexTradeItem>>(params.data.clone()) {
+                                            Ok(trades) => {
+                                                for t in &trades {
+                                                    match client.convert_trade(t, &market) {
+                                                        Ok(trade) => yield Ok(trade),
+                                                        Err(e) => tracing::warn!("Paradex: trade convert error: {}", e),
+                                                    }
+                                                }
+                                            }
+                                            Err(_) => {
+                                                if let Ok(t) = serde_json::from_value::<ParadexTradeItem>(params.data) {
+                                                    match client.convert_trade(&t, &market) {
+                                                        Ok(trade) => yield Ok(trade),
+                                                        Err(e) => tracing::warn!("Paradex: trade convert error: {}", e),
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
                     }
                     Ok(Message::Close(frame)) => {
-                        tracing::info!("WebSocket connection closed: {:?}", frame);
+                        tracing::info!("Paradex WebSocket closed: {:?}", frame);
                         break;
                     }
                     Err(e) => {
-                        yield Err(anyhow!("WebSocket error: {}", e));
+                        yield Err(anyhow!("Paradex WebSocket error: {}", e));
                         break;
                     }
                     _ => {}
                 }
             }
         };
-
         Ok(Box::pin(stream))
     }
 
     async fn stream_orderbooks(&self, symbols: Vec<String>) -> Result<DataStream<Orderbook>> {
         let mut ws_stream = self.connect().await?;
-
-        // Subscribe to order book for each symbol
         for symbol in &symbols {
-            self.subscribe(
-                &mut ws_stream,
-                "order_book".to_string(),
-                Some(symbol.clone()),
-            )
-            .await?;
+            self.subscribe(&mut ws_stream, orderbook_channel(symbol))
+                .await?;
         }
 
         let client = self.clone();
-
         let stream = async_stream::stream! {
             while let Some(msg) = ws_stream.next().await {
                 match msg {
                     Ok(Message::Text(text)) => {
-                        // Check for ping
-                        if text.contains("\"type\":\"ping\"") {
-                            let pong = ParadexWsPong { msg_type: "pong".to_string() };
-                            if let Ok(pong_msg) = serde_json::to_string(&pong) {
-                                if let Err(e) = ws_stream.send(Message::Text(pong_msg)).await {
-                                    yield Err(anyhow!("Failed to send pong: {}", e));
-                                    break;
-                                }
-                            }
+                        if client.handle_text_ping(&text, &mut ws_stream).await.unwrap_or(false) {
                             continue;
                         }
-
-                        if let Ok(ob_msg) = serde_json::from_str::<ParadexWsOrderbook>(&text) {
-                            match client.convert_orderbook(&ob_msg.params.data) {
-                                Ok(orderbook) => yield Ok(orderbook),
-                                Err(e) => yield Err(anyhow!("Failed to convert orderbook: {}", e)),
+                        if let Ok(envelope) = serde_json::from_str::<ParadexWsMessage>(&text) {
+                            if envelope.method.as_deref() == Some("subscription") {
+                                if let Some(params) = envelope.params {
+                                    if params.channel.starts_with("order_book") {
+                                        match serde_json::from_value::<ParadexOrderbookSnapshot>(params.data) {
+                                            Ok(snap) => match parse_snapshot(&snap) {
+                                                Ok(ob) => yield Ok(ob),
+                                                Err(e) => tracing::warn!("Paradex: orderbook convert error: {}", e),
+                                            },
+                                            Err(e) => tracing::warn!("Paradex: orderbook parse error: {}", e),
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
                     Ok(Message::Close(frame)) => {
-                        tracing::info!("WebSocket connection closed: {:?}", frame);
+                        tracing::info!("Paradex WebSocket closed: {:?}", frame);
                         break;
                     }
                     Err(e) => {
-                        yield Err(anyhow!("WebSocket error: {}", e));
+                        yield Err(anyhow!("Paradex WebSocket error: {}", e));
                         break;
                     }
                     _ => {}
                 }
             }
         };
-
         Ok(Box::pin(stream))
     }
 
     async fn stream_multi(&self, config: StreamConfig) -> Result<DataStream<StreamEvent>> {
         let mut ws_stream = self.connect().await?;
 
-        // Subscribe to requested topics for each symbol
         for symbol in &config.symbols {
             for data_type in &config.data_types {
                 let channel = match data_type {
-                    StreamDataType::Ticker => "markets_summary",
-                    StreamDataType::Trade => "trades",
-                    StreamDataType::Orderbook => "order_book",
-                    StreamDataType::FundingRate => "funding_data",
-                    StreamDataType::Kline => continue, // Klines not yet implemented for Paradex WebSocket
+                    StreamDataType::Ticker => format!("markets_summary.{}", symbol),
+                    StreamDataType::Trade => format!("trades.{}", symbol),
+                    StreamDataType::Orderbook => orderbook_channel(symbol),
+                    StreamDataType::FundingRate => format!("funding_data.{}", symbol),
+                    StreamDataType::Kline => continue,
                 };
-                self.subscribe(&mut ws_stream, channel.to_string(), Some(symbol.clone()))
-                    .await?;
+                self.subscribe(&mut ws_stream, channel).await?;
             }
         }
 
         let client = self.clone();
-
         let stream = async_stream::stream! {
             while let Some(msg) = ws_stream.next().await {
                 match msg {
                     Ok(Message::Text(text)) => {
-                        // Check for ping
-                        if text.contains("\"type\":\"ping\"") {
-                            let pong = ParadexWsPong { msg_type: "pong".to_string() };
-                            if let Ok(pong_msg) = serde_json::to_string(&pong) {
-                                if let Err(e) = ws_stream.send(Message::Text(pong_msg)).await {
-                                    yield Err(anyhow!("Failed to send pong: {}", e));
-                                    break;
-                                }
-                            }
+                        if client.handle_text_ping(&text, &mut ws_stream).await.unwrap_or(false) {
                             continue;
                         }
-
-                        // Try to parse as different message types
-                        if let Ok(summary_msg) = serde_json::from_str::<ParadexWsMarketSummary>(&text) {
-                            if let Ok(ticker) = client.convert_ticker(&summary_msg.params.data) {
-                                yield Ok(StreamEvent::Ticker(ticker));
+                        let envelope = match serde_json::from_str::<ParadexWsMessage>(&text) {
+                            Ok(e) => e,
+                            Err(e) => {
+                                tracing::warn!("Paradex: failed to parse message: {} raw={}", e, &text[..text.len().min(200)]);
+                                continue;
                             }
-                        } else if let Ok(trades_msg) = serde_json::from_str::<ParadexWsTrades>(&text) {
-                            for trade in &trades_msg.params.data {
-                                if let Ok(trade) = client.convert_trade(trade) {
-                                    yield Ok(StreamEvent::Trade(trade));
+                        };
+
+                        if envelope.method.as_deref() != Some("subscription") {
+                            continue;
+                        }
+                        let params = match envelope.params {
+                            Some(p) => p,
+                            None => continue,
+                        };
+                        let channel = &params.channel;
+
+                        if channel.starts_with("markets_summary") {
+                            match serde_json::from_value::<ParadexMarketSummaryItem>(params.data) {
+                                Ok(item) => match client.convert_ticker(&item) {
+                                    Ok(ticker) => yield Ok(StreamEvent::Ticker(ticker)),
+                                    Err(e) => tracing::warn!("Paradex: ticker convert error: {}", e),
+                                },
+                                Err(e) => tracing::warn!("Paradex: markets_summary parse error: {}", e),
+                            }
+                        } else if channel.starts_with("order_book") {
+                            match serde_json::from_value::<ParadexOrderbookSnapshot>(params.data) {
+                                Ok(snap) => match parse_snapshot(&snap) {
+                                    Ok(ob) => yield Ok(StreamEvent::Orderbook(ob)),
+                                    Err(e) => tracing::warn!("Paradex: orderbook convert error: {}", e),
+                                },
+                                Err(e) => tracing::warn!("Paradex: orderbook parse error: {}", e),
+                            }
+                        } else if channel.starts_with("trades") {
+                            let market = channel.strip_prefix("trades.").unwrap_or("").to_string();
+                            match serde_json::from_value::<Vec<ParadexTradeItem>>(params.data.clone()) {
+                                Ok(trades) => {
+                                    for t in &trades {
+                                        match client.convert_trade(t, &market) {
+                                            Ok(trade) => yield Ok(StreamEvent::Trade(trade)),
+                                            Err(e) => tracing::warn!("Paradex: trade convert error: {}", e),
+                                        }
+                                    }
+                                }
+                                Err(_) => {
+                                    if let Ok(t) = serde_json::from_value::<ParadexTradeItem>(params.data) {
+                                        match client.convert_trade(&t, &market) {
+                                            Ok(trade) => yield Ok(StreamEvent::Trade(trade)),
+                                            Err(e) => tracing::warn!("Paradex: trade convert error: {}", e),
+                                        }
+                                    }
                                 }
                             }
-                        } else if let Ok(ob_msg) = serde_json::from_str::<ParadexWsOrderbook>(&text) {
-                            if let Ok(orderbook) = client.convert_orderbook(&ob_msg.params.data) {
-                                yield Ok(StreamEvent::Orderbook(orderbook));
-                            }
-                        } else if let Ok(funding_msg) = serde_json::from_str::<ParadexWsFundingData>(&text) {
-                            if let Ok(funding_rate) = client.convert_funding_rate(&funding_msg.params.data) {
-                                yield Ok(StreamEvent::FundingRate(funding_rate));
+                        } else if channel.starts_with("funding_data") {
+                            match serde_json::from_value::<ParadexFundingDataItem>(params.data) {
+                                Ok(item) => match client.convert_funding_rate(&item) {
+                                    Ok(rate) => yield Ok(StreamEvent::FundingRate(rate)),
+                                    Err(e) => tracing::warn!("Paradex: funding rate convert error: {}", e),
+                                },
+                                Err(e) => tracing::warn!("Paradex: funding_data parse error: {}", e),
                             }
                         }
                     }
                     Ok(Message::Close(frame)) => {
-                        tracing::info!("WebSocket connection closed: {:?}", frame);
+                        tracing::info!("Paradex WebSocket closed: {:?}", frame);
                         break;
                     }
                     Err(e) => {
-                        yield Err(anyhow!("WebSocket error: {}", e));
+                        yield Err(anyhow!("Paradex WebSocket error: {}", e));
                         break;
                     }
                     _ => {}
                 }
             }
         };
-
         Ok(Box::pin(stream))
+    }
+}
+
+// ─── ParadexOrderbookManager (batch/start path) ───────────────────────────────
+
+struct SnapshotEntry {
+    orderbook: MultiResolutionOrderbook,
+    updated_at: Instant,
+}
+
+/// Persistent WS connection maintaining live per-symbol orderbook snapshots for the
+/// `start` batch collection path and the `liquidity` command.
+///
+/// Paradex sends full L2 snapshots every 100ms — no delta application needed.
+/// Enabled when `DATABASE_URL` is set and `ENABLE_ORDERBOOK_STREAMING=true`.
+pub struct ParadexOrderbookManager {
+    snapshots: Arc<RwLock<HashMap<String, SnapshotEntry>>>,
+    notifiers: Arc<Mutex<HashMap<String, Arc<Notify>>>>,
+    /// Paradex-format market names currently subscribed ("BTC-USD-PERP", …).
+    subscribed: Arc<Mutex<HashSet<String>>>,
+    subscribe_tx: mpsc::Sender<Vec<String>>,
+}
+
+impl ParadexOrderbookManager {
+    pub fn new() -> Self {
+        let snapshots = Arc::new(RwLock::new(HashMap::new()));
+        let notifiers = Arc::new(Mutex::new(HashMap::new()));
+        let subscribed = Arc::new(Mutex::new(HashSet::new()));
+        let (subscribe_tx, subscribe_rx) = mpsc::channel::<Vec<String>>(64);
+
+        let snapshots_bg = Arc::clone(&snapshots);
+        let notifiers_bg = Arc::clone(&notifiers);
+        let subscribed_bg = Arc::clone(&subscribed);
+
+        tokio::spawn(async move {
+            run_manager_task(snapshots_bg, notifiers_bg, subscribed_bg, subscribe_rx).await;
+        });
+
+        Self { snapshots, notifiers, subscribed, subscribe_tx }
+    }
+
+    /// Queue Paradex-format market names (e.g. "BTC-USD-PERP") for subscription.
+    pub async fn subscribe_symbols(&self, symbols: Vec<String>) {
+        if symbols.is_empty() {
+            return;
+        }
+        if let Err(e) = self.subscribe_tx.send(symbols).await {
+            tracing::warn!("ParadexOrderbookManager: subscribe send failed: {}", e);
+        }
+    }
+
+    /// Return a fresh orderbook snapshot, blocking up to FIRST_DATA_TIMEOUT_SECS on first call.
+    pub async fn get_orderbook(
+        &self,
+        symbol: &str,
+        depth: usize,
+    ) -> Result<MultiResolutionOrderbook> {
+        let notifier = {
+            let mut n = self.notifiers.lock().await;
+            Arc::clone(
+                n.entry(symbol.to_string())
+                    .or_insert_with(|| Arc::new(Notify::new())),
+            )
+        };
+
+        let already_subscribed = self.subscribed.lock().await.contains(symbol);
+        if !already_subscribed {
+            self.subscribe_tx
+                .send(vec![symbol.to_string()])
+                .await
+                .map_err(|e| anyhow!("subscribe_tx: {}", e))?;
+        }
+
+        let notified_fut = notifier.notified();
+
+        {
+            let snaps = self.snapshots.read().await;
+            if let Some(entry) = snaps.get(symbol) {
+                if entry.updated_at.elapsed() < Duration::from_secs(SNAPSHOT_TTL_SECS) {
+                    return Ok(clip_orderbook(&entry.orderbook, depth));
+                }
+            }
+        }
+
+        time::timeout(Duration::from_secs(FIRST_DATA_TIMEOUT_SECS), notified_fut)
+            .await
+            .map_err(|_| {
+                anyhow!(
+                    "timeout waiting for Paradex orderbook snapshot for '{}'",
+                    symbol
+                )
+            })?;
+
+        let snaps = self.snapshots.read().await;
+        let entry = snaps
+            .get(symbol)
+            .ok_or_else(|| anyhow!("no Paradex orderbook snapshot for '{}'", symbol))?;
+        Ok(clip_orderbook(&entry.orderbook, depth))
+    }
+}
+
+async fn run_manager_task(
+    snapshots: Arc<RwLock<HashMap<String, SnapshotEntry>>>,
+    notifiers: Arc<Mutex<HashMap<String, Arc<Notify>>>>,
+    subscribed: Arc<Mutex<HashSet<String>>>,
+    mut subscribe_rx: mpsc::Receiver<Vec<String>>,
+) {
+    let mut id_counter: u32 = 1;
+
+    loop {
+        tracing::debug!("ParadexOrderbookManager: connecting to {}", WS_BASE_URL);
+
+        let (ws_stream, _) = match connect_async(WS_BASE_URL).await {
+            Ok(pair) => pair,
+            Err(e) => {
+                tracing::error!("ParadexOrderbookManager: connect error: {}", e);
+                time::sleep(Duration::from_secs(RECONNECT_DELAY_SECS)).await;
+                continue;
+            }
+        };
+
+        let (mut ws_sink, mut ws_source) = ws_stream.split();
+
+        // Clear stale snapshots so callers block for fresh data.
+        snapshots.write().await.clear();
+
+        // Re-subscribe all active symbols.
+        {
+            let syms: Vec<String> = subscribed.lock().await.iter().cloned().collect();
+            for sym in &syms {
+                let req = ParadexWsSubscribeRequest::new(id_counter, orderbook_channel(sym));
+                id_counter = id_counter.wrapping_add(1);
+                if let Ok(json) = serde_json::to_string(&req) {
+                    let _ = ws_sink.send(Message::Text(json)).await;
+                }
+            }
+            if !syms.is_empty() {
+                tracing::info!(
+                    "ParadexOrderbookManager: re-subscribed {} markets",
+                    syms.len()
+                );
+            }
+        }
+
+        let mut last_message_at = Instant::now();
+        let mut watchdog = time::interval(Duration::from_secs(WATCHDOG_TICK_SECS));
+
+        'connection: loop {
+            tokio::select! {
+                msg_opt = ws_source.next() => {
+                    match msg_opt {
+                        Some(Ok(Message::Text(text))) => {
+                            last_message_at = Instant::now();
+                            handle_manager_message(
+                                &text,
+                                &snapshots,
+                                &notifiers,
+                            ).await;
+                        }
+                        Some(Ok(Message::Ping(payload))) => {
+                            last_message_at = Instant::now();
+                            let _ = ws_sink.send(Message::Pong(payload)).await;
+                        }
+                        Some(Ok(Message::Pong(_))) => {
+                            last_message_at = Instant::now();
+                        }
+                        Some(Ok(Message::Close(_))) => {
+                            tracing::info!("ParadexOrderbookManager: server closed connection");
+                            break 'connection;
+                        }
+                        Some(Ok(_)) => {}
+                        Some(Err(e)) => {
+                            tracing::warn!("ParadexOrderbookManager: ws error: {}", e);
+                            break 'connection;
+                        }
+                        None => {
+                            tracing::info!("ParadexOrderbookManager: stream ended");
+                            break 'connection;
+                        }
+                    }
+                }
+
+                req = subscribe_rx.recv() => {
+                    match req {
+                        Some(new_syms) => {
+                            let mut all_new = new_syms;
+                            while let Ok(more) = subscribe_rx.try_recv() {
+                                all_new.extend(more);
+                            }
+
+                            let truly_new: Vec<String> = {
+                                let mut sub = subscribed.lock().await;
+                                all_new.into_iter().filter(|s| sub.insert(s.clone())).collect()
+                            };
+
+                            if truly_new.is_empty() {
+                                continue;
+                            }
+
+                            for sym in &truly_new {
+                                let req = ParadexWsSubscribeRequest::new(id_counter, orderbook_channel(sym));
+                                id_counter = id_counter.wrapping_add(1);
+                                if let Ok(json) = serde_json::to_string(&req) {
+                                    if let Err(e) = ws_sink.send(Message::Text(json)).await {
+                                        tracing::error!(
+                                            "ParadexOrderbookManager: subscribe send error: {}",
+                                            e
+                                        );
+                                        break 'connection;
+                                    }
+                                }
+                            }
+                            tracing::debug!(
+                                "ParadexOrderbookManager: subscribed {:?}",
+                                truly_new
+                            );
+                        }
+                        None => {
+                            tracing::debug!("ParadexOrderbookManager: subscribe_rx closed, shutting down");
+                            return;
+                        }
+                    }
+                }
+
+                _ = watchdog.tick() => {
+                    if last_message_at.elapsed() > Duration::from_secs(INACTIVITY_TIMEOUT_SECS) {
+                        tracing::warn!(
+                            "ParadexOrderbookManager: no message for {}s, reconnecting",
+                            INACTIVITY_TIMEOUT_SECS
+                        );
+                        break 'connection;
+                    }
+                }
+            }
+        }
+
+        tracing::info!(
+            "ParadexOrderbookManager: reconnecting in {}s",
+            RECONNECT_DELAY_SECS
+        );
+        time::sleep(Duration::from_secs(RECONNECT_DELAY_SECS)).await;
+    }
+}
+
+async fn handle_manager_message(
+    text: &str,
+    snapshots: &Arc<RwLock<HashMap<String, SnapshotEntry>>>,
+    notifiers: &Arc<Mutex<HashMap<String, Arc<Notify>>>>,
+) {
+    let envelope: ParadexWsMessage = match serde_json::from_str(text) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+
+    if envelope.method.as_deref() != Some("subscription") {
+        return;
+    }
+    let params = match envelope.params {
+        Some(p) => p,
+        None => return,
+    };
+    if !params.channel.starts_with("order_book") {
+        return;
+    }
+
+    let snap: ParadexOrderbookSnapshot = match serde_json::from_value(params.data) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!("ParadexOrderbookManager: orderbook parse error: {}", e);
+            return;
+        }
+    };
+
+    let ob = match parse_snapshot(&snap) {
+        Ok(o) => o,
+        Err(e) => {
+            tracing::warn!("ParadexOrderbookManager: snapshot convert error: {}", e);
+            return;
+        }
+    };
+
+    let symbol = ob.symbol.clone();
+    let best_bid = ob.bids.first().map(|l| l.price);
+    let best_ask = ob.asks.first().map(|l| l.price);
+    let bid_liq: Decimal = ob.bids.iter().map(|l| l.quantity * l.price).sum();
+    let ask_liq: Decimal = ob.asks.iter().map(|l| l.quantity * l.price).sum();
+    tracing::debug!(
+        "ParadexOrderbookManager: {} bestBid={} bestAsk={} bidLiq={:.4} askLiq={:.4}",
+        symbol,
+        best_bid
+            .map(|p| format!("{:.2}", p))
+            .unwrap_or_else(|| "-".to_string()),
+        best_ask
+            .map(|p| format!("{:.2}", p))
+            .unwrap_or_else(|| "-".to_string()),
+        bid_liq,
+        ask_liq,
+    );
+
+    let multi_ob = MultiResolutionOrderbook::from_single(ob);
+    {
+        let mut snaps = snapshots.write().await;
+        snaps.insert(
+            symbol.clone(),
+            SnapshotEntry {
+                orderbook: multi_ob,
+                updated_at: Instant::now(),
+            },
+        );
+    }
+
+    if let Some(notifier) = notifiers.lock().await.get(&symbol) {
+        notifier.notify_waiters();
     }
 }
