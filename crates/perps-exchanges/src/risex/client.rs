@@ -266,6 +266,7 @@ impl IPerps for RiseXClient {
         let markets = self.fetch_markets().await?;
         markets
             .iter()
+            .filter(|m| m.active && m.visible.unwrap_or(true))
             .find(|m| self.normalize_symbol(&m.base_asset_symbol) == sym)
             .map(to_market)
             .ok_or_else(|| anyhow::anyhow!("RISEx: market not found for '{}'", symbol))
@@ -277,6 +278,7 @@ impl IPerps for RiseXClient {
         let markets = self.fetch_markets().await?;
         let market = markets
             .iter()
+            .filter(|m| m.active && m.visible.unwrap_or(true))
             .find(|m| self.normalize_symbol(&m.base_asset_symbol) == sym)
             .ok_or_else(|| anyhow::anyhow!("RISEx: ticker not found for '{}'", symbol))?;
         let ob = self.fetch_orderbook(market_id).await?;
@@ -343,6 +345,7 @@ impl IPerps for RiseXClient {
         let markets = self.fetch_markets().await?;
         markets
             .iter()
+            .filter(|m| m.active && m.visible.unwrap_or(true))
             .find(|m| self.normalize_symbol(&m.base_asset_symbol) == sym)
             .map(to_funding_rate)
             .ok_or_else(|| anyhow::anyhow!("RISEx: funding rate not found for '{}'", symbol))
@@ -404,6 +407,7 @@ impl IPerps for RiseXClient {
         let markets = self.fetch_markets().await?;
         markets
             .iter()
+            .filter(|m| m.active && m.visible.unwrap_or(true))
             .find(|m| self.normalize_symbol(&m.base_asset_symbol) == sym)
             .map(to_open_interest)
             .ok_or_else(|| anyhow::anyhow!("RISEx: open interest not found for '{}'", symbol))
@@ -480,6 +484,7 @@ impl IPerps for RiseXClient {
         let markets = self.fetch_markets().await?;
         markets
             .iter()
+            .filter(|m| m.active && m.visible.unwrap_or(true))
             .find(|m| self.normalize_symbol(&m.base_asset_symbol) == sym)
             .map(to_market_stats)
             .ok_or_else(|| anyhow::anyhow!("RISEx: market stats not found for '{}'", symbol))

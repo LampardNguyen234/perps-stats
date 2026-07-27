@@ -16,8 +16,8 @@ use tokio::time;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 const WS_URL: &str = "wss://ws.rise.trade/ws";
-const SNAPSHOT_TTL_SECS: u64 = 5;
-const FIRST_DATA_TIMEOUT_SECS: u64 = 10;
+const SNAPSHOT_TTL_SECS: u64 = 30;
+const FIRST_DATA_TIMEOUT_SECS: u64 = 30;
 const RECONNECT_DELAY_SECS: u64 = 2;
 const INACTIVITY_TIMEOUT_SECS: u64 = 30;
 const WATCHDOG_TICK_SECS: u64 = 10;
@@ -415,7 +415,8 @@ async fn run_background_task(
                         }
                         Some(Ok(_)) => {}
                         Some(Err(e)) => {
-                            tracing::error!("RisexOrderbookManager: ws error: {}", e);
+                            // Server drops connection every ~30s (server-imposed TTL); reconnect handles it.
+                            tracing::warn!("RisexOrderbookManager: ws error: {}", e);
                             break 'connection;
                         }
                         None => {
