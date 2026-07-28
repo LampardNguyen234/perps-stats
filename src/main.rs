@@ -176,6 +176,7 @@ async fn main() -> Result<()> {
             StatsCommands::Chart(args) => commands::stats::execute_chart(args).await?,
             StatsCommands::Hist(args) => commands::stats::execute_hist(args).await?,
             StatsCommands::PriceDev(args) => commands::stats::execute_price_dev(args).await?,
+            StatsCommands::Volatility(args) => commands::volatility::execute(args).await?,
         },
         Commands::LiqDist {
             exchange,

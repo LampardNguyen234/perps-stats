@@ -8,14 +8,16 @@ use perps_core::{execute_with_retry, IPerps, RateLimiter, RetryConfig};
 use rust_decimal::Decimal;
 use std::collections::HashSet;
 use std::str::FromStr;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use tokio::sync::RwLock;
 
 const BASE_URL: &str = "https://api.starknet.extended.exchange/api/v1";
 
 /// Shared StreamManager — one per process regardless of how many ExtendedClient instances exist.
 #[cfg(feature = "streaming")]
-static STREAM_MANAGER: OnceLock<Arc<perps_core::StreamManager>> = OnceLock::new();
+#[allow(dead_code)] // Streaming initialization is parked pending multi-agg-level support.
+static STREAM_MANAGER: std::sync::OnceLock<Arc<perps_core::StreamManager>> =
+    std::sync::OnceLock::new();
 
 /// A client for the Extended Exchange (Starknet L2 DEX).
 #[derive(Clone)]
@@ -61,6 +63,7 @@ impl ExtendedClient {
 
     /// Try to initialize with streaming support using StreamManager
     #[cfg(feature = "streaming")]
+    #[allow(dead_code)] // Kept ready for when Extended streaming is re-enabled.
     async fn try_init_streaming() -> Result<Self> {
         use super::ws_client::ExtendedWsClient;
         use perps_core::{StreamConfig, StreamManager};

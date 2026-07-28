@@ -1,5 +1,4 @@
 use anyhow::Result;
-use perps_core::IPerps;
 use perps_exchanges::get_exchange;
 use prettytable::{format, Cell, Row, Table};
 use rust_decimal::Decimal;

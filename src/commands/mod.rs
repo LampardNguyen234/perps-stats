@@ -14,3 +14,4 @@ pub mod start;
 pub mod stats;
 pub mod stream;
 pub mod ticker;
+pub mod volatility;

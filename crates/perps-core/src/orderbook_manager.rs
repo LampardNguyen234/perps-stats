@@ -226,7 +226,6 @@ impl LocalOrderbook {
             // Replay the event (no buffering, no validation - just apply)
             match Self::apply_delta_internal(
                 &mut data,
-                event.first_update_id,
                 event.final_update_id,
                 event.bid_updates,
                 event.ask_updates,
@@ -374,7 +373,6 @@ impl LocalOrderbook {
         // All validation passed, apply the update
         Self::apply_delta_internal(
             &mut data,
-            first_update_id,
             final_update_id,
             bid_updates,
             ask_updates,
@@ -392,7 +390,6 @@ impl LocalOrderbook {
     /// - `apply_snapshot()` - when replaying buffered events
     fn apply_delta_internal(
         data: &mut OrderbookData,
-        first_update_id: u64,
         final_update_id: u64,
         bid_updates: Vec<OrderbookLevel>,
         ask_updates: Vec<OrderbookLevel>,

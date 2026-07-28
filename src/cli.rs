@@ -235,6 +235,9 @@ pub enum StatsCommands {
 
     /// Report price deviation statistics between mark, last, and index price
     PriceDev(crate::commands::stats::PriceDevArgs),
+
+    /// Calculate annualized price volatility from OHLC klines
+    Volatility(crate::commands::volatility::VolatilityArgs),
 }
 
 #[derive(Subcommand)]
