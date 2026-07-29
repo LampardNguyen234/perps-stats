@@ -231,7 +231,9 @@ impl BinanceClient {
         let mut min_qty = Decimal::ZERO;
         let mut max_qty = Decimal::MAX;
         let mut min_notional = Decimal::ZERO;
-        let max_leverage = Decimal::new(125, 0); // Default max leverage
+        // Binance max leverage varies per position bracket; without auth we can't fetch brackets.
+        // 125 is Binance's global ceiling (accurate for BTC/ETH small positions).
+        let max_leverage = Decimal::new(125, 0);
 
         if let Some(filters) = info["filters"].as_array() {
             for filter in filters {
@@ -240,7 +242,8 @@ impl BinanceClient {
                         if let Some(tick) = filter["tickSize"].as_str() {
                             if let Ok(tick_size) = str_to_decimal(tick) {
                                 if tick_size > Decimal::ZERO {
-                                    price_scale = tick_size.scale() as i32;
+                                    // normalize() strips trailing zeros so "0.01000" → scale 2, not 5
+                                    price_scale = tick_size.normalize().scale() as i32;
                                 }
                             }
                         }
@@ -249,7 +252,7 @@ impl BinanceClient {
                         if let Some(step) = filter["stepSize"].as_str() {
                             if let Ok(step_size) = str_to_decimal(step) {
                                 if step_size > Decimal::ZERO {
-                                    quantity_scale = step_size.scale() as i32;
+                                    quantity_scale = step_size.normalize().scale() as i32;
                                 }
                             }
                         }
