@@ -8,6 +8,7 @@ pub mod liquidity;
 pub mod market;
 pub mod markets;
 pub mod orderbook;
+pub mod report;
 pub mod run;
 pub mod serve;
 pub mod start;

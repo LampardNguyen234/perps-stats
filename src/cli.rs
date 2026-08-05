@@ -189,6 +189,9 @@ pub enum Commands {
     /// Read, list, or export full orderbook data from Parquet files
     Orderbook(crate::commands::orderbook::OrderbookArgs),
 
+    /// Generate a DB-backed report (Summary, Liquidity Depth, Spread, Slippage) mirroring the Grafana dashboards
+    Report(crate::commands::report::ReportArgs),
+
     /// Statistical analysis commands
     Stats {
         #[command(subcommand)]
