@@ -215,22 +215,30 @@ impl IPerps for HyperliquidClient {
     }
 
     async fn get_markets(&self) -> Result<Vec<Market>> {
-        let body = serde_json::json!({ "type": "meta" });
-        let meta: Meta = self.post(body).await?;
-        let markets = meta
+        let data = self.get_meta_and_asset_ctxs().await?;
+
+        let markets = data
             .universe
-            .into_iter()
-            .filter(|u| !u.is_delisted)
-            .map(|u| Market {
-                symbol: self.normalize_symbol(&u.name),
-                contract: u.name,
-                contract_size: Decimal::ONE, // Not provided
-                price_scale: 0,              // Not provided
-                quantity_scale: u.sz_decimals as i32,
-                min_order_qty: Decimal::ZERO,   // Not provided
-                max_order_qty: Decimal::ZERO,   // Not provided
-                min_order_value: Decimal::ZERO, // Not provided
-                max_leverage: u.max_leverage.into(),
+            .iter()
+            .enumerate()
+            .filter(|(_, u)| !u.is_delisted)
+            .map(|(i, u)| {
+                let mark_px = data
+                    .asset_ctxs
+                    .get(i)
+                    .and_then(|ctx| Decimal::from_str(&ctx.mark_px).ok())
+                    .unwrap_or(Decimal::ONE);
+                Market {
+                    symbol: self.normalize_symbol(&u.name),
+                    contract: u.name.clone(),
+                    contract_size: Decimal::ONE,
+                    price_scale: hl_price_scale(u.sz_decimals, mark_px),
+                    quantity_scale: u.sz_decimals as i32,
+                    min_order_qty: Decimal::ZERO,
+                    max_order_qty: Decimal::ZERO,
+                    min_order_value: Decimal::ZERO,
+                    max_leverage: u.max_leverage.into(),
+                }
             })
             .collect();
         Ok(markets)

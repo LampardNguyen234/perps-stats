@@ -9,18 +9,40 @@ use std::str::FromStr;
 
 use super::models::{Candlestick, FundingRate, Order, OrderBook, OrderBookDetail};
 
-/// Convert Lighter OrderBook to core Market
+/// Convert Lighter OrderBook to core Market (basic, no leverage data)
 pub fn to_market(orderbook: &OrderBook) -> Result<CoreMarket> {
     Ok(CoreMarket {
         symbol: orderbook.symbol.clone(),
-        contract: format!("{}-PERP", orderbook.symbol), // Lighter perps format
-        contract_size: Decimal::from(1),                // 1:1 for most perps
+        contract: format!("{}-PERP", orderbook.symbol),
+        contract_size: Decimal::from(1),
         price_scale: orderbook.supported_price_decimals as i32,
         quantity_scale: orderbook.supported_size_decimals as i32,
         min_order_qty: Decimal::from_str(&orderbook.min_base_amount)?,
-        max_order_qty: Decimal::from(1000000), // Default max, not provided by API
+        max_order_qty: Decimal::from(1000000),
         min_order_value: Decimal::from_str(&orderbook.min_quote_amount)?,
-        max_leverage: Decimal::from(20), // Default, not provided in basic order book response
+        max_leverage: Decimal::from(20),
+    })
+}
+
+/// Convert Lighter OrderBookDetail to core Market (preferred — includes leverage data).
+/// min_initial_margin_fraction is raw basis points ×10 (e.g. 1000 = 10% = 10x max leverage).
+pub fn to_market_from_detail(detail: &OrderBookDetail) -> Result<CoreMarket> {
+    let max_leverage = if detail.min_initial_margin_fraction > 0 {
+        let imf = Decimal::new(detail.min_initial_margin_fraction as i64, 4); // /10000
+        (Decimal::ONE / imf).round_dp(0)
+    } else {
+        Decimal::from(20)
+    };
+    Ok(CoreMarket {
+        symbol: detail.symbol.clone(),
+        contract: format!("{}-PERP", detail.symbol),
+        contract_size: Decimal::from(1),
+        price_scale: detail.supported_price_decimals as i32,
+        quantity_scale: detail.supported_size_decimals as i32,
+        min_order_qty: Decimal::from_str(&detail.min_base_amount)?,
+        max_order_qty: Decimal::from(1000000),
+        min_order_value: Decimal::from_str(&detail.min_quote_amount)?,
+        max_leverage,
     })
 }
 

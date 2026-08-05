@@ -234,7 +234,11 @@ impl IPerps for ExtendedClient {
                     contract_size: Decimal::ONE,
                     max_order_qty: Decimal::ZERO,
                     min_order_value: Decimal::ZERO,
-                    max_leverage: Decimal::ZERO,
+                    max_leverage: m
+                        .max_leverage
+                        .as_deref()
+                        .and_then(|s| Decimal::from_str(s).ok())
+                        .unwrap_or(Decimal::ZERO),
                 }
             })
             .collect();
@@ -268,7 +272,11 @@ impl IPerps for ExtendedClient {
             contract_size: Decimal::ONE,
             max_order_qty: Decimal::ZERO,
             min_order_value: Decimal::ZERO,
-            max_leverage: Decimal::ZERO,
+            max_leverage: market
+                .max_leverage
+                .as_deref()
+                .and_then(|s| Decimal::from_str(s).ok())
+                .unwrap_or(Decimal::ZERO),
         })
     }
 

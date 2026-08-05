@@ -227,21 +227,17 @@ impl IPerps for LighterClient {
     }
 
     async fn get_markets(&self) -> Result<Vec<Market>> {
-        let url = format!("{}/orderBooks", self.base_url);
+        let url = format!("{}/orderBookDetails", self.base_url);
         tracing::debug!("Fetching markets from Lighter: {}", url);
 
-        let response: LighterResponse<OrderBooksResponse> = self.get(&url).await?;
-
-        if response.code != 200 {
-            return Err(anyhow!("API error: code {}", response.code));
-        }
+        let response: OrderBookDetailsResponse = self.get(&url).await?;
 
         let markets: Result<Vec<Market>> = response
-            .data
-            .order_books
+            .order_book_details
             .iter()
-            .map(|ob| {
-                let mut m = conversions::to_market(ob)?;
+            .filter(|d| d.status == "active" && d.market_type == "perp")
+            .map(|d| {
+                let mut m = conversions::to_market_from_detail(d)?;
                 m.symbol = self.normalize_symbol(&m.symbol);
                 Ok(m)
             })
@@ -252,23 +248,18 @@ impl IPerps for LighterClient {
 
     async fn get_market(&self, symbol: &str) -> Result<Market> {
         let symbol = self.parse_symbol(symbol);
-        let url = format!("{}/orderBooks", self.base_url);
+        let url = format!("{}/orderBookDetails", self.base_url);
         tracing::debug!("Fetching market {} from Lighter: {}", symbol, url);
 
-        let response: LighterResponse<OrderBooksResponse> = self.get(&url).await?;
+        let response: OrderBookDetailsResponse = self.get(&url).await?;
 
-        if response.code != 200 {
-            return Err(anyhow!("API error: code {}", response.code));
-        }
-
-        let orderbook = response
-            .data
-            .order_books
+        let detail = response
+            .order_book_details
             .iter()
-            .find(|ob| ob.symbol == symbol)
+            .find(|d| d.symbol == symbol && d.market_type == "perp")
             .ok_or_else(|| anyhow!("Symbol {} not found", symbol))?;
 
-        let mut m = conversions::to_market(orderbook)?;
+        let mut m = conversions::to_market_from_detail(detail)?;
         m.symbol = self.normalize_symbol(&m.symbol);
         Ok(m)
     }

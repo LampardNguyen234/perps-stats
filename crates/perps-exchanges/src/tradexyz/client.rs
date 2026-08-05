@@ -1,11 +1,11 @@
 use crate::cache::SymbolsCache;
 use crate::hyperliquid::types::*;
+use crate::hyperliquid::hl_price_scale;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, TimeZone, Utc};
 use perps_core::types::*;
 use perps_core::{execute_with_retry, IPerps, RateLimiter, RetryConfig};
-use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::Decimal;
 use serde_json::Value;
 use std::str::FromStr;
@@ -13,21 +13,6 @@ use std::sync::Arc;
 
 const INFO_URL: &str = "https://api.hyperliquid.xyz/info";
 
-/// Compute price_scale (decimal places) from HyperLiquid universe szDecimals + live markPx.
-/// Formula mirrors the HL frontend: stepPrice = max(10^(szDecimals-6), 10^(floor(log10(markPx))-4))
-/// price_scale = -(exponent of stepPrice), so step_from_scale(price_scale) gives the tick.
-fn hl_price_scale(sz_decimals: u32, mark_px: Decimal) -> i32 {
-    let sz = sz_decimals as i32;
-    let log_mark = mark_px
-        .to_f64()
-        .filter(|&x| x > 0.0)
-        .map(|x| x.log10().floor() as i32)
-        .unwrap_or(0);
-    // step exponent: larger value = coarser step
-    let step_exp = (sz - 6).max(log_mark - 4);
-    // price_scale = number of decimal places; negative means multiples (handled by step_from_scale)
-    -step_exp
-}
 
 /// A client for the tradexyz exchange.
 /// tradexyz is an HIP-3 perpetuals DEX on Hyperliquid dedicated to equity/RWA trading.

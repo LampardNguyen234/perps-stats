@@ -37,6 +37,8 @@ pub struct ExtendedMarket {
     pub collateral_asset_precision: i32,
     pub active: bool,
     pub status: String,
+    #[serde(default)]
+    pub max_leverage: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub market_stats: Option<ExtendedMarketStats>,
 }

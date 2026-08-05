@@ -37,6 +37,7 @@ pub struct OrderBookDetailsResponse {
 pub struct OrderBookDetail {
     pub symbol: String,
     pub market_id: u64,
+    pub market_type: String,
     pub status: String,
     pub taker_fee: String,
     pub maker_fee: String,

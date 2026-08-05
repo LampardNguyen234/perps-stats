@@ -1,4 +1,20 @@
+use rust_decimal::prelude::ToPrimitive;
+use rust_decimal::Decimal;
 use serde::Deserialize;
+
+/// Compute price_scale (decimal places) from HyperLiquid universe szDecimals + live markPx.
+/// Formula mirrors the HL frontend: stepPrice = max(10^(szDecimals-6), 10^(floor(log10(markPx))-4))
+/// price_scale = -(exponent of stepPrice), so step_from_scale(price_scale) gives the tick.
+pub fn hl_price_scale(sz_decimals: u32, mark_px: Decimal) -> i32 {
+    let sz = sz_decimals as i32;
+    let log_mark = mark_px
+        .to_f64()
+        .filter(|&x| x > 0.0)
+        .map(|x| x.log10().floor() as i32)
+        .unwrap_or(0);
+    let step_exp = (sz - 6).max(log_mark - 4);
+    -step_exp
+}
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct Asset {
