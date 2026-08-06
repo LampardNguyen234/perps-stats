@@ -218,7 +218,9 @@ impl IPerps for ExtendedClient {
 
         let markets = markets
             .into_iter()
-            .filter(|m| m.active)
+            // RFQ-only markets (e.g. DRAM) have no real orderbook — they're
+            // quoted on request by a market maker, not backed by a CLOB.
+            .filter(|m| m.active && !m.is_rfq)
             .map(|m| {
                 // Calculate precision from asset precision
                 let price_scale = m.collateral_asset_precision.max(0);
@@ -258,6 +260,13 @@ impl IPerps for ExtendedClient {
             .into_iter()
             .find(|m| m.active && m.status == "ACTIVE" && m.name == exchange_symbol)
             .ok_or_else(|| anyhow!("Market {} not found or inactive", symbol))?;
+
+        if market.is_rfq {
+            anyhow::bail!(
+                "Market {} on Extended is RFQ-only (no real orderbook), not supported",
+                symbol
+            );
+        }
 
         // Calculate precision from asset precision
         let price_scale = market.collateral_asset_precision.max(0);

@@ -37,6 +37,10 @@ pub struct ExtendedMarket {
     pub collateral_asset_precision: i32,
     pub active: bool,
     pub status: String,
+    /// True for RFQ-only markets (e.g. tokenized RWA products like DRAM) — quoted
+    /// on request, backed by a market maker, not a real central limit order book.
+    #[serde(default)]
+    pub is_rfq: bool,
     #[serde(default)]
     pub max_leverage: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
