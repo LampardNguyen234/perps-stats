@@ -50,7 +50,7 @@ pub struct VolatilityArgs {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum VolatilityMethod {
+pub(crate) enum VolatilityMethod {
     Realized,
     Parkinson,
     GarmanKlass,
@@ -67,12 +67,44 @@ impl VolatilityMethod {
 }
 
 #[derive(Debug)]
-struct KlinePrice {
+pub(crate) struct KlinePrice {
     open_time: DateTime<Utc>,
     open: f64,
     high: f64,
     low: f64,
     close: f64,
+    volume: f64,
+}
+
+/// Per-candle (high-low)/low swing data, plus the candle's own OHLCV. Built by
+/// `price_swings` from a fetched kline window (see `fetch_remote_klines`).
+pub(crate) struct SwingCandle {
+    pub open_time: DateTime<Utc>,
+    pub open: f64,
+    pub high: f64,
+    pub low: f64,
+    pub close: f64,
+    pub volume: f64,
+    pub swing_pct: f64,
+}
+
+/// Computes (high-low)/low swing % for every candle. Skips candles with low <= 0
+/// (convert_kline already filters non-finite/non-positive OHLC, so this is
+/// defensive rather than expected to trigger).
+pub(crate) fn price_swings(prices: &[KlinePrice]) -> Vec<SwingCandle> {
+    prices
+        .iter()
+        .filter(|p| p.low > 0.0)
+        .map(|p| SwingCandle {
+            open_time: p.open_time,
+            open: p.open,
+            high: p.high,
+            low: p.low,
+            close: p.close,
+            volume: p.volume,
+            swing_pct: (p.high - p.low) / p.low * 100.0,
+        })
+        .collect()
 }
 
 #[derive(Debug, Serialize)]
@@ -368,7 +400,7 @@ fn parse_date(value: &str, argument: &str) -> Result<DateTime<Utc>> {
     Ok(Utc.from_utc_datetime(&midnight))
 }
 
-fn periods_per_year(interval: &str) -> Result<f64> {
+pub(crate) fn periods_per_year(interval: &str) -> Result<f64> {
     let seconds = interval_duration(interval)?.num_seconds() as f64;
     Ok(DAYS_PER_YEAR * 24.0 * 60.0 * 60.0 / seconds)
 }
@@ -408,7 +440,7 @@ fn interval_duration(interval: &str) -> Result<Duration> {
     Duration::try_seconds(seconds).context("Kline interval is too large")
 }
 
-async fn fetch_remote_klines(
+pub(crate) async fn fetch_remote_klines(
     client: &(dyn IPerps + Send + Sync),
     symbol: &str,
     interval: &str,
@@ -490,10 +522,11 @@ fn convert_kline(kline: Kline) -> Option<KlinePrice> {
         high,
         low,
         close,
+        volume: kline.volume.to_f64().unwrap_or(0.0),
     })
 }
 
-fn calculate_volatility(
+pub(crate) fn calculate_volatility(
     prices: &[KlinePrice],
     method: VolatilityMethod,
     periods_per_year: f64,
@@ -622,6 +655,7 @@ mod tests {
             high,
             low,
             close,
+            volume: 0.0,
         }
     }
 

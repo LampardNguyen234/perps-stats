@@ -4,13 +4,17 @@
 //! Unlike the `stats` subcommands, this command allows multiple symbols AND
 //! multiple exchanges simultaneously — every section groups by (symbol, exchange).
 
+use crate::commands::volatility::{self, VolatilityMethod};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 use clap::Args;
 use futures::stream::{self, StreamExt};
+use perps_core::IPerps;
+use perps_exchanges::factory;
 use serde_json::json;
 use sqlx::PgPool;
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 /// Trade sizes reported in the Slippage section (subset of the aggregator's full
 /// TRADE_AMOUNTS list — $5M/$10M are excluded as not relevant for this report).
@@ -31,6 +35,9 @@ const MAX_PAIRS_PER_QUERY: usize = 40;
 
 /// Max symbol-chunk queries run concurrently against the pool.
 const MAX_CONCURRENT_CHUNKS: usize = 6;
+
+/// Max volatility kline fetches run concurrently against Binance.
+const MAX_CONCURRENT_VOLATILITY_REQUESTS: usize = 8;
 
 #[derive(Args)]
 pub struct ReportArgs {
@@ -71,6 +78,15 @@ pub struct ReportArgs {
     /// Database URL (required)
     #[arg(long, env = "DATABASE_URL")]
     pub database_url: Option<String>,
+
+    /// Lookback duration for the Volatility overview (Summary section), independent
+    /// of --range. Same shorthand syntax as --range (e.g. 30d, 4w).
+    #[arg(long, default_value = "90d")]
+    pub vol_range: String,
+
+    /// Kline interval for the Volatility overview (e.g. 1h, 4h, 1d).
+    #[arg(long, default_value = "1h")]
+    pub vol_interval: String,
 }
 
 // ─── Row types ────────────────────────────────────────────────────────────────
@@ -108,6 +124,41 @@ struct SpreadRow {
     stddev_bps: Option<f64>,
     p95_bps: Option<f64>,
     max_bps: Option<f64>,
+}
+
+/// Annualized volatility overview for one symbol, computed from Binance's own
+/// candles (see VOLATILITY_LOOKBACK_DAYS/VOLATILITY_INTERVAL) — not per-exchange.
+struct VolatilityRow {
+    symbol: String,
+    bars: usize,
+    realized_pct: Option<f64>,
+    parkinson_pct: Option<f64>,
+    garman_klass_pct: Option<f64>,
+}
+
+/// Distribution of per-candle (high-low)/low swing % over the Binance kline window.
+struct PriceSwingRow {
+    symbol: String,
+    bars: usize,
+    min: Option<f64>,
+    mean: Option<f64>,
+    median: Option<f64>,
+    stddev: Option<f64>,
+    p95: Option<f64>,
+    p99: Option<f64>,
+    max: Option<f64>,
+}
+
+/// The single candle with the largest (high-low)/low swing in the window.
+struct MaxSwingRow {
+    symbol: String,
+    open_time: DateTime<Utc>,
+    open: f64,
+    high: f64,
+    low: f64,
+    close: f64,
+    volume: f64,
+    swing_pct: f64,
 }
 
 #[derive(Debug, sqlx::FromRow, Clone)]
@@ -214,6 +265,15 @@ pub async fn execute(args: ReportArgs) -> Result<()> {
         slippage_rows.push((amount, rows));
     }
 
+    let (volatility_rows, price_swing_rows, max_swing_rows) =
+        match fetch_binance_overview(&symbols, &args.vol_range, &args.vol_interval).await {
+            Ok(rows) => rows,
+            Err(error) => {
+                tracing::warn!(%error, "Failed to fetch volatility overview; omitting from report");
+                (Vec::new(), Vec::new(), Vec::new())
+            }
+        };
+
     let report = ReportData {
         from,
         to,
@@ -223,6 +283,11 @@ pub async fn execute(args: ReportArgs) -> Result<()> {
         liquidity_rows,
         spread_rows,
         slippage_rows,
+        volatility_rows,
+        price_swing_rows,
+        max_swing_rows,
+        vol_range: args.vol_range.clone(),
+        vol_interval: args.vol_interval.clone(),
     };
 
     let format = args.format.to_lowercase();
@@ -268,6 +333,11 @@ struct ReportData {
     liquidity_rows: Vec<(&'static str, Vec<LiquidityRow>)>,
     spread_rows: Vec<SpreadRow>,
     slippage_rows: Vec<(i64, Vec<SlippageRow>)>,
+    volatility_rows: Vec<VolatilityRow>,
+    price_swing_rows: Vec<PriceSwingRow>,
+    max_swing_rows: Vec<MaxSwingRow>,
+    vol_range: String,
+    vol_interval: String,
 }
 
 // ─── Time range resolution ──────────────────────────────────────────────────
@@ -601,6 +671,149 @@ async fn fetch_slippage(
         .context("Failed to fetch slippage stats")
 }
 
+/// Fetches Binance klines once per symbol and derives three views: annualized
+/// volatility, the distribution of per-candle (high-low)/low swings, and the
+/// single most-swinging candle. Independent of the DB — this data doesn't
+/// exist there. Best-effort per symbol: a missing/failed symbol is logged and
+/// skipped rather than failing the report.
+async fn fetch_binance_overview(
+    symbols: &[String],
+    vol_range: &str,
+    vol_interval: &str,
+) -> Result<(Vec<VolatilityRow>, Vec<PriceSwingRow>, Vec<MaxSwingRow>)> {
+    let client = factory::get_exchange("binance")
+        .await
+        .context("Failed to initialize Binance client for volatility overview")?;
+    let client: Arc<dyn IPerps + Send + Sync> = Arc::from(client);
+
+    let lookback = parse_range(vol_range)?;
+    let periods_per_year = volatility::periods_per_year(vol_interval)?;
+    let end = Utc::now();
+    let start = end - lookback;
+
+    let fetched = stream::iter(symbols.iter().map(|symbol| {
+        let client = client.clone();
+        async move {
+            let result = volatility::fetch_remote_klines(
+                client.as_ref(),
+                symbol,
+                vol_interval,
+                Some(start),
+                Some(end),
+            )
+            .await;
+            (symbol.clone(), result)
+        }
+    }))
+    .buffer_unordered(MAX_CONCURRENT_VOLATILITY_REQUESTS)
+    .collect::<Vec<_>>()
+    .await;
+
+    let mut volatility_rows = Vec::new();
+    let mut swing_rows = Vec::new();
+    let mut max_swing_rows = Vec::new();
+    for (symbol, result) in fetched {
+        let prices = match result {
+            Ok(prices) if !prices.is_empty() => prices,
+            Ok(_) => {
+                tracing::warn!(symbol, "Binance returned no klines for volatility overview");
+                continue;
+            }
+            Err(error) => {
+                tracing::warn!(symbol, %error, "Failed to fetch Binance klines for volatility overview");
+                continue;
+            }
+        };
+
+        let bars = prices.len();
+        let pct = |method| {
+            volatility::calculate_volatility(&prices, method, periods_per_year)
+                .0
+                .map(|v| v * 100.0)
+        };
+        volatility_rows.push(VolatilityRow {
+            symbol: symbol.clone(),
+            bars,
+            realized_pct: pct(VolatilityMethod::Realized),
+            parkinson_pct: pct(VolatilityMethod::Parkinson),
+            garman_klass_pct: pct(VolatilityMethod::GarmanKlass),
+        });
+
+        let swings = volatility::price_swings(&prices);
+        if let Some(max_candle) = swings
+            .iter()
+            .max_by(|a, b| a.swing_pct.total_cmp(&b.swing_pct))
+        {
+            max_swing_rows.push(MaxSwingRow {
+                symbol: symbol.clone(),
+                open_time: max_candle.open_time,
+                open: max_candle.open,
+                high: max_candle.high,
+                low: max_candle.low,
+                close: max_candle.close,
+                volume: max_candle.volume,
+                swing_pct: max_candle.swing_pct,
+            });
+        }
+
+        let mut swing_pcts: Vec<f64> = swings.iter().map(|s| s.swing_pct).collect();
+        swing_pcts.sort_by(f64::total_cmp);
+        let mean_val = mean(&swing_pcts);
+        swing_rows.push(PriceSwingRow {
+            symbol,
+            bars: swing_pcts.len(),
+            min: swing_pcts.first().copied(),
+            mean: mean_val,
+            median: percentile_cont(&swing_pcts, 0.5),
+            stddev: mean_val.and_then(|m| stddev_pop(&swing_pcts, m)),
+            p95: percentile_cont(&swing_pcts, 0.95),
+            p99: percentile_cont(&swing_pcts, 0.99),
+            max: swing_pcts.last().copied(),
+        });
+    }
+    volatility_rows.sort_by(|a, b| a.symbol.cmp(&b.symbol));
+    swing_rows.sort_by(|a, b| a.symbol.cmp(&b.symbol));
+    max_swing_rows.sort_by(|a, b| a.symbol.cmp(&b.symbol));
+    Ok((volatility_rows, swing_rows, max_swing_rows))
+}
+
+/// Arithmetic mean; `None` for an empty slice.
+fn mean(values: &[f64]) -> Option<f64> {
+    if values.is_empty() {
+        None
+    } else {
+        Some(values.iter().sum::<f64>() / values.len() as f64)
+    }
+}
+
+/// Population standard deviation (matches STDDEV_POP used elsewhere in this file).
+fn stddev_pop(values: &[f64], mean_val: f64) -> Option<f64> {
+    if values.is_empty() {
+        return None;
+    }
+    let variance = values.iter().map(|v| (v - mean_val).powi(2)).sum::<f64>() / values.len() as f64;
+    Some(variance.sqrt())
+}
+
+/// Linear-interpolation percentile over an already-sorted slice (matches
+/// Postgres PERCENTILE_CONT used elsewhere in this file). `p` in `[0, 1]`.
+fn percentile_cont(sorted: &[f64], p: f64) -> Option<f64> {
+    if sorted.is_empty() {
+        return None;
+    }
+    if sorted.len() == 1 {
+        return Some(sorted[0]);
+    }
+    let rank = p * (sorted.len() - 1) as f64;
+    let lo = rank.floor() as usize;
+    let hi = rank.ceil() as usize;
+    if lo == hi {
+        return Some(sorted[lo]);
+    }
+    let frac = rank - lo as f64;
+    Some(sorted[lo] + (sorted[hi] - sorted[lo]) * frac)
+}
+
 // ─── Formatting helpers ─────────────────────────────────────────────────────
 
 /// Formats a USD value with K/M/B suffix; `None` renders as "N/A".
@@ -619,6 +832,25 @@ fn fmt2(value: Option<f64>) -> String {
     match value {
         Some(v) => format!("{:.2}", v),
         None => "N/A".to_string(),
+    }
+}
+
+/// Formats an annualized volatility percentage to 2 decimals; `None` renders as "N/A".
+fn fmt_pct(value: Option<f64>) -> String {
+    match value {
+        Some(v) => format!("{:.2}%", v),
+        None => "N/A".to_string(),
+    }
+}
+
+/// Formats a raw per-unit price (candle OHLC), not a notional aggregate — unlike
+/// `fmt_usd` this never compresses to K/M/B, since that would lose precision on
+/// a single candle's exact price. Sub-$1 symbols get more decimals.
+fn fmt_price(value: f64) -> String {
+    if value >= 1.0 {
+        format!("${:.2}", value)
+    } else {
+        format!("${:.6}", value)
     }
 }
 
@@ -852,7 +1084,69 @@ fn render_table(report: &ReportData) -> String {
         }
         coverage_t.add_row(row);
     }
+
+    let _ = writeln!(out, "\n# Summary\n");
+    let _ = writeln!(out, "## Coverage");
     write_table(&mut out, &coverage_t);
+
+    let _ = writeln!(
+        out,
+        "\n## Volatility ({}, Binance, {})",
+        report.vol_range, report.vol_interval
+    );
+    let mut vol_t = MdTable::new(&["Symbol", "Bars", "Realized", "Parkinson", "Garman-Klass"]);
+    for row in &report.volatility_rows {
+        vol_t.add_row(vec![
+            row.symbol.clone(),
+            row.bars.to_string(),
+            fmt_pct(row.realized_pct),
+            fmt_pct(row.parkinson_pct),
+            fmt_pct(row.garman_klass_pct),
+        ]);
+    }
+    write_table(&mut out, &vol_t);
+
+    let _ = writeln!(
+        out,
+        "\n## Price Swing ({}, Binance, {})",
+        report.vol_range, report.vol_interval
+    );
+    let _ = writeln!(out, "\n### Distribution");
+    let mut swing_t = MdTable::new(&[
+        "Symbol", "Bars", "Min", "Mean", "Median", "StdDev", "P95", "P99", "Max",
+    ]);
+    for row in &report.price_swing_rows {
+        swing_t.add_row(vec![
+            row.symbol.clone(),
+            row.bars.to_string(),
+            fmt_pct(row.min),
+            fmt_pct(row.mean),
+            fmt_pct(row.median),
+            fmt_pct(row.stddev),
+            fmt_pct(row.p95),
+            fmt_pct(row.p99),
+            fmt_pct(row.max),
+        ]);
+    }
+    write_table(&mut out, &swing_t);
+
+    let _ = writeln!(out, "\n### Most Swinging Candle");
+    let mut max_swing_t = MdTable::new(&[
+        "Symbol", "Time", "Open", "High", "Low", "Close", "Volume", "Swing",
+    ]);
+    for row in &report.max_swing_rows {
+        max_swing_t.add_row(vec![
+            row.symbol.clone(),
+            row.open_time.format("%Y-%m-%d %H:%M UTC").to_string(),
+            fmt_price(row.open),
+            fmt_price(row.high),
+            fmt_price(row.low),
+            fmt_price(row.close),
+            fmt_price(row.volume),
+            fmt_pct(Some(row.swing_pct)),
+        ]);
+    }
+    write_table(&mut out, &max_swing_t);
 
     for symbol in &active_symbols {
         let _ = writeln!(out, "\n# {}\n", symbol);
