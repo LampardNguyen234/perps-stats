@@ -2,6 +2,7 @@ use crate::arcus::ArcusClient;
 use crate::aster::AsterClient;
 use crate::binance::BinanceClient;
 use crate::bybit::BybitClient;
+use crate::edgex::EdgexClient;
 use crate::extended::ExtendedClient;
 use crate::gravity::GravityClient;
 use crate::hibachi::HibachiClient;
@@ -27,6 +28,7 @@ pub fn exchange_names() -> &'static [&'static str] {
         "aster",
         "binance",
         "bybit",
+        "edgex",
         "extended",
         "gravity",
         "hibachi",
@@ -55,6 +57,10 @@ pub async fn all_exchanges() -> Vec<(String, Box<dyn IPerps + Send + Sync>)> {
         (
             "bybit".to_string(),
             Box::new(BybitClient::new()) as Box<dyn IPerps + Send + Sync>,
+        ),
+        (
+            "edgex".to_string(),
+            Box::new(EdgexClient::new()) as Box<dyn IPerps + Send + Sync>,
         ),
         (
             "gravity".to_string(),
@@ -159,6 +165,7 @@ pub async fn get_exchange(name: &str) -> anyhow::Result<Box<dyn IPerps + Send + 
             Ok(Box::new(client))
         }
         "bybit" => Ok(Box::new(BybitClient::new())),
+        "edgex" => Ok(Box::new(EdgexClient::new())),
         "extended" => {
             let client = ExtendedClient::new().await?;
             Ok(Box::new(client))
@@ -179,7 +186,7 @@ pub async fn get_exchange(name: &str) -> anyhow::Result<Box<dyn IPerps + Send + 
         "qfex" => Ok(Box::new(QfexClient::new())),
         "risex" => Ok(Box::new(RiseXClient::new())),
         "tradexyz" => Ok(Box::new(TradexyzClient::new())),
-        _ => anyhow::bail!("Unsupported exchange: {}. Currently supported: 01, arcus, aster, binance, bybit, extended, gravity, hibachi, hotstuff, hyperliquid, kucoin, lighter, nado, pacifica, paradex, qfex, risex, tradexyz", name),
+        _ => anyhow::bail!("Unsupported exchange: {}. Currently supported: 01, arcus, aster, binance, bybit, edgex, extended, gravity, hibachi, hotstuff, hyperliquid, kucoin, lighter, nado, pacifica, paradex, qfex, risex, tradexyz", name),
     }
 }
 
@@ -281,6 +288,31 @@ mod tests {
         assert!(
             exchanges.iter().any(|(name, _)| name == "risex"),
             "risex missing from all_exchanges()"
+        );
+    }
+
+    /// Test that EdgeX exchange can be created via factory
+    #[tokio::test]
+    async fn test_get_exchange_edgex() {
+        let result = get_exchange("edgex").await;
+        assert!(result.is_ok(), "get_exchange(\"edgex\") should succeed");
+        assert_eq!(result.unwrap().get_name(), "edgex");
+    }
+
+    /// Test that EdgeX exchange respects case-insensitive exchange names
+    #[tokio::test]
+    async fn test_get_exchange_edgex_case_insensitive() {
+        assert!(get_exchange("EDGEX").await.is_ok());
+        assert!(get_exchange("EdgeX").await.is_ok());
+    }
+
+    /// Test that EdgeX is included in all_exchanges()
+    #[tokio::test]
+    async fn test_all_exchanges_includes_edgex() {
+        let exchanges = all_exchanges().await;
+        assert!(
+            exchanges.iter().any(|(name, _)| name == "edgex"),
+            "edgex missing from all_exchanges()"
         );
     }
 

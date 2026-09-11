@@ -1,4 +1,6 @@
 use super::ws_types::*;
+use super::models::{LighterResponse, OrderBookDetailsResponse};
+use super::symbols::{to_exchange_symbol, to_global_symbol};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use chrono::{TimeZone, Utc};
@@ -214,32 +216,21 @@ async fn resolve_id_to_symbol(
             return g.iter().map(|(s, &id)| (id, s.clone())).collect();
         }
     }
-    let url = format!("{}/orderBooks", base_url);
+    let url = format!("{}/orderBookDetails", base_url);
     match reqwest::get(&url).await {
         Ok(resp) => {
-            // LighterResponse uses #[serde(flatten)] so JSON is:
-            // {"code":200,"order_books":[...]} — no nested "data" wrapper.
-            #[derive(serde::Deserialize)]
-            struct OB {
-                symbol: String,
-                market_id: u64,
-            }
-            #[derive(serde::Deserialize)]
-            struct Wrap {
-                order_books: Vec<OB>,
-            }
-            match resp.json::<Wrap>().await {
-                Ok(w) => {
+            match resp.json::<LighterResponse<OrderBookDetailsResponse>>().await {
+                Ok(w) if w.code == 200 => {
                     let mut g = cache.write().await;
-                    for ob in &w.order_books {
-                        // Normalize via alias table so keys match what LighterClient::get_market_id
-                        // inserts (e.g. "CL" → "WTI"). Lighter API returns simple uppercase symbols
-                        // so only alias resolution is needed here, not full parse_symbol logic.
-                        let sym =
-                            crate::symbol_aliases::resolve_alias("lighter", &ob.symbol).to_string();
-                        g.insert(sym, ob.market_id);
-                    }
+                    *g = w.data.order_book_details.into_iter()
+                        .filter(|d| d.is_collectable())
+                        .map(|d| (d.symbol, d.market_id))
+                        .collect();
                     g.iter().map(|(s, &id)| (id, s.clone())).collect()
+                }
+                Ok(w) => {
+                    tracing::warn!("LighterOrderbookManager: API error {}", w.code);
+                    HashMap::new()
                 }
                 Err(e) => {
                     tracing::warn!("LighterOrderbookManager: market_id parse error: {}", e);
@@ -482,30 +473,23 @@ impl LighterWsClient {
 
     /// Get market_id for a symbol by fetching from REST API
     async fn get_market_id(&mut self, symbol: &str) -> Result<u64> {
-        // Check cache first
-        if let Some(&market_id) = self.symbol_to_market_id.get(symbol) {
+        let symbol = to_exchange_symbol(symbol);
+        if let Some(&market_id) = self.symbol_to_market_id.get(&symbol) {
             return Ok(market_id);
         }
 
-        // Fetch from REST API
-        let url = "https://mainnet.zklighter.elliot.ai/api/v1/orderBooks";
-        let response = reqwest::get(url).await?;
-        let data: serde_json::Value = response.json().await?;
-
-        // Parse the response (note: response structure is different - no "data" wrapper)
-        if let Some(order_books) = data["order_books"].as_array() {
-            for ob in order_books {
-                if let (Some(sym), Some(id)) = (ob["symbol"].as_str(), ob["market_id"].as_u64()) {
-                    self.symbol_to_market_id.insert(sym.to_string(), id);
-                }
-            }
+        let url = "https://mainnet.zklighter.elliot.ai/api/v1/orderBookDetails";
+        let response: LighterResponse<OrderBookDetailsResponse> = reqwest::get(url).await?
+            .error_for_status()?.json().await?;
+        if response.code != 200 {
+            return Err(anyhow!("Lighter API error: {}", response.code));
         }
-
-        // Try again from cache
-        self.symbol_to_market_id
-            .get(symbol)
-            .copied()
-            .ok_or_else(|| anyhow!("Symbol {} not found", symbol))
+        self.symbol_to_market_id = response.data.order_book_details.into_iter()
+            .filter(|d| d.is_collectable())
+            .map(|d| (d.symbol, d.market_id))
+            .collect();
+        self.symbol_to_market_id.get(&symbol).copied()
+            .ok_or_else(|| anyhow!("Lighter market {} unavailable: absent, inactive or reduce_only", symbol))
     }
 
     /// Convert Lighter market stats to our Ticker type
@@ -523,7 +507,7 @@ impl LighterWsClient {
         let price_change_24h = price_change_pct * last_price;
 
         Ok(Ticker {
-            symbol: stats.symbol.clone(),
+            symbol: to_global_symbol(&stats.symbol),
             last_price,
             mark_price,
             index_price,
@@ -551,7 +535,7 @@ impl LighterWsClient {
     fn convert_trade(&self, trade: &LighterTradeData) -> Result<Trade> {
         Ok(Trade {
             id: trade.trade_id.clone(),
-            symbol: trade.symbol.clone(),
+            symbol: to_global_symbol(&trade.symbol),
             price: Decimal::from_str(&trade.price)?,
             quantity: Decimal::from_str(&trade.size)?,
             side: match trade.side.as_str() {
@@ -742,7 +726,7 @@ impl IPerpsStream for LighterWsClient {
         let mut market_id_to_symbol: HashMap<u64, String> = HashMap::new();
         for symbol in &symbols {
             let market_id = client.get_market_id(symbol).await?;
-            market_id_to_symbol.insert(market_id, symbol.clone());
+            market_id_to_symbol.insert(market_id, to_global_symbol(&to_exchange_symbol(symbol)));
             let channel = format!("order_book/{}", market_id);
             self.subscribe(&mut ws_stream, channel).await?;
         }
@@ -845,7 +829,7 @@ impl IPerpsStream for LighterWsClient {
         let mut market_id_to_symbol: HashMap<u64, String> = HashMap::new();
         for symbol in &config.symbols {
             let market_id = client.get_market_id(symbol).await?;
-            market_id_to_symbol.insert(market_id, symbol.clone());
+            market_id_to_symbol.insert(market_id, to_global_symbol(&to_exchange_symbol(symbol)));
 
             // Subscribe to requested topics for this market
             for data_type in &config.data_types {

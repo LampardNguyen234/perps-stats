@@ -1,6 +1,7 @@
 mod client;
 mod conversions;
 mod models;
+mod symbols;
 pub mod ws_client;
 pub mod ws_types;
 

@@ -23,6 +23,12 @@ PLATINUM = "XPT"
 PALLADIUM = "XPD"
 BRENTOIL = "BZ"
 
+[edgex]
+XCU = "COPPER"
+PLATINUM = "XPT"
+PALLADIUM = "XPD"
+BRENTOIL = "BZ"
+
 [extended]
 NVDA = "NVDA_24_5"
 AAPL = "AAPL_24_5"
@@ -47,6 +53,10 @@ EURUSD = "EUR"
 
 [gravity]
 XCU = "COPPER"
+PLATINUM = "XPT"
+PALLADIUM = "XPD"
+BRENTOIL = "BZ"
+SPCX = "SPACEX"
 
 [hotstuff]
 XAU = "GOLD"
@@ -64,10 +74,10 @@ CL = "WTI"
 PLATINUM = "XPT"
 PALLADIUM = "XPD"
 URANIUM = "URA"
-NZDUSD = "NZD"
-GBPUSD = "GBP"
-EURUSD = "EUR"
-AUDUSD = "AUD"
+# GBPUSD/EURUSD/AUDUSD/NZDUSD need no alias: Lighter's raw market name for these forex
+# pairs is the literal "<currency>USD" string itself, handled by the
+# LITERAL_USD_SYMBOLS special-case in crates/perps-exchanges/src/lighter/symbols.rs
+# (same reason SKHYNIX/SAMSUNG have no alias entry here either).
 
 [nado]
 XAU = "XAUT"

@@ -1,4 +1,3 @@
-use crate::cache::SymbolsCache;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -11,7 +10,7 @@ use rust_decimal::prelude::FromPrimitive;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 use tracing;
 
 use super::conversions;
@@ -33,31 +32,16 @@ pub struct LighterClient {
     /// symbol → market_id; shared with the WS manager so it can resolve IDs
     /// without a separate REST call when the manager starts.
     market_id_cache: Arc<RwLock<HashMap<String, u64>>>,
-    /// Cached set of supported symbols
-    symbols_cache: SymbolsCache,
     /// Rate limiter for API requests
     rate_limiter: Arc<RateLimiter>,
     /// TTL cache for orderBookDetails (shared across clones)
-    order_book_details_cache: Arc<RwLock<Option<OrderBookDetailsCache>>>,
+    order_book_details_cache: Arc<Mutex<Option<OrderBookDetailsCache>>>,
     /// Present when ENABLE_ORDERBOOK_STREAMING=true.  get_orderbook delegates
     /// to this instead of making a REST call.
     orderbook_manager: Option<Arc<LighterOrderbookManager>>,
 }
 
 impl LighterClient {
-    /// Ensure the symbols cache is initialized
-    async fn ensure_cache_initialized(&self) -> Result<()> {
-        self.symbols_cache
-            .get_or_init(|| async {
-                let markets = self.get_markets().await?;
-                Ok(markets
-                    .into_iter()
-                    .map(|m| self.parse_symbol(&m.symbol))
-                    .collect())
-            })
-            .await
-    }
-
     pub fn new() -> Self {
         let market_id_cache: Arc<RwLock<HashMap<String, u64>>> =
             Arc::new(RwLock::new(HashMap::new()));
@@ -78,21 +62,19 @@ impl LighterClient {
             client: Client::new(),
             base_url: BASE_URL.to_string(),
             market_id_cache,
-            symbols_cache: SymbolsCache::new(),
             rate_limiter: Arc::new(RateLimiter::lighter()),
-            order_book_details_cache: Arc::new(RwLock::new(None)),
+            order_book_details_cache: Arc::new(Mutex::new(None)),
             orderbook_manager,
         }
     }
 
     /// Fetch all order book details, using the TTL cache when fresh enough.
     async fn get_order_book_details(&self) -> Result<Vec<OrderBookDetail>> {
-        {
-            let cache = self.order_book_details_cache.read().await;
-            if let Some(ref c) = *cache {
-                if c.fetched_at.elapsed() < ORDER_BOOK_DETAILS_CACHE_TTL {
-                    return Ok(c.data.clone());
-                }
+        // Hold the lock through refill so concurrent commands share one snapshot.
+        let mut cache = self.order_book_details_cache.lock().await;
+        if let Some(ref c) = *cache {
+            if c.fetched_at.elapsed() < ORDER_BOOK_DETAILS_CACHE_TTL {
+                return Ok(c.data.clone());
             }
         }
 
@@ -104,7 +86,12 @@ impl LighterClient {
         }
 
         let details = response.data.order_book_details;
-        *self.order_book_details_cache.write().await = Some(OrderBookDetailsCache {
+        // Cache exact API names: never run user-input aliases over metadata names.
+        *self.market_id_cache.write().await = details.iter()
+            .filter(|d| d.is_collectable())
+            .map(|d| (d.symbol.clone(), d.market_id))
+            .collect();
+        *cache = Some(OrderBookDetailsCache {
             data: details.clone(),
             fetched_at: Instant::now(),
         });
@@ -153,39 +140,28 @@ impl LighterClient {
         .await
     }
 
-    /// Get market ID for a symbol (populates shared cache on first call).
+    /// Resolve history requests too, including markets currently reduce-only/inactive.
     async fn get_market_id(&self, symbol: &str) -> Result<u64> {
+        Ok(self.find_orderbook_detail(symbol).await?.market_id)
+    }
+
+    async fn find_orderbook_detail(&self, symbol: &str) -> Result<OrderBookDetail> {
         let sym = self.parse_symbol(symbol);
-        {
-            if let Some(&id) = self.market_id_cache.read().await.get(&sym) {
-                return Ok(id);
-            }
-        }
-
-        let url = format!("{}/orderBooks", self.base_url);
-        let response: LighterResponse<OrderBooksResponse> = self.get(&url).await?;
-        if response.code != 200 {
-            return Err(anyhow!("API error: code {}", response.code));
-        }
-
-        let mut cache = self.market_id_cache.write().await;
-        for ob in &response.data.order_books {
-            cache.insert(self.parse_symbol(&ob.symbol), ob.market_id);
-        }
-        cache
-            .get(&sym)
-            .copied()
-            .ok_or_else(|| anyhow!("Symbol {} not found", symbol))
-    }
-
-    /// Fetch order book details for a specific market (uses shared TTL cache).
-    async fn fetch_orderbook_detail(&self, symbol: &str) -> Result<OrderBookDetail> {
-        let details = self.get_order_book_details().await?;
-        details
+        self.get_order_book_details().await?
             .into_iter()
-            .find(|detail| self.parse_symbol(&detail.symbol) == self.parse_symbol(symbol))
-            .ok_or_else(|| anyhow!("Symbol {} not found in order book details", symbol))
+            .find(|d| d.symbol == sym && d.market_type == "perp")
+            .ok_or_else(|| anyhow!("Symbol {} not found in Lighter perpetual markets", symbol))
     }
+
+    /// Current-data requests must obey the same policy as market discovery.
+    async fn fetch_orderbook_detail(&self, symbol: &str) -> Result<OrderBookDetail> {
+        let detail = self.find_orderbook_detail(symbol).await?;
+        if let Some(reason) = detail.exclusion_reason() {
+            return Err(anyhow!("Lighter market {} excluded: {}", symbol, reason));
+        }
+        Ok(detail)
+    }
+
 }
 
 impl Default for LighterClient {
@@ -201,67 +177,30 @@ impl IPerps for LighterClient {
     }
 
     fn normalize_symbol(&self, exchange_symbol: &str) -> String {
-        // Lighter uses global-style symbols (BTC, ETH, WTI for CL alias)
-        crate::symbol_aliases::unresolve_alias("lighter", exchange_symbol).to_string()
+        super::symbols::to_global_symbol(exchange_symbol)
     }
 
     fn parse_symbol(&self, symbol: &str) -> String {
-        let symbol = crate::symbol_aliases::resolve_alias("lighter", symbol);
-        // Lighter uses simple symbol names like "BTC", "ETH"
-        // Handle special cases
-        match symbol.to_uppercase().as_str() {
-            "BTCUSDT" | "BTC-USDT" | "BTCUSD" => "BTC".to_string(),
-            "ETHUSDT" | "ETH-USDT" | "ETHUSD" => "ETH".to_string(),
-            "SOLUSDT" | "SOL-USDT" | "SOLUSD" => "SOL".to_string(),
-            "AVAXUSDT" | "AVAX-USDT" | "AVAXUSD" => "AVAX".to_string(),
-            _ => {
-                // Remove common suffixes
-                let s = symbol.to_uppercase();
-                s.trim_end_matches("USDT")
-                    .trim_end_matches("-USDT")
-                    .trim_end_matches("USD")
-                    .trim_end_matches("-USD")
-                    .to_string()
-            }
-        }
+        super::symbols::to_exchange_symbol(symbol)
     }
 
     async fn get_markets(&self) -> Result<Vec<Market>> {
-        let url = format!("{}/orderBookDetails", self.base_url);
-        tracing::debug!("Fetching markets from Lighter: {}", url);
-
-        let response: OrderBookDetailsResponse = self.get(&url).await?;
-
-        let markets: Result<Vec<Market>> = response
-            .order_book_details
+        self.get_order_book_details().await?
             .iter()
-            .filter(|d| d.status == "active" && d.market_type == "perp")
+            .filter(|d| d.is_collectable())
             .map(|d| {
-                let mut m = conversions::to_market_from_detail(d)?;
-                m.symbol = self.normalize_symbol(&m.symbol);
-                Ok(m)
+                let mut market = conversions::to_market_from_detail(d)?;
+                market.symbol = self.normalize_symbol(&market.symbol);
+                Ok(market)
             })
-            .collect();
-
-        markets
+            .collect()
     }
 
     async fn get_market(&self, symbol: &str) -> Result<Market> {
-        let symbol = self.parse_symbol(symbol);
-        let url = format!("{}/orderBookDetails", self.base_url);
-        tracing::debug!("Fetching market {} from Lighter: {}", symbol, url);
-
-        let response: OrderBookDetailsResponse = self.get(&url).await?;
-
-        let detail = response
-            .order_book_details
-            .iter()
-            .find(|d| d.symbol == symbol && d.market_type == "perp")
-            .ok_or_else(|| anyhow!("Symbol {} not found", symbol))?;
-
-        let mut m = conversions::to_market_from_detail(detail)?;
-        m.symbol = self.normalize_symbol(&m.symbol);
-        Ok(m)
+        let detail = self.fetch_orderbook_detail(symbol).await?;
+        let mut market = conversions::to_market_from_detail(&detail)?;
+        market.symbol = self.normalize_symbol(&market.symbol);
+        Ok(market)
     }
 
     async fn get_ticker(&self, symbol: &str) -> Result<Ticker> {
@@ -290,6 +229,7 @@ impl IPerps for LighterClient {
             .get_order_book_details()
             .await?
             .iter()
+            .filter(|d| d.is_collectable())
             .map(|d| {
                 let mut t = conversions::to_ticker(d)?;
                 t.symbol = self.normalize_symbol(&t.symbol);
@@ -302,6 +242,8 @@ impl IPerps for LighterClient {
 
     async fn get_orderbook(&self, symbol: &str, depth: u32) -> Result<MultiResolutionOrderbook> {
         let symbol = self.parse_symbol(symbol);
+
+        let detail = self.fetch_orderbook_detail(&symbol).await?;
 
         if let Some(mgr) = &self.orderbook_manager {
             let mut mob = mgr.get_orderbook(&symbol, depth).await?;
@@ -324,7 +266,7 @@ impl IPerps for LighterClient {
             capped_depth
         );
 
-        let market_id = self.get_market_id(&symbol).await?;
+        let market_id = detail.market_id;
 
         let url = format!(
             "{}/orderBookOrders?market_id={}&limit={}",
@@ -345,6 +287,7 @@ impl IPerps for LighterClient {
 
     async fn get_funding_rate(&self, symbol: &str) -> Result<FundingRate> {
         let symbol = self.parse_symbol(symbol);
+        let detail = self.fetch_orderbook_detail(&symbol).await?;
         let url = format!("{}/funding-rates", self.base_url);
         tracing::debug!("Fetching funding rate for {} from Lighter: {}", symbol, url);
 
@@ -358,7 +301,7 @@ impl IPerps for LighterClient {
             .data
             .funding_rates
             .iter()
-            .find(|fr| fr.symbol == symbol)
+            .find(|fr| fr.exchange == "lighter" && fr.market_id == detail.market_id)
             .ok_or_else(|| anyhow!("Funding rate for {} not found", symbol))?;
 
         let mut fr = conversions::to_funding_rate(funding_rate)?;
@@ -511,6 +454,7 @@ impl IPerps for LighterClient {
             .get_order_book_details()
             .await?
             .iter()
+            .filter(|d| d.is_collectable())
             .map(|detail| {
                 let last_price = rust_decimal::Decimal::from_f64(detail.last_trade_price)
                     .unwrap_or_else(|| rust_decimal::Decimal::from(0));
@@ -553,11 +497,19 @@ impl IPerps for LighterClient {
     }
 
     async fn is_supported(&self, symbol: &str) -> Result<bool> {
-        self.ensure_cache_initialized().await?;
-        Ok(self
-            .symbols_cache
-            .contains(&self.parse_symbol(symbol))
-            .await)
+        let sym = self.parse_symbol(symbol);
+        let details = self.get_order_book_details().await?;
+        match details.iter().find(|d| d.symbol == sym && d.market_type == "perp") {
+            Some(detail) => {
+                if let Some(reason) = detail.exclusion_reason() {
+                    tracing::info!("Lighter market {} excluded: {}", symbol, reason);
+                    Ok(false)
+                } else {
+                    Ok(true)
+                }
+            }
+            None => Ok(false),
+        }
     }
 }
 
@@ -567,7 +519,6 @@ impl Clone for LighterClient {
             client: self.client.clone(),
             base_url: self.base_url.clone(),
             market_id_cache: self.market_id_cache.clone(),
-            symbols_cache: self.symbols_cache.clone(),
             rate_limiter: self.rate_limiter.clone(),
             order_book_details_cache: self.order_book_details_cache.clone(),
             orderbook_manager: self.orderbook_manager.clone(),

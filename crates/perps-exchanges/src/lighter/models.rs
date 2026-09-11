@@ -63,6 +63,33 @@ pub struct OrderBookDetail {
     pub daily_price_high: f64,
     pub daily_price_change: f64,
     pub open_interest: f64,
+    #[serde(default)]
+    pub market_config: MarketConfig,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct MarketConfig {
+    #[serde(default)]
+    pub force_reduce_only: bool,
+}
+
+impl OrderBookDetail {
+    /// Eligibility for current market collection, independent of trading activity.
+    pub fn exclusion_reason(&self) -> Option<&'static str> {
+        if self.market_type != "perp" {
+            Some("not_perpetual")
+        } else if self.status != "active" {
+            Some("inactive")
+        } else if self.market_config.force_reduce_only {
+            Some("reduce_only")
+        } else {
+            None
+        }
+    }
+
+    pub fn is_collectable(&self) -> bool {
+        self.exclusion_reason().is_none()
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

@@ -522,3 +522,77 @@ mod pacifica {
         assert_eq!(c.normalize_symbol("ETH"), "ETH");
     }
 }
+
+// ---------------------------------------------------------------------------
+// EdgeX
+// ---------------------------------------------------------------------------
+mod edgex {
+    use super::*;
+    use perps_exchanges::EdgexClient;
+
+    fn client() -> EdgexClient {
+        EdgexClient::new()
+    }
+
+    #[test]
+    fn parse_global() {
+        let c = client();
+        assert_eq!(c.parse_symbol("BTC"), "BTCUSDC");
+        assert_eq!(c.parse_symbol("ETH"), "ETHUSDC");
+    }
+
+    #[test]
+    fn parse_idempotent() {
+        let c = client();
+        assert_eq!(c.parse_symbol("BTCUSDC"), "BTCUSDC");
+        assert_eq!(c.parse_symbol("BTC"), c.parse_symbol("BTCUSDC"));
+    }
+
+    #[test]
+    fn normalize_roundtrip() {
+        let c = client();
+        assert_eq!(c.normalize_symbol("BTCUSDC"), "BTC");
+        assert_eq!(c.normalize_symbol("ETHUSDC"), "ETH");
+    }
+
+    #[test]
+    fn alias_xcu_roundtrip() {
+        // [edgex] XCU = "COPPER" — requires init_aliases
+        let aliases_path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../symbol_aliases.toml");
+        perps_exchanges::init_aliases(&aliases_path);
+        let c = client();
+        assert_eq!(c.parse_symbol("XCU"), "COPPERUSDC");
+        assert_eq!(c.normalize_symbol("COPPERUSDC"), "XCU");
+    }
+
+    #[test]
+    fn alias_platinum_roundtrip() {
+        let aliases_path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../symbol_aliases.toml");
+        perps_exchanges::init_aliases(&aliases_path);
+        let c = client();
+        assert_eq!(c.parse_symbol("PLATINUM"), "XPTUSDC");
+        assert_eq!(c.normalize_symbol("XPTUSDC"), "PLATINUM");
+    }
+
+    #[test]
+    fn alias_palladium_roundtrip() {
+        let aliases_path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../symbol_aliases.toml");
+        perps_exchanges::init_aliases(&aliases_path);
+        let c = client();
+        assert_eq!(c.parse_symbol("PALLADIUM"), "XPDUSDC");
+        assert_eq!(c.normalize_symbol("XPDUSDC"), "PALLADIUM");
+    }
+
+    #[test]
+    fn alias_brentoil_roundtrip() {
+        let aliases_path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../symbol_aliases.toml");
+        perps_exchanges::init_aliases(&aliases_path);
+        let c = client();
+        assert_eq!(c.parse_symbol("BRENTOIL"), "BZUSDC");
+        assert_eq!(c.normalize_symbol("BZUSDC"), "BRENTOIL");
+    }
+}
