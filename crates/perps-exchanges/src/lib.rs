@@ -1,3 +1,4 @@
+pub mod arcus;
 pub mod aster;
 pub mod binance;
 pub mod bybit;
@@ -19,6 +20,7 @@ pub mod risex;
 pub mod symbol_aliases;
 pub mod tradexyz;
 
+pub use arcus::ArcusClient;
 pub use aster::AsterClient;
 pub use binance::BinanceClient;
 pub use bybit::BybitClient;

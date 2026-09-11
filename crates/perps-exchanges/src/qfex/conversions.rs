@@ -368,6 +368,7 @@ pub fn map_kline_interval(interval: &str) -> Result<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use perps_core::{Orderbook, OrderbookLevel};
 
     fn make_metrics() -> SymbolMetrics {
         SymbolMetrics {
@@ -378,6 +379,21 @@ mod tests {
             open_interest: Some(1936.145),
             funding_rate_bps: Some(-0.0005),
         }
+    }
+
+    fn make_ob() -> MultiResolutionOrderbook {
+        MultiResolutionOrderbook::from_single(Orderbook {
+            symbol: "AAPL-USD".to_string(),
+            timestamp: Utc::now(),
+            bids: vec![OrderbookLevel {
+                price: Decimal::from_f64(247.80).unwrap(),
+                quantity: Decimal::from(10),
+            }],
+            asks: vec![OrderbookLevel {
+                price: Decimal::from_f64(247.90).unwrap(),
+                quantity: Decimal::from(10),
+            }],
+        })
     }
 
     #[test]
@@ -397,7 +413,7 @@ mod tests {
     #[test]
     fn test_metrics_to_ticker_volume_turnover() {
         let m = make_metrics();
-        let ticker = metrics_to_ticker(&m).unwrap();
+        let ticker = metrics_to_ticker(&m, &make_ob()).unwrap();
 
         // Turnover is direct from usd_notional
         assert_eq!(ticker.turnover_24h, Decimal::from_f64(568.19).unwrap());
@@ -412,7 +428,7 @@ mod tests {
     #[test]
     fn test_price_change_pct_is_ratio() {
         let m = make_metrics();
-        let ticker = metrics_to_ticker(&m).unwrap();
+        let ticker = metrics_to_ticker(&m, &make_ob()).unwrap();
 
         // 0.3563 pct → 0.003563 ratio
         let expected = Decimal::from_f64(0.3563 / 100.0).unwrap();
@@ -423,7 +439,7 @@ mod tests {
     #[test]
     fn test_funding_rate_direct() {
         let m = make_metrics();
-        let _ticker = metrics_to_ticker(&m).unwrap();
+        let _ticker = metrics_to_ticker(&m, &make_ob()).unwrap();
         let fr = metrics_to_funding_rate(&m).unwrap();
 
         // funding_rate_bps = -0.0005 → use directly
@@ -487,7 +503,7 @@ mod tests {
         let item = RefDataItem {
             symbol: "NVDA-USD".to_string(),
             base_asset: Some("NVDA".to_string()),
-            underlier_price: Some(900.0),
+            underlier_price: Some("900.0".to_string()),
             price_change_24h: None,
             tick_size: Some("0.01".to_string()),
             lot_size: Some("1".to_string()),

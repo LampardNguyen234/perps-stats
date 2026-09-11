@@ -1,3 +1,4 @@
+use crate::arcus::ArcusClient;
 use crate::aster::AsterClient;
 use crate::binance::BinanceClient;
 use crate::bybit::BybitClient;
@@ -22,6 +23,7 @@ use perps_core::traits::IPerps;
 pub fn exchange_names() -> &'static [&'static str] {
     &[
         "01",
+        "arcus",
         "aster",
         "binance",
         "bybit",
@@ -46,6 +48,10 @@ pub fn exchange_names() -> &'static [&'static str] {
 /// This function is async because Aster, Binance, Extended, and KuCoin client initialization requires async operations.
 pub async fn all_exchanges() -> Vec<(String, Box<dyn IPerps + Send + Sync>)> {
     let mut exchanges = vec![
+        (
+            "arcus".to_string(),
+            Box::new(ArcusClient::new()) as Box<dyn IPerps + Send + Sync>,
+        ),
         (
             "bybit".to_string(),
             Box::new(BybitClient::new()) as Box<dyn IPerps + Send + Sync>,
@@ -143,6 +149,7 @@ pub async fn all_exchanges() -> Vec<(String, Box<dyn IPerps + Send + Sync>)> {
 /// - `ENABLE_ORDERBOOK_STREAMING`: Set to "true" to enable streaming (default: false)
 pub async fn get_exchange(name: &str) -> anyhow::Result<Box<dyn IPerps + Send + Sync>> {
     match name.to_lowercase().as_str() {
+        "arcus" => Ok(Box::new(ArcusClient::new())),
         "aster" => {
             let client = AsterClient::new().await?;
             Ok(Box::new(client))
@@ -172,13 +179,38 @@ pub async fn get_exchange(name: &str) -> anyhow::Result<Box<dyn IPerps + Send + 
         "qfex" => Ok(Box::new(QfexClient::new())),
         "risex" => Ok(Box::new(RiseXClient::new())),
         "tradexyz" => Ok(Box::new(TradexyzClient::new())),
-        _ => anyhow::bail!("Unsupported exchange: {}. Currently supported: 01, aster, binance, bybit, extended, gravity, hibachi, hotstuff, hyperliquid, kucoin, lighter, nado, pacifica, paradex, qfex, risex, tradexyz", name),
+        _ => anyhow::bail!("Unsupported exchange: {}. Currently supported: 01, arcus, aster, binance, bybit, extended, gravity, hibachi, hotstuff, hyperliquid, kucoin, lighter, nado, pacifica, paradex, qfex, risex, tradexyz", name),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Test that Arcus exchange can be created via factory
+    #[tokio::test]
+    async fn test_get_exchange_arcus() {
+        let result = get_exchange("arcus").await;
+        assert!(result.is_ok(), "get_exchange(\"arcus\") should succeed");
+        assert_eq!(result.unwrap().get_name(), "arcus");
+    }
+
+    /// Test that Arcus exchange respects case-insensitive exchange names
+    #[tokio::test]
+    async fn test_get_exchange_arcus_case_insensitive() {
+        assert!(get_exchange("ARCUS").await.is_ok());
+        assert!(get_exchange("Arcus").await.is_ok());
+    }
+
+    /// Test that Arcus is included in all_exchanges()
+    #[tokio::test]
+    async fn test_all_exchanges_includes_arcus() {
+        let exchanges = all_exchanges().await;
+        assert!(
+            exchanges.iter().any(|(name, _)| name == "arcus"),
+            "arcus missing from all_exchanges()"
+        );
+    }
 
     /// Test that Gravity exchange can be created via factory
     #[tokio::test]

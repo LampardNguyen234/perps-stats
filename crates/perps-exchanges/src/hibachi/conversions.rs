@@ -437,13 +437,13 @@ mod tests {
 
         let ob = OrderbookResponse {
             bid: Some(OrderbookSide {
-                levels: vec![OrderbookLevel {
+                levels: vec![crate::hibachi::types::OrderbookLevel {
                     price: "94990.0".to_string(),
                     quantity: "1.5".to_string(),
                 }],
             }),
             ask: Some(OrderbookSide {
-                levels: vec![OrderbookLevel {
+                levels: vec![crate::hibachi::types::OrderbookLevel {
                     price: "95020.0".to_string(),
                     quantity: "0.8".to_string(),
                 }],
