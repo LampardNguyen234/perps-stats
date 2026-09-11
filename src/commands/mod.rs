@@ -9,6 +9,7 @@ pub mod market;
 pub mod markets;
 pub mod orderbook;
 pub mod report;
+pub mod report_charts;
 pub mod run;
 pub mod serve;
 pub mod start;

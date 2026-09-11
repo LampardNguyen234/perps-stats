@@ -237,10 +237,17 @@ impl StreamManager {
         sleep(Duration::from_millis(1000)).await;
 
         // Re-check cache — the WS snapshot may have arrived during the sleep.
-        if let Some(cached) = self.orderbook_manager.get_orderbook(symbol, limit as usize).await {
+        if let Some(cached) = self
+            .orderbook_manager
+            .get_orderbook(symbol, limit as usize)
+            .await
+        {
             let (bid_size, ask_size) = cached.size();
             if bid_size + ask_size != 0 && self.orderbook_manager.is_fresh(symbol).await {
-                debug!("OrderbookManager cache populated during sleep for {}", symbol);
+                debug!(
+                    "OrderbookManager cache populated during sleep for {}",
+                    symbol
+                );
                 return Ok(cached);
             }
         }

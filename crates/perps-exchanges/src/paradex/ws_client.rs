@@ -82,7 +82,9 @@ fn parse_snapshot(snap: &ParadexOrderbookSnapshot) -> Result<Orderbook> {
         symbol: snap.market.clone(),
         bids,
         asks,
-        timestamp: Utc.timestamp_millis_opt(snap.last_updated_at as i64).unwrap(),
+        timestamp: Utc
+            .timestamp_millis_opt(snap.last_updated_at as i64)
+            .unwrap(),
     })
 }
 
@@ -522,7 +524,12 @@ impl ParadexOrderbookManager {
             run_manager_task(snapshots_bg, notifiers_bg, subscribed_bg, subscribe_rx).await;
         });
 
-        Self { snapshots, notifiers, subscribed, subscribe_tx }
+        Self {
+            snapshots,
+            notifiers,
+            subscribed,
+            subscribe_tx,
+        }
     }
 
     /// Queue Paradex-format market names (e.g. "BTC-USD-PERP") for subscription.

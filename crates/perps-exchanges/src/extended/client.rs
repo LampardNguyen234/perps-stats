@@ -408,20 +408,31 @@ impl IPerps for ExtendedClient {
             let base_url = BASE_URL.to_string();
             let mut orderbook = manager
                 .get_orderbook(&exchange_symbol, depth, || async move {
-                    let url = format!("{}/info/markets/{}/orderbook", base_url, exchange_symbol_clone);
+                    let url = format!(
+                        "{}/info/markets/{}/orderbook",
+                        base_url, exchange_symbol_clone
+                    );
                     let resp: ExtendedOrderbook = http.get(&url).send().await?.json().await?;
-                    let bids = resp.bid.iter().map(|l| {
-                        Ok(OrderbookLevel {
-                            price: Decimal::from_str(&l.price)?,
-                            quantity: Decimal::from_str(&l.qty)?,
+                    let bids = resp
+                        .bid
+                        .iter()
+                        .map(|l| {
+                            Ok(OrderbookLevel {
+                                price: Decimal::from_str(&l.price)?,
+                                quantity: Decimal::from_str(&l.qty)?,
+                            })
                         })
-                    }).collect::<Result<Vec<_>>>()?;
-                    let asks = resp.ask.iter().map(|l| {
-                        Ok(OrderbookLevel {
-                            price: Decimal::from_str(&l.price)?,
-                            quantity: Decimal::from_str(&l.qty)?,
+                        .collect::<Result<Vec<_>>>()?;
+                    let asks = resp
+                        .ask
+                        .iter()
+                        .map(|l| {
+                            Ok(OrderbookLevel {
+                                price: Decimal::from_str(&l.price)?,
+                                quantity: Decimal::from_str(&l.qty)?,
+                            })
                         })
-                    }).collect::<Result<Vec<_>>>()?;
+                        .collect::<Result<Vec<_>>>()?;
                     let ob = Orderbook {
                         symbol: exchange_symbol_clone,
                         bids,

@@ -43,7 +43,11 @@ struct MarketState {
 
 impl MarketState {
     fn new() -> Self {
-        Self { bids: BTreeMap::new(), asks: BTreeMap::new(), nonce: 0 }
+        Self {
+            bids: BTreeMap::new(),
+            asks: BTreeMap::new(),
+            nonce: 0,
+        }
     }
 
     fn apply_levels(
@@ -96,12 +100,18 @@ impl MarketState {
                 .bids
                 .iter()
                 .rev()
-                .map(|(p, q)| OrderbookLevel { price: *p, quantity: *q })
+                .map(|(p, q)| OrderbookLevel {
+                    price: *p,
+                    quantity: *q,
+                })
                 .collect(),
             asks: self
                 .asks
                 .iter()
-                .map(|(p, q)| OrderbookLevel { price: *p, quantity: *q })
+                .map(|(p, q)| OrderbookLevel {
+                    price: *p,
+                    quantity: *q,
+                })
                 .collect(),
             timestamp: Utc::now(),
         }
@@ -139,13 +149,24 @@ impl LighterOrderbookManager {
             base_url,
         ));
 
-        Self { snapshots, notifiers, subscribed, subscribe_tx }
+        Self {
+            snapshots,
+            notifiers,
+            subscribed,
+            subscribe_tx,
+        }
     }
 
-    pub async fn get_orderbook(&self, symbol: &str, depth: u32) -> Result<MultiResolutionOrderbook> {
+    pub async fn get_orderbook(
+        &self,
+        symbol: &str,
+        depth: u32,
+    ) -> Result<MultiResolutionOrderbook> {
         let notifier = {
             let mut g = self.notifiers.lock().await;
-            g.entry(symbol.to_string()).or_insert_with(|| Arc::new(Notify::new())).clone()
+            g.entry(symbol.to_string())
+                .or_insert_with(|| Arc::new(Notify::new()))
+                .clone()
         };
 
         let newly = { self.subscribed.lock().await.insert(symbol.to_string()) };
@@ -173,7 +194,10 @@ impl LighterOrderbookManager {
         let e = snap
             .get(symbol)
             .ok_or_else(|| anyhow!("No Lighter snapshot for {} after notify", symbol))?;
-        Ok(MultiResolutionOrderbook::from_single(clip_orderbook(e.orderbook.clone(), depth)))
+        Ok(MultiResolutionOrderbook::from_single(clip_orderbook(
+            e.orderbook.clone(),
+            depth,
+        )))
     }
 }
 
@@ -211,8 +235,8 @@ async fn resolve_id_to_symbol(
                         // Normalize via alias table so keys match what LighterClient::get_market_id
                         // inserts (e.g. "CL" → "WTI"). Lighter API returns simple uppercase symbols
                         // so only alias resolution is needed here, not full parse_symbol logic.
-                        let sym = crate::symbol_aliases::resolve_alias("lighter", &ob.symbol)
-                            .to_string();
+                        let sym =
+                            crate::symbol_aliases::resolve_alias("lighter", &ob.symbol).to_string();
                         g.insert(sym, ob.market_id);
                     }
                     g.iter().map(|(s, &id)| (id, s.clone())).collect()
@@ -240,8 +264,10 @@ async fn run_background_task(
 ) {
     loop {
         let id_to_symbol = resolve_id_to_symbol(&market_id_cache, &base_url).await;
-        let symbol_to_id: HashMap<String, u64> =
-            id_to_symbol.iter().map(|(id, s)| (s.clone(), *id)).collect();
+        let symbol_to_id: HashMap<String, u64> = id_to_symbol
+            .iter()
+            .map(|(id, s)| (s.clone(), *id))
+            .collect();
 
         let ws_stream = match connect_async(WS_BASE_URL).await {
             Ok((s, _)) => s,
@@ -389,7 +415,9 @@ async fn run_background_task(
 
 async fn send_subscribe(
     write: &mut futures::stream::SplitSink<
-        tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+        tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
         Message,
     >,
     market_id: u64,
@@ -534,7 +562,6 @@ impl LighterWsClient {
             timestamp: Utc.timestamp_millis_opt(trade.timestamp).unwrap(),
         })
     }
-
 }
 
 impl Default for LighterWsClient {

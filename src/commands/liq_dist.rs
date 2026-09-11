@@ -49,7 +49,11 @@ fn format_notional(d: Decimal, partial: bool) -> String {
     } else {
         format!("${:.2}", v)
     };
-    if partial { format!("{}*", s) } else { s }
+    if partial {
+        format!("{}*", s)
+    } else {
+        s
+    }
 }
 
 fn parse_bps(bps_str: &str) -> Result<Vec<f64>> {
@@ -98,12 +102,9 @@ pub async fn execute(args: LiqDistArgs) -> Result<()> {
                 Ok(multi_ob) => {
                     sym_data.insert(symbol.clone(), multi_ob);
                 }
-                Err(e) => tracing::error!(
-                    "Failed orderbook for {}/{}: {}",
-                    exchange_name,
-                    symbol,
-                    e
-                ),
+                Err(e) => {
+                    tracing::error!("Failed orderbook for {}/{}: {}", exchange_name, symbol, e)
+                }
             }
         }
         data.insert(exchange_name.clone(), sym_data);
@@ -115,10 +116,16 @@ pub async fn execute(args: LiqDistArgs) -> Result<()> {
             for &bps in &bps_levels {
                 for exchange in &exchange_names {
                     let stats = compute_stats(&data, exchange, &symbols, bps);
-                    let bid_total: Decimal =
-                        symbols.iter().filter_map(|s| stats.get(s)).map(|s| s.bid).sum();
-                    let ask_total: Decimal =
-                        symbols.iter().filter_map(|s| stats.get(s)).map(|s| s.ask).sum();
+                    let bid_total: Decimal = symbols
+                        .iter()
+                        .filter_map(|s| stats.get(s))
+                        .map(|s| s.bid)
+                        .sum();
+                    let ask_total: Decimal = symbols
+                        .iter()
+                        .filter_map(|s| stats.get(s))
+                        .map(|s| s.ask)
+                        .sum();
                     let comb_total = bid_total + ask_total;
 
                     for symbol in &symbols {
@@ -185,7 +192,13 @@ pub async fn execute(args: LiqDistArgs) -> Result<()> {
                     let per_bps: Vec<(f64, HashMap<String, SymbolStats>)> = all_bps_stats
                         .iter()
                         .map(|(bps, all_stats)| {
-                            (*bps, all_stats.get(exchange.as_str()).cloned().unwrap_or_default())
+                            (
+                                *bps,
+                                all_stats
+                                    .get(exchange.as_str())
+                                    .cloned()
+                                    .unwrap_or_default(),
+                            )
                         })
                         .collect();
                     for side in &sides {
@@ -259,15 +272,17 @@ fn compute_stats(
         if let Some(book) = sym_data.get(symbol) {
             let bid = book.bid_notional(bps_d);
             let ask = book.ask_notional(bps_d);
-            let bid_partial = book
-                .max_bid_bps()
-                .map(|max| max < bps_d)
-                .unwrap_or(true);
-            let ask_partial = book
-                .max_ask_bps()
-                .map(|max| max < bps_d)
-                .unwrap_or(true);
-            out.insert(symbol.clone(), SymbolStats { bid, ask, bid_partial, ask_partial });
+            let bid_partial = book.max_bid_bps().map(|max| max < bps_d).unwrap_or(true);
+            let ask_partial = book.max_ask_bps().map(|max| max < bps_d).unwrap_or(true);
+            out.insert(
+                symbol.clone(),
+                SymbolStats {
+                    bid,
+                    ask,
+                    bid_partial,
+                    ask_partial,
+                },
+            );
         }
     }
     out
@@ -412,15 +427,21 @@ fn display_side_table(
 
     // footnote only if any cell was partial
     let any_partial = exchanges.iter().any(|e| {
-        all_stats.get(e).map(|stats| {
-            symbols.iter().any(|s| {
-                stats.get(s).map(|st| match side {
-                    Side::Bid => st.bid_partial,
-                    Side::Ask => st.ask_partial,
-                    Side::Combined => st.bid_partial || st.ask_partial,
-                }).unwrap_or(false)
+        all_stats
+            .get(e)
+            .map(|stats| {
+                symbols.iter().any(|s| {
+                    stats
+                        .get(s)
+                        .map(|st| match side {
+                            Side::Bid => st.bid_partial,
+                            Side::Ask => st.ask_partial,
+                            Side::Combined => st.bid_partial || st.ask_partial,
+                        })
+                        .unwrap_or(false)
+                })
             })
-        }).unwrap_or(false)
+            .unwrap_or(false)
     });
 
     println!();

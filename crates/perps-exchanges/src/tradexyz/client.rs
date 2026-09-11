@@ -1,6 +1,6 @@
 use crate::cache::SymbolsCache;
-use crate::hyperliquid::types::*;
 use crate::hyperliquid::hl_price_scale;
+use crate::hyperliquid::types::*;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, TimeZone, Utc};
@@ -12,7 +12,6 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 const INFO_URL: &str = "https://api.hyperliquid.xyz/info";
-
 
 /// A client for the tradexyz exchange.
 /// tradexyz is an HIP-3 perpetuals DEX on Hyperliquid dedicated to equity/RWA trading.

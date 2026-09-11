@@ -60,7 +60,9 @@ impl RiseXClient {
                 .unwrap_or(false)
         {
             tracing::info!("RiseXClient: WebSocket orderbook streaming enabled");
-            Some(Arc::new(RisexOrderbookManager::new(market_id_cache.clone())))
+            Some(Arc::new(RisexOrderbookManager::new(
+                market_id_cache.clone(),
+            )))
         } else {
             None
         };
@@ -331,7 +333,9 @@ impl IPerps for RiseXClient {
         // Use WS manager when streaming is enabled; otherwise fall back to REST.
         if let Some(mgr) = &self.orderbook_manager {
             self.ensure_cache_initialized().await?;
-            return mgr.get_orderbook(&sym, depth.clamp(1, ORDERBOOK_MAX_DEPTH) as usize).await;
+            return mgr
+                .get_orderbook(&sym, depth.clamp(1, ORDERBOOK_MAX_DEPTH) as usize)
+                .await;
         }
         let market_id = self.market_id_for(&sym).await?;
         let depth = depth.clamp(1, ORDERBOOK_MAX_DEPTH) as usize;

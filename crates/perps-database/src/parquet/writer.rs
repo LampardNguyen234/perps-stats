@@ -124,7 +124,9 @@ impl OrderbookParquetWriter {
                     .context("failed to create Parquet reader")?
                     .build()
                     .context("failed to build Parquet batch reader")?;
-                reader.collect::<Result<Vec<_>, _>>().context("failed to read Parquet batches")
+                reader
+                    .collect::<Result<Vec<_>, _>>()
+                    .context("failed to read Parquet batches")
             });
             match read_result {
                 Ok(Ok(existing)) => {
@@ -190,7 +192,6 @@ impl OrderbookParquetWriter {
 
         Ok(())
     }
-
 
     /// Directory for a given file key.
     fn file_dir(&self, key: &FileKey) -> PathBuf {

@@ -21,8 +21,22 @@ use perps_core::traits::IPerps;
 /// `all_exchanges()` and `get_exchange()`.
 pub fn exchange_names() -> &'static [&'static str] {
     &[
-        "01", "aster", "binance", "bybit", "extended", "gravity", "hibachi", "hotstuff",
-        "hyperliquid", "kucoin", "lighter", "nado", "pacifica", "paradex", "qfex", "risex",
+        "01",
+        "aster",
+        "binance",
+        "bybit",
+        "extended",
+        "gravity",
+        "hibachi",
+        "hotstuff",
+        "hyperliquid",
+        "kucoin",
+        "lighter",
+        "nado",
+        "pacifica",
+        "paradex",
+        "qfex",
+        "risex",
         "tradexyz",
     ]
 }

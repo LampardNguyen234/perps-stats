@@ -512,7 +512,11 @@ impl LocalOrderbook {
                         data.symbol,
                         level.price,
                         final_quantity,
-                        if is_incremental_delta { "incremental" } else { "full_price" }
+                        if is_incremental_delta {
+                            "incremental"
+                        } else {
+                            "full_price"
+                        }
                     );
                 }
             } else {
@@ -599,9 +603,14 @@ impl LocalOrderbook {
             "[{}] {} upd bestBid={} bestAsk={} mid={} bidLiq={:.4} askLiq={:.4} +{}/−{}",
             data.exchange,
             data.symbol,
-            new_best_bid.map(|(p, _)| format!("{:.2}", p)).unwrap_or_else(|| "-".to_string()),
-            new_best_ask.map(|(p, _)| format!("{:.2}", p)).unwrap_or_else(|| "-".to_string()),
-            mid.map(|m| format!("{:.2}", m)).unwrap_or_else(|| "-".to_string()),
+            new_best_bid
+                .map(|(p, _)| format!("{:.2}", p))
+                .unwrap_or_else(|| "-".to_string()),
+            new_best_ask
+                .map(|(p, _)| format!("{:.2}", p))
+                .unwrap_or_else(|| "-".to_string()),
+            mid.map(|m| format!("{:.2}", m))
+                .unwrap_or_else(|| "-".to_string()),
             bid_liq,
             ask_liq,
             bid_adds_or_updates + ask_adds_or_updates,

@@ -6,8 +6,8 @@ use perps_core::{IPerps, LiquidityDepthStats, MultiResolutionOrderbook, Orderboo
 use perps_database::Repository;
 use perps_exchanges::{all_exchanges, get_exchange};
 use prettytable::{format, Cell, Row, Table};
-use rust_decimal::Decimal;
 use rust_decimal::prelude::FromStr;
+use rust_decimal::Decimal;
 use rust_xlsxwriter::{Format, Workbook};
 use serde_json;
 use std::collections::HashMap;
@@ -971,21 +971,81 @@ fn write_to_excel_liquidity_only(
             )?;
             worksheet.write_string(row, 1, &stats.exchange)?;
             worksheet.write_string(row, 2, &stats.symbol)?;
-            worksheet.write_number(row, 3, stats.mid_price.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 4, stats.bid_1bps.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 5, stats.bid_2_5bps.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 6, stats.bid_5bps.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 7, stats.bid_10bps.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 8, stats.bid_20bps.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 9, stats.bid_50bps.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 10, stats.bid_100bps.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 11, stats.ask_1bps.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 12, stats.ask_2_5bps.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 13, stats.ask_5bps.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 14, stats.ask_10bps.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 15, stats.ask_20bps.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 16, stats.ask_50bps.to_string().parse::<f64>().unwrap_or(0.0))?;
-            worksheet.write_number(row, 17, stats.ask_100bps.to_string().parse::<f64>().unwrap_or(0.0))?;
+            worksheet.write_number(
+                row,
+                3,
+                stats.mid_price.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                4,
+                stats.bid_1bps.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                5,
+                stats.bid_2_5bps.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                6,
+                stats.bid_5bps.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                7,
+                stats.bid_10bps.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                8,
+                stats.bid_20bps.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                9,
+                stats.bid_50bps.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                10,
+                stats.bid_100bps.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                11,
+                stats.ask_1bps.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                12,
+                stats.ask_2_5bps.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                13,
+                stats.ask_5bps.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                14,
+                stats.ask_10bps.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                15,
+                stats.ask_20bps.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                16,
+                stats.ask_50bps.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
+            worksheet.write_number(
+                row,
+                17,
+                stats.ask_100bps.to_string().parse::<f64>().unwrap_or(0.0),
+            )?;
         }
 
         worksheet.set_column_width(0, 25)?;
@@ -1409,7 +1469,9 @@ fn _display_table(stats: &LiquidityDepthStats) -> Result<()> {
         Cell::new("Ask Notional").with_style(prettytable::Attr::Bold),
     ]));
 
-    let bps_labels = ["1 bps", "2.5 bps", "5 bps", "10 bps", "20 bps", "50 bps", "100 bps"];
+    let bps_labels = [
+        "1 bps", "2.5 bps", "5 bps", "10 bps", "20 bps", "50 bps", "100 bps",
+    ];
     let bids = [
         stats.bid_1bps,
         stats.bid_2_5bps,
@@ -1564,7 +1626,9 @@ fn display_table_combined(data: &LiquidityData) -> Result<()> {
         Cell::new("Ask Notional").with_style(prettytable::Attr::Bold),
     ]));
 
-    let bps_labels = ["1 bps", "2.5 bps", "5 bps", "10 bps", "20 bps", "50 bps", "100 bps"];
+    let bps_labels = [
+        "1 bps", "2.5 bps", "5 bps", "10 bps", "20 bps", "50 bps", "100 bps",
+    ];
     let bids = [
         stats.bid_1bps,
         stats.bid_2_5bps,
@@ -1596,10 +1660,8 @@ fn display_table_combined(data: &LiquidityData) -> Result<()> {
     ];
 
     for i in 0..bps_labels.len() {
-        let bid_price = stats.mid_price
-            * (Decimal::ONE - bps_values[i] / Decimal::from(10000));
-        let ask_price = stats.mid_price
-            * (Decimal::ONE + bps_values[i] / Decimal::from(10000));
+        let bid_price = stats.mid_price * (Decimal::ONE - bps_values[i] / Decimal::from(10000));
+        let ask_price = stats.mid_price * (Decimal::ONE + bps_values[i] / Decimal::from(10000));
         table.add_row(Row::new(vec![
             Cell::new(bps_labels[i]),
             Cell::new_align(

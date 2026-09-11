@@ -17,9 +17,10 @@ struct ExchangeMarket {
 
 pub async fn execute(args: MarketsArgs) -> Result<()> {
     let exchange_names: Vec<&str> = args.exchanges.split(',').map(str::trim).collect();
-    let sym_filter: Option<Vec<String>> = args.symbols.as_deref().map(|s| {
-        s.split(',').map(|x| x.trim().to_uppercase()).collect()
-    });
+    let sym_filter: Option<Vec<String>> = args
+        .symbols
+        .as_deref()
+        .map(|s| s.split(',').map(|x| x.trim().to_uppercase()).collect());
 
     let mut rows: Vec<ExchangeMarket> = Vec::new();
 
@@ -58,7 +59,12 @@ pub async fn execute(args: MarketsArgs) -> Result<()> {
         anyhow::bail!("No markets found");
     }
 
-    rows.sort_by(|a, b| a.market.symbol.cmp(&b.market.symbol).then(a.exchange.cmp(&b.exchange)));
+    rows.sort_by(|a, b| {
+        a.market
+            .symbol
+            .cmp(&b.market.symbol)
+            .then(a.exchange.cmp(&b.exchange))
+    });
 
     match args.format.as_str() {
         "json" => display_json(&rows),

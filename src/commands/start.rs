@@ -1240,13 +1240,16 @@ async fn spawn_liquidity_report_task(
                     slippages_by_exchange
                         .entry(exchange.clone())
                         .or_default()
-                        .extend(slippages.iter()
-                            .filter(|s| s.buy_feasible || s.sell_feasible)
-                            .map(|s| {
-                            let mut s = s.clone();
-                            s.timestamp = batch_ts;
-                            s
-                        }));
+                        .extend(
+                            slippages
+                                .iter()
+                                .filter(|s| s.buy_feasible || s.sell_feasible)
+                                .map(|s| {
+                                    let mut s = s.clone();
+                                    s.timestamp = batch_ts;
+                                    s
+                                }),
+                        );
                 }
 
                 if let Some(finest_book) = multi_ob.best_for_tight_spreads() {

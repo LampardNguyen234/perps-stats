@@ -4,6 +4,7 @@
 //! Unlike the `stats` subcommands, this command allows multiple symbols AND
 //! multiple exchanges simultaneously — every section groups by (symbol, exchange).
 
+use crate::commands::report_charts;
 use crate::commands::volatility::{self, VolatilityMethod};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, NaiveDate, Utc};
@@ -15,6 +16,7 @@ use serde_json::json;
 use sqlx::PgPool;
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::time::Instant;
 
 /// Trade sizes reported in the Slippage section (subset of the aggregator's full
 /// TRADE_AMOUNTS list — $5M/$10M are excluded as not relevant for this report).
@@ -87,6 +89,17 @@ pub struct ReportArgs {
     /// Kline interval for the Volatility overview (e.g. 1h, 4h, 1d).
     #[arg(long, default_value = "1h")]
     pub vol_interval: String,
+
+    /// Generate time-series data + PNG charts (bucketed over the resolved
+    /// from/to range) in addition to the whole-range aggregates. Off by
+    /// default — existing report output is unchanged when omitted.
+    #[arg(long, default_value_t = false)]
+    pub time_series: bool,
+
+    /// Bucket width for --time-series: "auto" (~150 points, sized to the
+    /// range) or an explicit shorthand: 1m, 5m, 15m, 1h, 4h, 1d, 1w.
+    #[arg(long, default_value = "auto")]
+    pub bucket: String,
 }
 
 // ─── Row types ────────────────────────────────────────────────────────────────
@@ -113,6 +126,125 @@ struct LiquidityRow {
     ask_median: Option<f64>,
     ask_max: Option<f64>,
     ask_stddev: Option<f64>,
+}
+
+/// All 5 BPS_LEVELS pivoted into one row per (symbol, exchange) — lets a single
+/// query replace the 5 separate per-level queries `fetch_liquidity` used to run
+/// (same table, same GROUP BY, just more columns per pass instead of one pass
+/// per level). Field names mirror the `liquidity_depth` column names.
+#[derive(Debug, sqlx::FromRow)]
+struct LiquidityAllLevelsRow {
+    symbol: String,
+    exchange: String,
+    bid_1bps_mean: Option<f64>,
+    bid_1bps_median: Option<f64>,
+    bid_1bps_max: Option<f64>,
+    bid_1bps_stddev: Option<f64>,
+    ask_1bps_mean: Option<f64>,
+    ask_1bps_median: Option<f64>,
+    ask_1bps_max: Option<f64>,
+    ask_1bps_stddev: Option<f64>,
+    bid_2_5bps_mean: Option<f64>,
+    bid_2_5bps_median: Option<f64>,
+    bid_2_5bps_max: Option<f64>,
+    bid_2_5bps_stddev: Option<f64>,
+    ask_2_5bps_mean: Option<f64>,
+    ask_2_5bps_median: Option<f64>,
+    ask_2_5bps_max: Option<f64>,
+    ask_2_5bps_stddev: Option<f64>,
+    bid_5bps_mean: Option<f64>,
+    bid_5bps_median: Option<f64>,
+    bid_5bps_max: Option<f64>,
+    bid_5bps_stddev: Option<f64>,
+    ask_5bps_mean: Option<f64>,
+    ask_5bps_median: Option<f64>,
+    ask_5bps_max: Option<f64>,
+    ask_5bps_stddev: Option<f64>,
+    bid_10bps_mean: Option<f64>,
+    bid_10bps_median: Option<f64>,
+    bid_10bps_max: Option<f64>,
+    bid_10bps_stddev: Option<f64>,
+    ask_10bps_mean: Option<f64>,
+    ask_10bps_median: Option<f64>,
+    ask_10bps_max: Option<f64>,
+    ask_10bps_stddev: Option<f64>,
+    bid_20bps_mean: Option<f64>,
+    bid_20bps_median: Option<f64>,
+    bid_20bps_max: Option<f64>,
+    bid_20bps_stddev: Option<f64>,
+    ask_20bps_mean: Option<f64>,
+    ask_20bps_median: Option<f64>,
+    ask_20bps_max: Option<f64>,
+    ask_20bps_stddev: Option<f64>,
+}
+
+impl LiquidityAllLevelsRow {
+    /// Splits the pivoted row back into 5 per-level `LiquidityRow`s, in the same
+    /// order as `BPS_LEVELS`, so downstream rendering code is unchanged.
+    fn into_level_rows(self) -> [LiquidityRow; 5] {
+        [
+            LiquidityRow {
+                symbol: self.symbol.clone(),
+                exchange: self.exchange.clone(),
+                bid_mean: self.bid_1bps_mean,
+                bid_median: self.bid_1bps_median,
+                bid_max: self.bid_1bps_max,
+                bid_stddev: self.bid_1bps_stddev,
+                ask_mean: self.ask_1bps_mean,
+                ask_median: self.ask_1bps_median,
+                ask_max: self.ask_1bps_max,
+                ask_stddev: self.ask_1bps_stddev,
+            },
+            LiquidityRow {
+                symbol: self.symbol.clone(),
+                exchange: self.exchange.clone(),
+                bid_mean: self.bid_2_5bps_mean,
+                bid_median: self.bid_2_5bps_median,
+                bid_max: self.bid_2_5bps_max,
+                bid_stddev: self.bid_2_5bps_stddev,
+                ask_mean: self.ask_2_5bps_mean,
+                ask_median: self.ask_2_5bps_median,
+                ask_max: self.ask_2_5bps_max,
+                ask_stddev: self.ask_2_5bps_stddev,
+            },
+            LiquidityRow {
+                symbol: self.symbol.clone(),
+                exchange: self.exchange.clone(),
+                bid_mean: self.bid_5bps_mean,
+                bid_median: self.bid_5bps_median,
+                bid_max: self.bid_5bps_max,
+                bid_stddev: self.bid_5bps_stddev,
+                ask_mean: self.ask_5bps_mean,
+                ask_median: self.ask_5bps_median,
+                ask_max: self.ask_5bps_max,
+                ask_stddev: self.ask_5bps_stddev,
+            },
+            LiquidityRow {
+                symbol: self.symbol.clone(),
+                exchange: self.exchange.clone(),
+                bid_mean: self.bid_10bps_mean,
+                bid_median: self.bid_10bps_median,
+                bid_max: self.bid_10bps_max,
+                bid_stddev: self.bid_10bps_stddev,
+                ask_mean: self.ask_10bps_mean,
+                ask_median: self.ask_10bps_median,
+                ask_max: self.ask_10bps_max,
+                ask_stddev: self.ask_10bps_stddev,
+            },
+            LiquidityRow {
+                symbol: self.symbol.clone(),
+                exchange: self.exchange.clone(),
+                bid_mean: self.bid_20bps_mean,
+                bid_median: self.bid_20bps_median,
+                bid_max: self.bid_20bps_max,
+                bid_stddev: self.bid_20bps_stddev,
+                ask_mean: self.ask_20bps_mean,
+                ask_median: self.ask_20bps_median,
+                ask_max: self.ask_20bps_max,
+                ask_stddev: self.ask_20bps_stddev,
+            },
+        ]
+    }
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -165,6 +297,7 @@ struct MaxSwingRow {
 struct SlippageRow {
     symbol: String,
     exchange: String,
+    trade_amount: i64,
     buy_mean: Option<f64>,
     buy_median: Option<f64>,
     buy_stddev: Option<f64>,
@@ -177,9 +310,108 @@ struct SlippageRow {
     sell_p99: Option<f64>,
 }
 
+// ─── Time-series row types (--time-series) ─────────────────────────────────
+//
+// One row struct per section, mirroring its whole-range counterpart with a
+// `bucket_ts` column added. Kept as separate types (not reused from the
+// aggregate structs above) so the default report path stays byte-for-byte
+// unchanged — nothing here is read unless `--time-series` is set.
+
+#[derive(Debug, sqlx::FromRow)]
+struct SummaryTsRow {
+    bucket_ts: DateTime<Utc>,
+    symbol: String,
+    exchange: String,
+    median_volume: Option<f64>,
+    mean_volume: Option<f64>,
+    median_oi: Option<f64>,
+    mean_oi: Option<f64>,
+}
+
+/// Pivoted across all 5 BPS_LEVELS, median only (chart/CSV don't need the
+/// mean/max/stddev already covered by the whole-range aggregate table).
+#[derive(Debug, sqlx::FromRow)]
+struct LiquidityAllLevelsTsRow {
+    bucket_ts: DateTime<Utc>,
+    symbol: String,
+    exchange: String,
+    bid_1bps_median: Option<f64>,
+    ask_1bps_median: Option<f64>,
+    bid_2_5bps_median: Option<f64>,
+    ask_2_5bps_median: Option<f64>,
+    bid_5bps_median: Option<f64>,
+    ask_5bps_median: Option<f64>,
+    bid_10bps_median: Option<f64>,
+    ask_10bps_median: Option<f64>,
+    bid_20bps_median: Option<f64>,
+    ask_20bps_median: Option<f64>,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct SpreadTsRow {
+    bucket_ts: DateTime<Utc>,
+    symbol: String,
+    exchange: String,
+    mean_bps: Option<f64>,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct SlippageTsRow {
+    bucket_ts: DateTime<Utc>,
+    symbol: String,
+    exchange: String,
+    trade_amount: i64,
+    buy_mean: Option<f64>,
+    sell_mean: Option<f64>,
+}
+
+/// One (bucket_ts, symbol, exchange, metric, value) data point — the
+/// normalized shape used for chart series grouping and for the raw
+/// bucketed-row dump in `--format json`/`csv` (charts can't embed in those).
+struct TsPoint {
+    bucket_ts: DateTime<Utc>,
+    symbol: String,
+    exchange: String,
+    metric: String,
+    value: f64,
+}
+
+impl TsPoint {
+    fn new(
+        bucket_ts: DateTime<Utc>,
+        symbol: &str,
+        exchange: &str,
+        metric: &str,
+        value: f64,
+    ) -> Self {
+        Self {
+            bucket_ts,
+            symbol: symbol.to_string(),
+            exchange: exchange.to_string(),
+            metric: metric.to_string(),
+            value,
+        }
+    }
+}
+
+/// One rendered time-series chart, referenced from `render_table`.
+struct TimeSeriesChart {
+    symbol: String,
+    metric: String,
+    title: String,
+    rel_path: String,
+}
+
+struct TimeSeriesData {
+    charts: Vec<TimeSeriesChart>,
+    points: Vec<TsPoint>,
+    bucket_secs: i64,
+}
+
 // ─── Entry point ────────────────────────────────────────────────────────────
 
 pub async fn execute(args: ReportArgs) -> Result<()> {
+    let report_start = Instant::now();
     let db_url = args.database_url.ok_or_else(|| {
         anyhow::anyhow!(
             "DATABASE_URL is required. Set via --database-url flag or DATABASE_URL environment variable"
@@ -187,9 +419,14 @@ pub async fn execute(args: ReportArgs) -> Result<()> {
     })?;
 
     tracing::info!("Connecting to database");
+    let db_connect_start = Instant::now();
     let pool = PgPool::connect(&db_url)
         .await
         .context("Failed to connect to database")?;
+    tracing::info!(
+        elapsed_ms = db_connect_start.elapsed().as_millis() as u64,
+        "Connected to database"
+    );
 
     let symbols: Vec<String> = match args.symbols {
         Some(ref s) => s
@@ -229,42 +466,157 @@ pub async fn execute(args: ReportArgs) -> Result<()> {
     // only caps how many groups a single query aggregates at once, bounding
     // Postgres sort/work_mem cost for wide --range windows (30d, 90d, ...).
     let symbol_chunks = chunk_symbols(&symbols, exchange_ids.len());
+    tracing::info!(
+        symbols = symbols.len(),
+        exchanges = exchange_ids.len(),
+        chunks = symbol_chunks.len(),
+        chunk_size = symbol_chunks.first().map(|c| c.len()).unwrap_or(0),
+        "Report fan-out computed"
+    );
 
     let summary_rows = merge_chunks(
+        "summary",
+        symbol_chunks.len(),
         symbol_chunks
             .iter()
             .map(|chunk| fetch_summary(&pool, chunk, &exchange_ids, from, to)),
     )
     .await?;
 
-    let mut liquidity_rows: Vec<(&'static str, Vec<LiquidityRow>)> = Vec::new();
-    for (label, bid_col, ask_col) in BPS_LEVELS {
-        let rows =
-            merge_chunks(symbol_chunks.iter().map(|chunk| {
-                fetch_liquidity(&pool, chunk, &exchange_ids, from, to, bid_col, ask_col)
-            }))
-            .await?;
-        liquidity_rows.push((label, rows));
+    // One query per chunk covers all 5 BPS_LEVELS (see fetch_liquidity_all_levels) —
+    // used to be one query per chunk *per level* (5x the queries for this section).
+    let all_levels_rows = merge_chunks(
+        "liquidity",
+        symbol_chunks.len(),
+        symbol_chunks
+            .iter()
+            .map(|chunk| fetch_liquidity_all_levels(&pool, chunk, &exchange_ids, from, to)),
+    )
+    .await?;
+    let mut liquidity_rows: Vec<(&'static str, Vec<LiquidityRow>)> = BPS_LEVELS
+        .iter()
+        .map(|(label, _, _)| (*label, Vec::new()))
+        .collect();
+    for row in all_levels_rows {
+        for (level_rows, level_row) in liquidity_rows.iter_mut().zip(row.into_level_rows()) {
+            level_rows.1.push(level_row);
+        }
     }
 
     let spread_rows = merge_chunks(
+        "spread",
+        symbol_chunks.len(),
         symbol_chunks
             .iter()
             .map(|chunk| fetch_spread(&pool, chunk, &exchange_ids, from, to)),
     )
     .await?;
 
-    let mut slippage_rows: Vec<(i64, Vec<SlippageRow>)> = Vec::new();
-    for amount in TRADE_AMOUNTS {
-        let rows = merge_chunks(
-            symbol_chunks
-                .iter()
-                .map(|chunk| fetch_slippage(&pool, chunk, &exchange_ids, from, to, amount)),
-        )
-        .await?;
-        slippage_rows.push((amount, rows));
+    // One query per chunk covers all TRADE_AMOUNTS (see fetch_slippage_all_amounts) —
+    // used to be one query per chunk *per trade amount* (5x the queries for this section).
+    let all_amounts_rows = merge_chunks(
+        "slippage",
+        symbol_chunks.len(),
+        symbol_chunks
+            .iter()
+            .map(|chunk| fetch_slippage_all_amounts(&pool, chunk, &exchange_ids, from, to)),
+    )
+    .await?;
+    let mut slippage_rows: Vec<(i64, Vec<SlippageRow>)> = TRADE_AMOUNTS
+        .iter()
+        .map(|&amount| (amount, Vec::new()))
+        .collect();
+    for row in all_amounts_rows {
+        if let Some(bucket) = slippage_rows
+            .iter_mut()
+            .find(|(amt, _)| *amt == row.trade_amount)
+        {
+            bucket.1.push(row);
+        }
     }
 
+    let time_series = if args.time_series {
+        let ts_start = Instant::now();
+        let bucket = resolve_bucket(to - from, &args.bucket)?;
+        let bucket_secs = bucket.num_seconds();
+
+        let summary_ts_rows = merge_chunks(
+            "summary_ts",
+            symbol_chunks.len(),
+            symbol_chunks.iter().map(|chunk| {
+                fetch_summary_timeseries(&pool, chunk, &exchange_ids, from, to, bucket_secs)
+            }),
+        )
+        .await?;
+
+        let liquidity_ts_all = merge_chunks(
+            "liquidity_ts",
+            symbol_chunks.len(),
+            symbol_chunks.iter().map(|chunk| {
+                fetch_liquidity_all_levels_timeseries(
+                    &pool,
+                    chunk,
+                    &exchange_ids,
+                    from,
+                    to,
+                    bucket_secs,
+                )
+            }),
+        )
+        .await?;
+
+        let spread_ts_rows = merge_chunks(
+            "spread_ts",
+            symbol_chunks.len(),
+            symbol_chunks.iter().map(|chunk| {
+                fetch_spread_timeseries(&pool, chunk, &exchange_ids, from, to, bucket_secs)
+            }),
+        )
+        .await?;
+
+        let slippage_ts_all = merge_chunks(
+            "slippage_ts",
+            symbol_chunks.len(),
+            symbol_chunks.iter().map(|chunk| {
+                fetch_slippage_all_amounts_timeseries(
+                    &pool,
+                    chunk,
+                    &exchange_ids,
+                    from,
+                    to,
+                    bucket_secs,
+                )
+            }),
+        )
+        .await?;
+
+        let mut points = flatten_summary(&summary_ts_rows);
+        points.extend(flatten_liquidity(&liquidity_ts_all));
+        points.extend(flatten_spread(&spread_ts_rows));
+        points.extend(flatten_slippage(&slippage_ts_all));
+
+        let charts_dir = std::path::Path::new(&args.output_dir).join("charts");
+        let jobs = build_chart_jobs(&points);
+        let charts = render_charts(&charts_dir, jobs).await;
+
+        tracing::info!(
+            elapsed_ms = ts_start.elapsed().as_millis() as u64,
+            points = points.len(),
+            charts = charts.len(),
+            bucket_secs,
+            "Time-series section completed"
+        );
+
+        Some(TimeSeriesData {
+            charts,
+            points,
+            bucket_secs,
+        })
+    } else {
+        None
+    };
+
+    let vol_start = Instant::now();
     let (volatility_rows, price_swing_rows, max_swing_rows) =
         match fetch_binance_overview(&symbols, &args.vol_range, &args.vol_interval).await {
             Ok(rows) => rows,
@@ -273,6 +625,12 @@ pub async fn execute(args: ReportArgs) -> Result<()> {
                 (Vec::new(), Vec::new(), Vec::new())
             }
         };
+    tracing::info!(
+        elapsed_ms = vol_start.elapsed().as_millis() as u64,
+        symbols = symbols.len(),
+        volatility_rows = volatility_rows.len(),
+        "Binance volatility overview fetched"
+    );
 
     let report = ReportData {
         from,
@@ -288,6 +646,7 @@ pub async fn execute(args: ReportArgs) -> Result<()> {
         max_swing_rows,
         vol_range: args.vol_range.clone(),
         vol_interval: args.vol_interval.clone(),
+        time_series,
     };
 
     let format = args.format.to_lowercase();
@@ -298,7 +657,12 @@ pub async fn execute(args: ReportArgs) -> Result<()> {
     };
 
     let path = resolve_output_path(&args.output_dir, args.output.as_deref(), &format)?;
-    write_output(&content, &path)
+    write_output(&content, &path)?;
+    tracing::info!(
+        elapsed_ms = report_start.elapsed().as_millis() as u64,
+        "Report generation completed"
+    );
+    Ok(())
 }
 
 /// Resolves the output file path, generating a timestamped default name
@@ -338,6 +702,7 @@ struct ReportData {
     max_swing_rows: Vec<MaxSwingRow>,
     vol_range: String,
     vol_interval: String,
+    time_series: Option<TimeSeriesData>,
 }
 
 // ─── Time range resolution ──────────────────────────────────────────────────
@@ -362,6 +727,60 @@ fn parse_range(range: &str) -> Result<Duration> {
             other,
             range
         ),
+    }
+}
+
+/// Candidate bucket widths (seconds) for `--bucket auto`, matching the
+/// shorthand grammar `parse_range` accepts: 1m, 5m, 15m, 1h, 4h, 1d, 1w.
+const BUCKET_CANDIDATES: [i64; 7] = [60, 300, 900, 3600, 14_400, 86_400, 604_800];
+
+/// Row-volume/chart-density guard: `tracing::warn!` (not a hard error) past
+/// this many buckets for a single symbol×exchange series.
+const BUCKET_COUNT_WARN_THRESHOLD: i64 = 2000;
+
+/// Resolves `--bucket` into a concrete width. `"auto"` targets ~150 points
+/// over `range`, snapped to the nearest of `BUCKET_CANDIDATES` — sized to the
+/// range rather than a fixed unit, so a 1d report and a 90d report both end
+/// up with a readable number of points. An explicit value reuses
+/// `parse_range`'s shorthand grammar directly.
+fn resolve_bucket(range: Duration, requested: &str) -> Result<Duration> {
+    let secs = if requested.trim().eq_ignore_ascii_case("auto") {
+        let target = (range.num_seconds() / 150).max(1);
+        *BUCKET_CANDIDATES
+            .iter()
+            .min_by_key(|&&candidate| (candidate - target).abs())
+            .expect("BUCKET_CANDIDATES is non-empty")
+    } else {
+        let secs = parse_range(requested)?.num_seconds();
+        if secs <= 0 {
+            anyhow::bail!("--bucket must be positive, got '{}'", requested);
+        }
+        secs
+    };
+
+    let bucket_count = range.num_seconds() / secs;
+    if bucket_count > BUCKET_COUNT_WARN_THRESHOLD {
+        tracing::warn!(
+            bucket_count,
+            bucket_secs = secs,
+            "--time-series bucket count exceeds {}; consider a wider --bucket",
+            BUCKET_COUNT_WARN_THRESHOLD
+        );
+    }
+    Ok(Duration::seconds(secs))
+}
+
+/// Human-readable label for a bucket width in seconds, for report headers.
+fn format_bucket_secs(secs: i64) -> String {
+    match secs {
+        60 => "1m".to_string(),
+        300 => "5m".to_string(),
+        900 => "15m".to_string(),
+        3600 => "1h".to_string(),
+        14_400 => "4h".to_string(),
+        86_400 => "1d".to_string(),
+        604_800 => "1w".to_string(),
+        other => format!("{}s", other),
     }
 }
 
@@ -459,15 +878,47 @@ fn chunk_symbols(symbols: &[String], exchange_count: usize) -> Vec<Vec<String>> 
 /// already orders its own rows by `(symbol, exchange)`, and — since chunking
 /// only splits along the symbol axis — every symbol's full row set comes from
 /// exactly one chunk, so no cross-chunk merge/re-aggregation is needed.
-async fn merge_chunks<T, Fut>(queries: impl Iterator<Item = Fut>) -> Result<Vec<T>>
+///
+/// `label`/`total_chunks` are for observability only: per-chunk timing logs at
+/// debug (`RUST_LOG=perps_stats=debug`), a per-section summary at info — so a
+/// slow report run can be localized to a specific section/chunk instead of
+/// just "the report is slow".
+async fn merge_chunks<T, Fut>(
+    label: &str,
+    total_chunks: usize,
+    queries: impl Iterator<Item = Fut>,
+) -> Result<Vec<T>>
 where
     Fut: std::future::Future<Output = Result<Vec<T>>>,
 {
+    let section_start = Instant::now();
     let mut merged = Vec::new();
-    let mut stream = stream::iter(queries).buffer_unordered(MAX_CONCURRENT_CHUNKS);
-    while let Some(rows) = stream.next().await {
-        merged.extend(rows?);
+    let mut stream = stream::iter(queries.enumerate().map(|(chunk_idx, fut)| async move {
+        let chunk_start = Instant::now();
+        (chunk_idx, fut.await, chunk_start.elapsed())
+    }))
+    .buffer_unordered(MAX_CONCURRENT_CHUNKS);
+
+    while let Some((chunk_idx, result, elapsed)) = stream.next().await {
+        let rows = result?;
+        tracing::debug!(
+            section = label,
+            chunk = chunk_idx,
+            of = total_chunks,
+            elapsed_ms = elapsed.as_millis() as u64,
+            rows = rows.len(),
+            "report chunk query completed"
+        );
+        merged.extend(rows);
     }
+
+    tracing::info!(
+        section = label,
+        chunks = total_chunks,
+        elapsed_ms = section_start.elapsed().as_millis() as u64,
+        rows = merged.len(),
+        "report section fetched"
+    );
     Ok(merged)
 }
 
@@ -518,31 +969,44 @@ async fn fetch_summary(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn fetch_liquidity(
+/// Fetches all 5 BPS_LEVELS in one query instead of 5 (one per level) — same
+/// table, same WHERE/GROUP BY, just more columns per pass. Cuts the liquidity
+/// section's query count 5x (was the single biggest source of report query
+/// fan-out alongside slippage — see `fetch_slippage_all_amounts`).
+async fn fetch_liquidity_all_levels(
     pool: &PgPool,
     symbols: &[String],
     exchange_ids: &[i32],
     from: DateTime<Utc>,
     to: DateTime<Utc>,
-    bid_col: &str,
-    ask_col: &str,
-) -> Result<Vec<LiquidityRow>> {
+) -> Result<Vec<LiquidityAllLevelsRow>> {
     let symbol_ph = in_placeholders(3, symbols.len());
     let exchange_ph = in_placeholders(3 + symbols.len(), exchange_ids.len());
+
+    let level_columns: Vec<String> = BPS_LEVELS
+        .iter()
+        .map(|(_, bid_col, ask_col)| {
+            format!(
+                "AVG(l.{bid_col})::DOUBLE PRECISION AS {bid_col}_mean,
+            PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY l.{bid_col})::DOUBLE PRECISION AS {bid_col}_median,
+            MAX(l.{bid_col})::DOUBLE PRECISION AS {bid_col}_max,
+            STDDEV_POP(l.{bid_col})::DOUBLE PRECISION AS {bid_col}_stddev,
+            AVG(l.{ask_col})::DOUBLE PRECISION AS {ask_col}_mean,
+            PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY l.{ask_col})::DOUBLE PRECISION AS {ask_col}_median,
+            MAX(l.{ask_col})::DOUBLE PRECISION AS {ask_col}_max,
+            STDDEV_POP(l.{ask_col})::DOUBLE PRECISION AS {ask_col}_stddev",
+                bid_col = bid_col,
+                ask_col = ask_col,
+            )
+        })
+        .collect();
 
     let query = format!(
         r#"
         SELECT
             l.symbol AS symbol,
             e.name AS exchange,
-            AVG(l.{bid_col})::DOUBLE PRECISION AS bid_mean,
-            PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY l.{bid_col})::DOUBLE PRECISION AS bid_median,
-            MAX(l.{bid_col})::DOUBLE PRECISION AS bid_max,
-            STDDEV_POP(l.{bid_col})::DOUBLE PRECISION AS bid_stddev,
-            AVG(l.{ask_col})::DOUBLE PRECISION AS ask_mean,
-            PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY l.{ask_col})::DOUBLE PRECISION AS ask_median,
-            MAX(l.{ask_col})::DOUBLE PRECISION AS ask_max,
-            STDDEV_POP(l.{ask_col})::DOUBLE PRECISION AS ask_stddev
+            {level_columns}
         FROM liquidity_depth l
         JOIN exchanges e ON l.exchange_id = e.id
         WHERE l.ts >= $1 AND l.ts < $2
@@ -551,13 +1015,12 @@ async fn fetch_liquidity(
         GROUP BY l.symbol, e.id, e.name
         ORDER BY l.symbol, e.name
         "#,
-        bid_col = bid_col,
-        ask_col = ask_col,
+        level_columns = level_columns.join(",\n            "),
         symbol_ph = symbol_ph.join(", "),
         exchange_ph = exchange_ph.join(", "),
     );
 
-    let mut qb = sqlx::query_as::<_, LiquidityRow>(&query)
+    let mut qb = sqlx::query_as::<_, LiquidityAllLevelsRow>(&query)
         .bind(from)
         .bind(to);
     for s in symbols {
@@ -617,23 +1080,32 @@ async fn fetch_spread(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn fetch_slippage(
+/// Fetches all TRADE_AMOUNTS in one query instead of 5 (one per amount) — groups
+/// by trade_amount instead of filtering to a single one per call. Cuts the
+/// slippage section's query count 5x (see `fetch_liquidity_all_levels` for the
+/// same trick applied to BPS_LEVELS).
+async fn fetch_slippage_all_amounts(
     pool: &PgPool,
     symbols: &[String],
     exchange_ids: &[i32],
     from: DateTime<Utc>,
     to: DateTime<Utc>,
-    trade_amount: i64,
 ) -> Result<Vec<SlippageRow>> {
     let symbol_ph = in_placeholders(3, symbols.len());
     let exchange_ph = in_placeholders(3 + symbols.len(), exchange_ids.len());
-    let amount_idx = 3 + symbols.len() + exchange_ids.len();
+    let amount_start = 3 + symbols.len() + exchange_ids.len();
+    // trade_amount is NUMERIC in the DB; each bound i64 needs an explicit cast
+    // to compare, same as the single-amount query this replaces did.
+    let amount_ph: Vec<String> = (amount_start..amount_start + TRADE_AMOUNTS.len())
+        .map(|i| format!("${}::NUMERIC", i))
+        .collect();
 
     let query = format!(
         r#"
         SELECT
             s.symbol AS symbol,
             e.name AS exchange,
+            s.trade_amount::BIGINT AS trade_amount,
             AVG(s.buy_slippage_bps)::DOUBLE PRECISION AS buy_mean,
             PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY s.buy_slippage_bps)::DOUBLE PRECISION AS buy_median,
             STDDEV_POP(s.buy_slippage_bps)::DOUBLE PRECISION AS buy_stddev,
@@ -649,13 +1121,13 @@ async fn fetch_slippage(
         WHERE s.ts >= $1 AND s.ts < $2
             AND s.symbol IN ({symbol_ph})
             AND s.exchange_id IN ({exchange_ph})
-            AND s.trade_amount = ${amount_idx}::NUMERIC
-        GROUP BY s.symbol, e.id, e.name
-        ORDER BY s.symbol, e.name
+            AND s.trade_amount IN ({amount_ph})
+        GROUP BY s.symbol, e.id, e.name, s.trade_amount
+        ORDER BY s.symbol, e.name, s.trade_amount
         "#,
         symbol_ph = symbol_ph.join(", "),
         exchange_ph = exchange_ph.join(", "),
-        amount_idx = amount_idx,
+        amount_ph = amount_ph.join(", "),
     );
 
     let mut qb = sqlx::query_as::<_, SlippageRow>(&query).bind(from).bind(to);
@@ -665,10 +1137,524 @@ async fn fetch_slippage(
     for id in exchange_ids {
         qb = qb.bind(id);
     }
-    qb = qb.bind(trade_amount);
+    for amount in TRADE_AMOUNTS {
+        qb = qb.bind(amount);
+    }
     qb.fetch_all(pool)
         .await
         .context("Failed to fetch slippage stats")
+}
+
+// ─── Time-series fetchers (--time-series) ──────────────────────────────────
+//
+// Each is a near-literal copy of its whole-range counterpart above, with a
+// bucket expression added to SELECT/GROUP BY/ORDER BY and a `bucket_secs`
+// parameter. Works uniformly for any bucket width (unlike `date_trunc`, fixed
+// units only): `to_timestamp(floor(extract(epoch from ts) / N) * N)`, bound
+// as a runtime parameter rather than a compile-time interval literal.
+
+async fn fetch_summary_timeseries(
+    pool: &PgPool,
+    symbols: &[String],
+    exchange_ids: &[i32],
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+    bucket_secs: i64,
+) -> Result<Vec<SummaryTsRow>> {
+    let symbol_ph = in_placeholders(3, symbols.len());
+    let exchange_ph = in_placeholders(3 + symbols.len(), exchange_ids.len());
+    let bucket_idx = 3 + symbols.len() + exchange_ids.len();
+
+    let query = format!(
+        r#"
+        SELECT
+            to_timestamp(floor(extract(epoch from t.ts) / ${bucket_idx}) * ${bucket_idx}) AS bucket_ts,
+            t.symbol AS symbol,
+            e.name AS exchange,
+            PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY t.turnover_24h)::DOUBLE PRECISION AS median_volume,
+            AVG(t.turnover_24h)::DOUBLE PRECISION AS mean_volume,
+            PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY t.open_interest_notional)::DOUBLE PRECISION AS median_oi,
+            AVG(t.open_interest_notional)::DOUBLE PRECISION AS mean_oi
+        FROM tickers t
+        JOIN exchanges e ON t.exchange_id = e.id
+        WHERE t.ts >= $1 AND t.ts < $2
+            AND t.symbol IN ({symbol_ph})
+            AND t.exchange_id IN ({exchange_ph})
+            AND t.turnover_24h IS NOT NULL AND t.turnover_24h > 0
+        GROUP BY bucket_ts, t.symbol, e.id, e.name
+        ORDER BY bucket_ts, t.symbol, e.name
+        "#,
+        bucket_idx = bucket_idx,
+        symbol_ph = symbol_ph.join(", "),
+        exchange_ph = exchange_ph.join(", "),
+    );
+
+    let mut qb = sqlx::query_as::<_, SummaryTsRow>(&query)
+        .bind(from)
+        .bind(to);
+    for s in symbols {
+        qb = qb.bind(s);
+    }
+    for id in exchange_ids {
+        qb = qb.bind(id);
+    }
+    qb = qb.bind(bucket_secs as f64);
+    qb.fetch_all(pool)
+        .await
+        .context("Failed to fetch summary time-series stats")
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn fetch_liquidity_all_levels_timeseries(
+    pool: &PgPool,
+    symbols: &[String],
+    exchange_ids: &[i32],
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+    bucket_secs: i64,
+) -> Result<Vec<LiquidityAllLevelsTsRow>> {
+    let symbol_ph = in_placeholders(3, symbols.len());
+    let exchange_ph = in_placeholders(3 + symbols.len(), exchange_ids.len());
+    let bucket_idx = 3 + symbols.len() + exchange_ids.len();
+
+    let level_columns: Vec<String> = BPS_LEVELS
+        .iter()
+        .map(|(_, bid_col, ask_col)| {
+            format!(
+                "PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY l.{bid_col})::DOUBLE PRECISION AS {bid_col}_median,
+            PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY l.{ask_col})::DOUBLE PRECISION AS {ask_col}_median",
+                bid_col = bid_col,
+                ask_col = ask_col,
+            )
+        })
+        .collect();
+
+    let query = format!(
+        r#"
+        SELECT
+            to_timestamp(floor(extract(epoch from l.ts) / ${bucket_idx}) * ${bucket_idx}) AS bucket_ts,
+            l.symbol AS symbol,
+            e.name AS exchange,
+            {level_columns}
+        FROM liquidity_depth l
+        JOIN exchanges e ON l.exchange_id = e.id
+        WHERE l.ts >= $1 AND l.ts < $2
+            AND l.symbol IN ({symbol_ph})
+            AND l.exchange_id IN ({exchange_ph})
+        GROUP BY bucket_ts, l.symbol, e.id, e.name
+        ORDER BY bucket_ts, l.symbol, e.name
+        "#,
+        bucket_idx = bucket_idx,
+        level_columns = level_columns.join(",\n            "),
+        symbol_ph = symbol_ph.join(", "),
+        exchange_ph = exchange_ph.join(", "),
+    );
+
+    let mut qb = sqlx::query_as::<_, LiquidityAllLevelsTsRow>(&query)
+        .bind(from)
+        .bind(to);
+    for s in symbols {
+        qb = qb.bind(s);
+    }
+    for id in exchange_ids {
+        qb = qb.bind(id);
+    }
+    qb = qb.bind(bucket_secs as f64);
+    qb.fetch_all(pool)
+        .await
+        .context("Failed to fetch liquidity depth time-series stats")
+}
+
+async fn fetch_spread_timeseries(
+    pool: &PgPool,
+    symbols: &[String],
+    exchange_ids: &[i32],
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+    bucket_secs: i64,
+) -> Result<Vec<SpreadTsRow>> {
+    let symbol_ph = in_placeholders(3, symbols.len());
+    let exchange_ph = in_placeholders(3 + symbols.len(), exchange_ids.len());
+    let bucket_idx = 3 + symbols.len() + exchange_ids.len();
+
+    let query = format!(
+        r#"
+        SELECT
+            to_timestamp(floor(extract(epoch from o.ts) / ${bucket_idx}) * ${bucket_idx}) AS bucket_ts,
+            o.symbol AS symbol,
+            e.name AS exchange,
+            AVG(o.spread_bps)::DOUBLE PRECISION AS mean_bps
+        FROM orderbooks o
+        JOIN exchanges e ON o.exchange_id = e.id
+        WHERE o.ts >= $1 AND o.ts < $2
+            AND o.symbol IN ({symbol_ph})
+            AND o.exchange_id IN ({exchange_ph})
+            AND o.spread_bps IS NOT NULL
+        GROUP BY bucket_ts, o.symbol, e.id, e.name
+        ORDER BY bucket_ts, o.symbol, e.name
+        "#,
+        bucket_idx = bucket_idx,
+        symbol_ph = symbol_ph.join(", "),
+        exchange_ph = exchange_ph.join(", "),
+    );
+
+    let mut qb = sqlx::query_as::<_, SpreadTsRow>(&query).bind(from).bind(to);
+    for s in symbols {
+        qb = qb.bind(s);
+    }
+    for id in exchange_ids {
+        qb = qb.bind(id);
+    }
+    qb = qb.bind(bucket_secs as f64);
+    qb.fetch_all(pool)
+        .await
+        .context("Failed to fetch spread time-series stats")
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn fetch_slippage_all_amounts_timeseries(
+    pool: &PgPool,
+    symbols: &[String],
+    exchange_ids: &[i32],
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+    bucket_secs: i64,
+) -> Result<Vec<SlippageTsRow>> {
+    let symbol_ph = in_placeholders(3, symbols.len());
+    let exchange_ph = in_placeholders(3 + symbols.len(), exchange_ids.len());
+    let amount_start = 3 + symbols.len() + exchange_ids.len();
+    let amount_ph: Vec<String> = (amount_start..amount_start + TRADE_AMOUNTS.len())
+        .map(|i| format!("${}::NUMERIC", i))
+        .collect();
+    let bucket_idx = amount_start + TRADE_AMOUNTS.len();
+
+    let query = format!(
+        r#"
+        SELECT
+            to_timestamp(floor(extract(epoch from s.ts) / ${bucket_idx}) * ${bucket_idx}) AS bucket_ts,
+            s.symbol AS symbol,
+            e.name AS exchange,
+            s.trade_amount::BIGINT AS trade_amount,
+            AVG(s.buy_slippage_bps)::DOUBLE PRECISION AS buy_mean,
+            AVG(s.sell_slippage_bps)::DOUBLE PRECISION AS sell_mean
+        FROM slippage s
+        JOIN exchanges e ON s.exchange_id = e.id
+        WHERE s.ts >= $1 AND s.ts < $2
+            AND s.symbol IN ({symbol_ph})
+            AND s.exchange_id IN ({exchange_ph})
+            AND s.trade_amount IN ({amount_ph})
+        GROUP BY bucket_ts, s.symbol, e.id, e.name, s.trade_amount
+        ORDER BY bucket_ts, s.symbol, e.name, s.trade_amount
+        "#,
+        bucket_idx = bucket_idx,
+        symbol_ph = symbol_ph.join(", "),
+        exchange_ph = exchange_ph.join(", "),
+        amount_ph = amount_ph.join(", "),
+    );
+
+    let mut qb = sqlx::query_as::<_, SlippageTsRow>(&query)
+        .bind(from)
+        .bind(to);
+    for s in symbols {
+        qb = qb.bind(s);
+    }
+    for id in exchange_ids {
+        qb = qb.bind(id);
+    }
+    for amount in TRADE_AMOUNTS {
+        qb = qb.bind(amount);
+    }
+    qb = qb.bind(bucket_secs as f64);
+    qb.fetch_all(pool)
+        .await
+        .context("Failed to fetch slippage time-series stats")
+}
+
+/// Flattens `SummaryTsRow`s into normalized points: `volume_median`,
+/// `volume_mean`, `oi_median`, `oi_mean`.
+fn flatten_summary(rows: &[SummaryTsRow]) -> Vec<TsPoint> {
+    let mut out = Vec::new();
+    for r in rows {
+        if let Some(v) = r.median_volume {
+            out.push(TsPoint::new(
+                r.bucket_ts,
+                &r.symbol,
+                &r.exchange,
+                "volume_median",
+                v,
+            ));
+        }
+        if let Some(v) = r.mean_volume {
+            out.push(TsPoint::new(
+                r.bucket_ts,
+                &r.symbol,
+                &r.exchange,
+                "volume_mean",
+                v,
+            ));
+        }
+        if let Some(v) = r.median_oi {
+            out.push(TsPoint::new(
+                r.bucket_ts,
+                &r.symbol,
+                &r.exchange,
+                "oi_median",
+                v,
+            ));
+        }
+        if let Some(v) = r.mean_oi {
+            out.push(TsPoint::new(
+                r.bucket_ts,
+                &r.symbol,
+                &r.exchange,
+                "oi_mean",
+                v,
+            ));
+        }
+    }
+    out
+}
+
+/// Flattens pivoted liquidity rows into per-level `liquidity_bid_<level>` /
+/// `liquidity_ask_<level>` points (e.g. `liquidity_bid_2_5bps`). Only the
+/// `liquidity_bid_*` metrics are charted (see `is_charted_metric`) — ask side
+/// is kept for the raw JSON/CSV dump only.
+fn flatten_liquidity(rows: &[LiquidityAllLevelsTsRow]) -> Vec<TsPoint> {
+    let mut out = Vec::new();
+    for r in rows {
+        let levels: [(&str, Option<f64>, Option<f64>); 5] = [
+            ("1bps", r.bid_1bps_median, r.ask_1bps_median),
+            ("2_5bps", r.bid_2_5bps_median, r.ask_2_5bps_median),
+            ("5bps", r.bid_5bps_median, r.ask_5bps_median),
+            ("10bps", r.bid_10bps_median, r.ask_10bps_median),
+            ("20bps", r.bid_20bps_median, r.ask_20bps_median),
+        ];
+        for (slug, bid, ask) in levels {
+            if let Some(v) = bid {
+                out.push(TsPoint::new(
+                    r.bucket_ts,
+                    &r.symbol,
+                    &r.exchange,
+                    &format!("liquidity_bid_{}", slug),
+                    v,
+                ));
+            }
+            if let Some(v) = ask {
+                out.push(TsPoint::new(
+                    r.bucket_ts,
+                    &r.symbol,
+                    &r.exchange,
+                    &format!("liquidity_ask_{}", slug),
+                    v,
+                ));
+            }
+        }
+    }
+    out
+}
+
+/// Flattens `SpreadTsRow`s into `spread_mean` points.
+fn flatten_spread(rows: &[SpreadTsRow]) -> Vec<TsPoint> {
+    rows.iter()
+        .filter_map(|r| {
+            r.mean_bps
+                .map(|v| TsPoint::new(r.bucket_ts, &r.symbol, &r.exchange, "spread_mean", v))
+        })
+        .collect()
+}
+
+/// Flattens slippage rows into per-amount `slippage_buy_<amount>` /
+/// `slippage_sell_<amount>` points. Only `slippage_buy_*` is charted.
+fn flatten_slippage(rows: &[SlippageTsRow]) -> Vec<TsPoint> {
+    let mut out = Vec::new();
+    for r in rows {
+        if let Some(v) = r.buy_mean {
+            out.push(TsPoint::new(
+                r.bucket_ts,
+                &r.symbol,
+                &r.exchange,
+                &format!("slippage_buy_{}", r.trade_amount),
+                v,
+            ));
+        }
+        if let Some(v) = r.sell_mean {
+            out.push(TsPoint::new(
+                r.bucket_ts,
+                &r.symbol,
+                &r.exchange,
+                &format!("slippage_sell_{}", r.trade_amount),
+                v,
+            ));
+        }
+    }
+    out
+}
+
+/// Metrics rendered as charts (12: volume, OI, spread + 5 liquidity-bid
+/// levels + 5 slippage-buy amounts). Ask-side liquidity and sell-side
+/// slippage are exported in JSON/CSV but not charted.
+fn is_charted_metric(metric: &str) -> bool {
+    metric == "volume_median"
+        || metric == "oi_median"
+        || metric == "spread_mean"
+        || metric.starts_with("liquidity_bid_")
+        || metric.starts_with("slippage_buy_")
+}
+
+/// Converts a `liquidity_bid_*`/`liquidity_ask_*` slug suffix (e.g. `2_5bps`)
+/// back to its display label (e.g. `2.5`), matching `BPS_LEVELS` labels.
+fn liquidity_level_label(slug: &str) -> String {
+    slug.trim_end_matches("bps").replace('_', ".")
+}
+
+/// Chart title + y-axis label for a charted metric slug.
+fn metric_meta(metric: &str) -> (String, String) {
+    if let Some(level) = metric.strip_prefix("liquidity_bid_") {
+        return (
+            format!(
+                "Liquidity Depth @ {} bps (bid, median)",
+                liquidity_level_label(level)
+            ),
+            "Notional (USD)".to_string(),
+        );
+    }
+    if let Some(amount) = metric.strip_prefix("slippage_buy_") {
+        return (
+            format!(
+                "Slippage — ${} order (buy, mean)",
+                format_amount(amount.parse().unwrap_or(0))
+            ),
+            "Slippage (bps)".to_string(),
+        );
+    }
+    match metric {
+        "volume_median" => (
+            "Volume (median)".to_string(),
+            "Volume (USD notional)".to_string(),
+        ),
+        "oi_median" => (
+            "Open Interest (median)".to_string(),
+            "OI (USD notional)".to_string(),
+        ),
+        "spread_mean" => ("Spread (mean)".to_string(), "Spread (bps)".to_string()),
+        other => (other.to_string(), "Value".to_string()),
+    }
+}
+
+/// Fixed rendering order for a symbol's charts: volume, OI, spread, then
+/// liquidity levels (BPS_LEVELS order), then slippage amounts (TRADE_AMOUNTS
+/// order) — independent of the concurrent render order in `render_charts`.
+fn chart_metric_priority(metric: &str) -> usize {
+    let mut order: Vec<String> = vec![
+        "volume_median".to_string(),
+        "oi_median".to_string(),
+        "spread_mean".to_string(),
+    ];
+    for (label, _, _) in BPS_LEVELS {
+        order.push(format!("liquidity_bid_{}", bps_json_key(label)));
+    }
+    for amount in TRADE_AMOUNTS {
+        order.push(format!("slippage_buy_{}", amount));
+    }
+    order.iter().position(|m| m == metric).unwrap_or(usize::MAX)
+}
+
+type ChartSeries = Vec<(String, Vec<(DateTime<Utc>, f64)>)>;
+
+/// Groups charted points into per-(symbol, metric) series maps, one entry per
+/// exchange, each sorted by bucket_ts (required by `plotters::LineSeries`).
+fn build_chart_jobs(points: &[TsPoint]) -> Vec<(String, String, ChartSeries)> {
+    let mut grouped: BTreeMap<(String, String), BTreeMap<String, Vec<(DateTime<Utc>, f64)>>> =
+        BTreeMap::new();
+    for p in points {
+        if !is_charted_metric(&p.metric) {
+            continue;
+        }
+        grouped
+            .entry((p.symbol.clone(), p.metric.clone()))
+            .or_default()
+            .entry(p.exchange.clone())
+            .or_default()
+            .push((p.bucket_ts, p.value));
+    }
+
+    grouped
+        .into_iter()
+        .map(|((symbol, metric), exch_map)| {
+            let mut series: ChartSeries = exch_map.into_iter().collect();
+            for (_, pts) in series.iter_mut() {
+                pts.sort_by_key(|(t, _)| *t);
+            }
+            (symbol, metric, series)
+        })
+        .collect()
+}
+
+/// Max chart-render tasks run concurrently via `spawn_blocking` — bounds OS
+/// thread fan-out for a full multi-symbol `--time-series` run.
+const MAX_CONCURRENT_CHART_RENDERS: usize = 8;
+
+/// Renders each (symbol, metric, series) job to a PNG via
+/// `report_charts::plot_metric_chart`, off the async runtime
+/// (`spawn_blocking`) with bounded concurrency. A failed chart is logged and
+/// skipped — matches the report's existing best-effort pattern for the
+/// Binance volatility overview.
+async fn render_charts(
+    charts_dir: &std::path::Path,
+    jobs: Vec<(String, String, ChartSeries)>,
+) -> Vec<TimeSeriesChart> {
+    let start = Instant::now();
+    let total = jobs.len();
+    if total == 0 {
+        return Vec::new();
+    }
+    if let Err(error) = std::fs::create_dir_all(charts_dir) {
+        tracing::warn!(%error, dir = %charts_dir.display(), "Failed to create charts directory; skipping time-series charts");
+        return Vec::new();
+    }
+
+    let results: Vec<Option<TimeSeriesChart>> = stream::iter(jobs.into_iter().map(|(symbol, metric, series)| {
+        let charts_dir = charts_dir.to_path_buf();
+        async move {
+            let (title, y_label) = metric_meta(&metric);
+            let filename = format!("{}_{}.png", symbol, metric);
+            let rel_path = format!("charts/{}", filename);
+            let path = charts_dir.join(&filename);
+            let chart_title = format!("{} — {}", symbol, title);
+            let render = tokio::task::spawn_blocking(move || {
+                report_charts::plot_metric_chart(&path, &chart_title, &y_label, &series)
+            })
+            .await;
+            match render {
+                Ok(Ok(())) => Some(TimeSeriesChart {
+                    symbol,
+                    metric,
+                    title,
+                    rel_path,
+                }),
+                Ok(Err(error)) => {
+                    tracing::warn!(symbol, metric, %error, "Failed to render time-series chart; skipping");
+                    None
+                }
+                Err(join_error) => {
+                    tracing::warn!(symbol, metric, %join_error, "Chart render task panicked; skipping");
+                    None
+                }
+            }
+        }
+    }))
+    .buffer_unordered(MAX_CONCURRENT_CHART_RENDERS)
+    .collect()
+    .await;
+
+    let charts: Vec<TimeSeriesChart> = results.into_iter().flatten().collect();
+    tracing::info!(
+        elapsed_ms = start.elapsed().as_millis() as u64,
+        total,
+        rendered = charts.len(),
+        "Time-series charts rendered"
+    );
+    charts
 }
 
 /// Fetches Binance klines once per symbol and derives three views: annualized
@@ -1306,6 +2292,30 @@ fn render_table(report: &ReportData) -> String {
             }
             write_table(&mut out, &sl_t);
         }
+
+        // Time Series (--time-series only)
+        if let Some(ts) = &report.time_series {
+            let mut charts: Vec<&TimeSeriesChart> =
+                ts.charts.iter().filter(|c| c.symbol == **symbol).collect();
+            charts.sort_by_key(|c| chart_metric_priority(&c.metric));
+            if !charts.is_empty() {
+                let _ = writeln!(
+                    out,
+                    "\n## Time Series (bucket = {})",
+                    format_bucket_secs(ts.bucket_secs)
+                );
+                let _ = writeln!(
+                    out,
+                    "\n_Legend table stats (Min/Mean/Median/95th %/Max/StdDev) are computed over the \
+                    bucketed points plotted in each chart, not the whole-range aggregate above — treat \
+                    them as describing that chart, not a replacement for the summary tables._\n"
+                );
+                for chart in charts {
+                    let _ = writeln!(out, "\n### {}", chart.title);
+                    let _ = writeln!(out, "\n![{} — {}]({})", symbol, chart.title, chart.rel_path);
+                }
+            }
+        }
     }
 
     out
@@ -1413,7 +2423,7 @@ fn render_json(report: &ReportData) -> Result<String> {
         );
     }
 
-    let out = json!({
+    let mut out = json!({
         "generated_at": Utc::now().to_rfc3339(),
         "from": report.from.to_rfc3339(),
         "to": report.to.to_rfc3339(),
@@ -1421,6 +2431,28 @@ fn render_json(report: &ReportData) -> Result<String> {
         "exchanges": report.exchanges,
         "report": per_symbol,
     });
+
+    // Raw bucketed rows (--time-series only) — data, not image links; the
+    // markdown format embeds PNGs instead (see render_table).
+    if let Some(ts) = &report.time_series {
+        let points: Vec<_> = ts
+            .points
+            .iter()
+            .map(|p| {
+                json!({
+                    "bucket_ts": p.bucket_ts.to_rfc3339(),
+                    "symbol": p.symbol,
+                    "exchange": p.exchange,
+                    "metric": p.metric,
+                    "value": p.value,
+                })
+            })
+            .collect();
+        out["time_series"] = json!({
+            "bucket_secs": ts.bucket_secs,
+            "points": points,
+        });
+    }
 
     Ok(serde_json::to_string_pretty(&out)?)
 }
@@ -1500,6 +2532,21 @@ fn render_csv(report: &ReportData) -> String {
                 csv_opt(r.sell_stddev),
                 csv_opt(r.sell_p95),
                 csv_opt(r.sell_p99),
+            ));
+        }
+    }
+
+    if let Some(ts) = &report.time_series {
+        out.push_str("\n# Time Series\n");
+        out.push_str("bucket_ts,symbol,exchange,metric,value\n");
+        for p in &ts.points {
+            out.push_str(&format!(
+                "{},{},{},{},{}\n",
+                p.bucket_ts.to_rfc3339(),
+                p.symbol,
+                p.exchange,
+                p.metric,
+                p.value,
             ));
         }
     }

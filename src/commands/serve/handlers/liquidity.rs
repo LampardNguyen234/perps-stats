@@ -11,8 +11,8 @@ use crate::commands::serve::{
     state::AppState,
 };
 use perps_core::LiquidityDepthStats;
-use rust_decimal::Decimal;
 use perps_database::Repository;
+use rust_decimal::Decimal;
 
 /// GET /api/v1/liquidity
 /// Get latest liquidity depth stats for a symbol

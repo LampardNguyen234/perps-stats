@@ -119,7 +119,11 @@ impl MarketState {
         }
     }
 
-    fn reset_from_snapshot(&mut self, bid_levels: &[WsLevel], ask_levels: &[WsLevel]) -> Result<()> {
+    fn reset_from_snapshot(
+        &mut self,
+        bid_levels: &[WsLevel],
+        ask_levels: &[WsLevel],
+    ) -> Result<()> {
         self.bids.clear();
         self.asks.clear();
         for l in bid_levels {
@@ -141,10 +145,18 @@ impl MarketState {
 
     fn apply_update(&mut self, bid_deltas: &[WsLevel], ask_deltas: &[WsLevel]) -> Result<()> {
         for l in bid_deltas {
-            Self::apply_level(&mut self.bids, parse_price(&l.price)?, parse_price(&l.quantity)?);
+            Self::apply_level(
+                &mut self.bids,
+                parse_price(&l.price)?,
+                parse_price(&l.quantity)?,
+            );
         }
         for l in ask_deltas {
-            Self::apply_level(&mut self.asks, parse_price(&l.price)?, parse_price(&l.quantity)?);
+            Self::apply_level(
+                &mut self.asks,
+                parse_price(&l.price)?,
+                parse_price(&l.quantity)?,
+            );
         }
         Ok(())
     }
@@ -165,12 +177,18 @@ impl MarketState {
             .bids
             .iter()
             .rev()
-            .map(|(p, q)| OrderbookLevel { price: *p, quantity: *q })
+            .map(|(p, q)| OrderbookLevel {
+                price: *p,
+                quantity: *q,
+            })
             .collect();
         let asks: Vec<OrderbookLevel> = self
             .asks
             .iter()
-            .map(|(p, q)| OrderbookLevel { price: *p, quantity: *q })
+            .map(|(p, q)| OrderbookLevel {
+                price: *p,
+                quantity: *q,
+            })
             .collect();
 
         if let (Some(bid), Some(ask)) = (bids.first(), asks.first()) {
@@ -243,7 +261,12 @@ impl RisexOrderbookManager {
             .await;
         });
 
-        Self { snapshots, notifiers, subscribed, subscribe_tx }
+        Self {
+            snapshots,
+            notifiers,
+            subscribed,
+            subscribe_tx,
+        }
     }
 
     /// Fire-and-forget: queue global symbols for subscription.
@@ -257,11 +280,18 @@ impl RisexOrderbookManager {
     }
 
     /// Return a fresh orderbook snapshot, blocking up to 10 s on first call per symbol.
-    pub async fn get_orderbook(&self, symbol: &str, depth: usize) -> Result<MultiResolutionOrderbook> {
+    pub async fn get_orderbook(
+        &self,
+        symbol: &str,
+        depth: usize,
+    ) -> Result<MultiResolutionOrderbook> {
         // Create notifier entry before subscribe so we never miss a notification.
         let notifier = {
             let mut n = self.notifiers.lock().await;
-            Arc::clone(n.entry(symbol.to_string()).or_insert_with(|| Arc::new(Notify::new())))
+            Arc::clone(
+                n.entry(symbol.to_string())
+                    .or_insert_with(|| Arc::new(Notify::new())),
+            )
         };
 
         let already_subscribed = self.subscribed.lock().await.contains(symbol);
@@ -286,7 +316,12 @@ impl RisexOrderbookManager {
 
         time::timeout(Duration::from_secs(FIRST_DATA_TIMEOUT_SECS), notified_fut)
             .await
-            .map_err(|_| anyhow!("timeout waiting for RISEx orderbook snapshot for '{}'", symbol))?;
+            .map_err(|_| {
+                anyhow!(
+                    "timeout waiting for RISEx orderbook snapshot for '{}'",
+                    symbol
+                )
+            })?;
 
         let snaps = self.snapshots.read().await;
         let entry = snaps
@@ -510,7 +545,11 @@ async fn resolve_to_ids(
     let mut ids = Vec::with_capacity(symbols.len());
     for sym in symbols {
         // Fast path: reverse map already built from cache.
-        if let Some(id) = id_to_symbol.iter().find(|(_, s)| *s == sym).map(|(id, _)| *id) {
+        if let Some(id) = id_to_symbol
+            .iter()
+            .find(|(_, s)| *s == sym)
+            .map(|(id, _)| *id)
+        {
             ids.push(id);
         } else if let Some(id) = cache.get(sym).await {
             // Fallback: direct cache lookup (handles symbols added after map was built).
@@ -642,7 +681,16 @@ async fn handle_message(
                 + upd.data.asks.iter().filter(|l| l.quantity != "0").count();
             let count_remove = upd.data.bids.iter().filter(|l| l.quantity == "0").count()
                 + upd.data.asks.iter().filter(|l| l.quantity == "0").count();
-            push_snapshot(symbol, ob, "upd", count_add, count_remove, snapshots, notifiers).await;
+            push_snapshot(
+                symbol,
+                ob,
+                "upd",
+                count_add,
+                count_remove,
+                snapshots,
+                notifiers,
+            )
+            .await;
         }
 
         other => {
@@ -717,19 +765,27 @@ impl IPerpsStream for RisexWsClient {
     }
 
     async fn stream_tickers(&self, _symbols: Vec<String>) -> Result<DataStream<Ticker>> {
-        Err(anyhow!("RISEx WS exposes orderbook channel only; use RisexOrderbookManager"))
+        Err(anyhow!(
+            "RISEx WS exposes orderbook channel only; use RisexOrderbookManager"
+        ))
     }
 
     async fn stream_trades(&self, _symbols: Vec<String>) -> Result<DataStream<Trade>> {
-        Err(anyhow!("RISEx WS exposes orderbook channel only; use RisexOrderbookManager"))
+        Err(anyhow!(
+            "RISEx WS exposes orderbook channel only; use RisexOrderbookManager"
+        ))
     }
 
     async fn stream_orderbooks(&self, _symbols: Vec<String>) -> Result<DataStream<Orderbook>> {
-        Err(anyhow!("use RisexOrderbookManager::get_orderbook for snapshot-based access"))
+        Err(anyhow!(
+            "use RisexOrderbookManager::get_orderbook for snapshot-based access"
+        ))
     }
 
     async fn stream_multi(&self, _config: StreamConfig) -> Result<DataStream<StreamEvent>> {
-        Err(anyhow!("RISEx WS exposes orderbook channel only; use RisexOrderbookManager"))
+        Err(anyhow!(
+            "RISEx WS exposes orderbook channel only; use RisexOrderbookManager"
+        ))
     }
 }
 
@@ -767,41 +823,70 @@ mod tests {
     fn market_state_snapshot_sorts_correctly() {
         let mut state = MarketState::new("BTC".to_string());
         let bids = vec![
-            WsLevel { price: "95000".to_string(), quantity: "1.0".to_string() },
-            WsLevel { price: "94000".to_string(), quantity: "2.0".to_string() },
-            WsLevel { price: "96000".to_string(), quantity: "0.5".to_string() },
+            WsLevel {
+                price: "95000".to_string(),
+                quantity: "1.0".to_string(),
+            },
+            WsLevel {
+                price: "94000".to_string(),
+                quantity: "2.0".to_string(),
+            },
+            WsLevel {
+                price: "96000".to_string(),
+                quantity: "0.5".to_string(),
+            },
         ];
         let asks = vec![
-            WsLevel { price: "97000".to_string(), quantity: "1.0".to_string() },
-            WsLevel { price: "98000".to_string(), quantity: "1.5".to_string() },
+            WsLevel {
+                price: "97000".to_string(),
+                quantity: "1.0".to_string(),
+            },
+            WsLevel {
+                price: "98000".to_string(),
+                quantity: "1.5".to_string(),
+            },
         ];
         state.reset_from_snapshot(&bids, &asks).unwrap();
 
         let ob = state.to_orderbook();
 
         // Bids descending
-        assert!(ob.bids[0].price > ob.bids[1].price, "bids must be descending");
-        assert!(ob.bids[1].price > ob.bids[2].price, "bids must be descending");
+        assert!(
+            ob.bids[0].price > ob.bids[1].price,
+            "bids must be descending"
+        );
+        assert!(
+            ob.bids[1].price > ob.bids[2].price,
+            "bids must be descending"
+        );
 
         // Asks ascending
-        assert!(ob.asks[0].price < ob.asks[1].price, "asks must be ascending");
+        assert!(
+            ob.asks[0].price < ob.asks[1].price,
+            "asks must be ascending"
+        );
 
         // No cross
-        assert!(ob.bids[0].price < ob.asks[0].price, "book must not be crossed");
+        assert!(
+            ob.bids[0].price < ob.asks[0].price,
+            "book must not be crossed"
+        );
     }
 
     #[test]
     fn market_state_delete_level_on_zero_qty() {
         let mut state = MarketState::new("BTC".to_string());
-        let bids = vec![
-            WsLevel { price: "95000".to_string(), quantity: "1.0".to_string() },
-        ];
+        let bids = vec![WsLevel {
+            price: "95000".to_string(),
+            quantity: "1.0".to_string(),
+        }];
         state.reset_from_snapshot(&bids, &[]).unwrap();
         assert_eq!(state.bids.len(), 1);
 
-        let delete = vec![
-            WsLevel { price: "95000".to_string(), quantity: "0".to_string() },
-        ];
+        let delete = vec![WsLevel {
+            price: "95000".to_string(),
+            quantity: "0".to_string(),
+        }];
         state.apply_update(&delete, &[]).unwrap();
         assert_eq!(state.bids.len(), 0, "zero qty must remove the level");
     }
@@ -809,17 +894,23 @@ mod tests {
     #[test]
     fn market_state_update_replaces_qty() {
         let mut state = MarketState::new("BTC".to_string());
-        let bids = vec![
-            WsLevel { price: "95000".to_string(), quantity: "1.0".to_string() },
-        ];
+        let bids = vec![WsLevel {
+            price: "95000".to_string(),
+            quantity: "1.0".to_string(),
+        }];
         state.reset_from_snapshot(&bids, &[]).unwrap();
 
-        let update = vec![
-            WsLevel { price: "95000".to_string(), quantity: "3.0".to_string() },
-        ];
+        let update = vec![WsLevel {
+            price: "95000".to_string(),
+            quantity: "3.0".to_string(),
+        }];
         state.apply_update(&update, &[]).unwrap();
 
         let ob = state.to_orderbook();
-        assert_eq!(ob.bids[0].quantity, dec!(3.0), "qty must be replaced by update");
+        assert_eq!(
+            ob.bids[0].quantity,
+            dec!(3.0),
+            "qty must be replaced by update"
+        );
     }
 }
