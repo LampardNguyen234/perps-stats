@@ -110,6 +110,10 @@ fn shared_state() -> Arc<EdgexSharedState> {
 /// `getMetaData` response first (a pure in-memory lookup, not a second network call).
 ///
 /// EdgeX has no REST trades endpoint, so `get_recent_trades` always returns `Err`.
+///
+/// `Clone` is cheap (an `Arc` bump) - `EdgexWsClient` holds an owned `EdgexClient` and
+/// derives `Clone` itself to match every other WS client's `#[derive(Clone)]` convention.
+#[derive(Clone)]
 pub struct EdgexClient {
     state: Arc<EdgexSharedState>,
 }
@@ -232,8 +236,11 @@ impl EdgexClient {
         Ok(())
     }
 
-    /// Look up a contract by its `contractName` (e.g. `"BTCUSDC"`).
-    async fn find_contract_by_name(&self, contract_name: &str) -> Result<ContractMeta> {
+    /// Look up a contract by its `contractName` (e.g. `"BTCUSDC"`). `pub(crate)` so
+    /// `EdgexWsClient` can resolve `ContractMeta` (for `funding_rate_interval_min`/
+    /// `funding_min_rate`/`funding_max_rate`) the same way REST's funding-rate path does,
+    /// without a second cache.
+    pub(crate) async fn find_contract_by_name(&self, contract_name: &str) -> Result<ContractMeta> {
         self.ensure_metadata().await?;
         let guard = self.state.metadata.read().await;
         guard
@@ -244,8 +251,11 @@ impl EdgexClient {
     }
 
     /// Resolve a global or EdgeX-formatted symbol to its numeric `contractId`, the key
-    /// every price/depth/funding/kline endpoint requires.
-    async fn resolve_contract_id(&self, symbol: &str) -> Result<String> {
+    /// every price/depth/funding/kline endpoint requires. `pub(crate)` so `EdgexWsClient`
+    /// (which holds an owned `EdgexClient` purely for this lookup, see `ws_client.rs`) can
+    /// reuse the same cached metadata resolution REST already performs, rather than
+    /// duplicating it.
+    pub(crate) async fn resolve_contract_id(&self, symbol: &str) -> Result<String> {
         let contract_name = to_edgex_symbol(symbol);
         Ok(self
             .find_contract_by_name(&contract_name)

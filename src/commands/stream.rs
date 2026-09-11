@@ -11,7 +11,7 @@ use tokio::sync::Mutex;
 
 #[derive(Args)]
 pub struct StreamArgs {
-    /// Exchange to stream from (supported: arcus, aster, binance, hyperliquid, bybit, kucoin, lighter, paradex, qfex)
+    /// Exchange to stream from (supported: arcus, aster, binance, edgex, hyperliquid, bybit, kucoin, lighter, paradex, qfex)
     #[arg(short, long, default_value = "binance")]
     pub exchange: String,
 
@@ -54,6 +54,7 @@ pub async fn execute(args: StreamArgs) -> Result<()> {
         "arcus"
             | "aster"
             | "binance"
+            | "edgex"
             | "hyperliquid"
             | "bybit"
             | "kucoin"
@@ -61,7 +62,7 @@ pub async fn execute(args: StreamArgs) -> Result<()> {
             | "paradex"
             | "qfex"
     ) {
-        anyhow::bail!("Only 'arcus', 'aster', 'binance', 'hyperliquid', 'bybit', 'kucoin', 'lighter', 'paradex', and 'qfex' exchanges are currently supported for streaming");
+        anyhow::bail!("Only 'arcus', 'aster', 'binance', 'edgex', 'hyperliquid', 'bybit', 'kucoin', 'lighter', 'paradex', and 'qfex' exchanges are currently supported for streaming");
     }
 
     // Parse data types
@@ -121,8 +122,15 @@ pub async fn execute(args: StreamArgs) -> Result<()> {
                     args.klines_interval.as_ref().unwrap()
                 );
             }
+            "edgex" => {
+                // EdgeX supports klines via WebSocket
+                tracing::info!(
+                    "Streaming klines from EdgeX via WebSocket (interval: {})",
+                    args.klines_interval.as_ref().unwrap()
+                );
+            }
             _ => {
-                anyhow::bail!("Klines streaming is currently only supported for KuCoin exchange. Other exchanges use REST API for klines. Use the 'start' command for REST API klines fetching.");
+                anyhow::bail!("Klines streaming is currently only supported for KuCoin and EdgeX exchanges. Other exchanges use REST API for klines. Use the 'start' command for REST API klines fetching.");
             }
         }
     }
@@ -221,6 +229,10 @@ pub async fn execute(args: StreamArgs) -> Result<()> {
         match args.exchange.as_str() {
             "arcus" => {
                 let ws_client = perps_exchanges::arcus::ArcusWsClient::new();
+                Box::new(ws_client.stream_multi(config).await?)
+            }
+            "edgex" => {
+                let ws_client = perps_exchanges::edgex::EdgexWsClient::new();
                 Box::new(ws_client.stream_multi(config).await?)
             }
             "aster" => {

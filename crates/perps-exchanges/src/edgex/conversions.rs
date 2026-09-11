@@ -20,22 +20,24 @@ pub const KLINE_INTERVALS: &[(&str, &str, i64)] = &[
     ("1w", "WEEK_1", 604_800_000),
 ];
 
-fn parse_decimal(s: &str, field: &str) -> Result<Decimal> {
+// `pub(crate)`: reused as-is by `ws_client.rs` (per `01_overview.md` Key decision 4 - the
+// WS conversion functions reuse these scalar-parsing helpers rather than duplicating them).
+pub(crate) fn parse_decimal(s: &str, field: &str) -> Result<Decimal> {
     Decimal::from_str_exact(s).with_context(|| format!("failed to parse {field}: {s:?}"))
 }
 
-fn parse_ms(s: &str, field: &str) -> Result<i64> {
+pub(crate) fn parse_ms(s: &str, field: &str) -> Result<i64> {
     s.parse::<i64>()
         .with_context(|| format!("failed to parse {field} as milliseconds: {s:?}"))
 }
 
-fn datetime_from_ms(ms: i64) -> Result<DateTime<Utc>> {
+pub(crate) fn datetime_from_ms(ms: i64) -> Result<DateTime<Utc>> {
     Utc.timestamp_millis_opt(ms)
         .single()
         .ok_or_else(|| anyhow!("invalid millisecond timestamp: {ms}"))
 }
 
-fn interval_duration_ms(interval: &str) -> Result<i64> {
+pub(crate) fn interval_duration_ms(interval: &str) -> Result<i64> {
     KLINE_INTERVALS
         .iter()
         .find(|(k, _, _)| *k == interval)
