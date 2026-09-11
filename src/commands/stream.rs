@@ -11,7 +11,7 @@ use tokio::sync::Mutex;
 
 #[derive(Args)]
 pub struct StreamArgs {
-    /// Exchange to stream from (supported: aster, binance, hyperliquid, bybit, kucoin, lighter, paradex, qfex)
+    /// Exchange to stream from (supported: arcus, aster, binance, hyperliquid, bybit, kucoin, lighter, paradex, qfex)
     #[arg(short, long, default_value = "binance")]
     pub exchange: String,
 
@@ -51,9 +51,17 @@ pub async fn execute(args: StreamArgs) -> Result<()> {
     // Validate exchange
     if !matches!(
         args.exchange.as_str(),
-        "aster" | "binance" | "hyperliquid" | "bybit" | "kucoin" | "lighter" | "paradex" | "qfex"
+        "arcus"
+            | "aster"
+            | "binance"
+            | "hyperliquid"
+            | "bybit"
+            | "kucoin"
+            | "lighter"
+            | "paradex"
+            | "qfex"
     ) {
-        anyhow::bail!("Only 'aster', 'binance', 'hyperliquid', 'bybit', 'kucoin', 'lighter', 'paradex', and 'qfex' exchanges are currently supported for streaming");
+        anyhow::bail!("Only 'arcus', 'aster', 'binance', 'hyperliquid', 'bybit', 'kucoin', 'lighter', 'paradex', and 'qfex' exchanges are currently supported for streaming");
     }
 
     // Parse data types
@@ -211,6 +219,10 @@ pub async fn execute(args: StreamArgs) -> Result<()> {
     tracing::info!("Connecting to WebSocket stream...");
     let mut stream: Box<dyn futures::Stream<Item = Result<StreamEvent>> + Unpin + Send> =
         match args.exchange.as_str() {
+            "arcus" => {
+                let ws_client = perps_exchanges::arcus::ArcusWsClient::new();
+                Box::new(ws_client.stream_multi(config).await?)
+            }
             "aster" => {
                 let ws_client = perps_exchanges::aster::AsterWsClient::new();
                 Box::new(ws_client.stream_multi(config).await?)

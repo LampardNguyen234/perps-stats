@@ -62,6 +62,24 @@ fn shared_state() -> Arc<ArcusSharedState> {
         .clone()
 }
 
+/// Convert a global symbol to Arcus's market display-name format.
+///
+/// Kept as a free function so the REST and WebSocket clients share exactly the same alias and
+/// suffix handling without constructing an otherwise-unused REST client.
+pub(crate) fn to_arcus_symbol(symbol: &str) -> String {
+    let upper = symbol.to_uppercase();
+    let base = upper.strip_suffix("-USD").unwrap_or(&upper);
+    let aliased = crate::symbol_aliases::resolve_alias("arcus", base);
+    format!("{aliased}-USD")
+}
+
+/// Convert an Arcus market display name back to this project's global symbol format.
+pub(crate) fn to_global_symbol(exchange_symbol: &str) -> String {
+    let upper = exchange_symbol.to_uppercase();
+    let base = upper.strip_suffix("-USD").unwrap_or(&upper);
+    crate::symbol_aliases::unresolve_alias("arcus", base).to_string()
+}
+
 /// REST client for the Arcus perpetuals exchange (crypto + equities/commodities/indices).
 ///
 /// All market data is served from `https://api.arcus.xyz` without authentication.
@@ -108,23 +126,6 @@ impl ArcusClient {
             base_url: base_url.into(),
             shared,
         }
-    }
-
-    /// Convert a global symbol (e.g. `"BTC"`, `"SKHYNIX"`) to Arcus format (e.g. `"BTC-USD"`,
-    /// `"SKHY-USD"`). Idempotent: `"BTC-USD"` and `"SKHYNIX-USD"` both pass through unchanged
-    /// modulo alias resolution, because the suffix is stripped before the alias lookup.
-    fn to_arcus_symbol(symbol: &str) -> String {
-        let upper = symbol.to_uppercase();
-        let base = upper.strip_suffix("-USD").unwrap_or(&upper);
-        let aliased = crate::symbol_aliases::resolve_alias("arcus", base);
-        format!("{aliased}-USD")
-    }
-
-    /// Convert an Arcus symbol (or an already-global one) back to global format.
-    fn to_global_symbol(exchange_symbol: &str) -> String {
-        let upper = exchange_symbol.to_uppercase();
-        let base = upper.strip_suffix("-USD").unwrap_or(&upper);
-        crate::symbol_aliases::unresolve_alias("arcus", base).to_string()
     }
 
     // ---- HTTP helpers ----
@@ -233,11 +234,11 @@ impl IPerps for ArcusClient {
     }
 
     fn parse_symbol(&self, symbol: &str) -> String {
-        Self::to_arcus_symbol(symbol)
+        to_arcus_symbol(symbol)
     }
 
     fn normalize_symbol(&self, exchange_symbol: &str) -> String {
-        Self::to_global_symbol(exchange_symbol)
+        to_global_symbol(exchange_symbol)
     }
 
     async fn get_markets(&self) -> Result<Vec<Market>> {
@@ -530,34 +531,39 @@ impl IPerps for ArcusClient {
 mod tests {
     use super::*;
 
+    fn client_without_system_proxy() -> ArcusClient {
+        ArcusClient {
+            http: Client::builder().no_proxy().build().unwrap(),
+            base_url: BASE_URL.to_string(),
+            shared: Arc::new(ArcusSharedState::new()),
+        }
+    }
+
     #[test]
     fn test_get_name() {
-        assert_eq!(ArcusClient::new().get_name(), "arcus");
+        assert_eq!(client_without_system_proxy().get_name(), "arcus");
     }
 
     #[test]
     fn test_parse_symbol_global_and_idempotent() {
-        let client = ArcusClient::new();
-        assert_eq!(client.parse_symbol("BTC"), "BTC-USD");
-        assert_eq!(client.parse_symbol("btc"), "BTC-USD");
-        assert_eq!(client.parse_symbol("BTC-USD"), "BTC-USD");
+        assert_eq!(to_arcus_symbol("BTC"), "BTC-USD");
+        assert_eq!(to_arcus_symbol("btc"), "BTC-USD");
+        assert_eq!(to_arcus_symbol("BTC-USD"), "BTC-USD");
     }
 
     #[test]
     fn test_normalize_symbol_inverse_of_parse() {
-        let client = ArcusClient::new();
-        assert_eq!(client.normalize_symbol("BTC-USD"), "BTC");
-        assert_eq!(client.normalize_symbol(&client.parse_symbol("BTC")), "BTC");
+        assert_eq!(to_global_symbol("BTC-USD"), "BTC");
+        assert_eq!(to_global_symbol(&to_arcus_symbol("BTC")), "BTC");
     }
 
     #[test]
     fn test_non_proxy_commodity_symbols_pass_through_unaliased() {
         // XAU/XAG/XCU/CL are distinct ETF instruments on Arcus, not naming aliases — they
         // must round-trip as themselves, never rewritten to GLD/SLV/CPER/USO.
-        let client = ArcusClient::new();
-        assert_eq!(client.parse_symbol("XAU"), "XAU-USD");
-        assert_eq!(client.parse_symbol("XAG"), "XAG-USD");
-        assert_eq!(client.parse_symbol("XCU"), "XCU-USD");
-        assert_eq!(client.parse_symbol("CL"), "CL-USD");
+        assert_eq!(to_arcus_symbol("XAU"), "XAU-USD");
+        assert_eq!(to_arcus_symbol("XAG"), "XAG-USD");
+        assert_eq!(to_arcus_symbol("XCU"), "XCU-USD");
+        assert_eq!(to_arcus_symbol("CL"), "CL-USD");
     }
 }
