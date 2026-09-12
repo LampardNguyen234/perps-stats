@@ -140,7 +140,7 @@ impl HyperliquidClient {
             .collect::<Result<Vec<_>>>()?;
 
         Ok(Orderbook {
-            symbol: book.coin,
+            symbol: self.normalize_symbol(&book.coin),
             bids,
             asks,
             timestamp: Utc::now(),

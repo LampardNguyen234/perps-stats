@@ -16,7 +16,7 @@ use super::ws_types::*;
 
 const WS_BASE_URL: &str = "wss://api.arcus.xyz/v1/ws";
 // Matches Arcus REST's own max (`ArcusClient::fetch_orderbook_raw` clamps `nLevels` to 100) -
-// keeps the WS-fed `OrderbookPushCache` (see `crates/perps-core/src/orderbook_cache.rs`) at
+// keeps the WS-fed `WsOrderbookManager` at
 // full parity with what REST would return for the same symbol, since callers requesting
 // deep books (`depth: 1000` from `start`/`liquidity`, clamped by Arcus to 100 either way)
 // must not silently get fewer levels from the cache than a REST call would give them.

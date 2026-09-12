@@ -85,6 +85,23 @@ pub fn refdata_item_to_market(item: &RefDataItem) -> Result<Market> {
     })
 }
 
+// ── ContractEntry → SymbolMetrics ─────────────────────────────────────────────
+
+/// Convert a raw `/md/contracts` entry (string-typed fields) into the normalized
+/// `SymbolMetrics` shape consumed by the rest of the client.
+pub fn contract_to_symbol_metrics(c: &ContractEntry) -> SymbolMetrics {
+    let parse = |s: &Option<String>| s.as_deref().and_then(|v| v.parse::<f64>().ok());
+
+    SymbolMetrics {
+        symbol: c.ticker_id.clone(),
+        current_mark_price: parse(&c.last_price),
+        volume_24h_usd_notional: parse(&c.target_volume),
+        mark_price_change_24h_pct: None,
+        open_interest: parse(&c.open_interest),
+        funding_rate_bps: parse(&c.funding_rate),
+    }
+}
+
 // ── SymbolMetrics → Ticker ────────────────────────────────────────────────────
 
 /// Build a core `Ticker` from a `SymbolMetrics` entry.
@@ -342,6 +359,39 @@ pub fn to_qfex_symbol(symbol: &str) -> String {
 /// Convert QFEX symbol `"NVDA-USD"` → global symbol `"NVDA"`.
 pub fn to_global_symbol(qfex_symbol: &str) -> String {
     qfex_symbol.trim_end_matches("-USD").to_string()
+}
+
+/// QFEX symbols quoted in KRW instead of the default USD (base name, post-alias-resolution).
+const KRW_QUOTED: &[&str] = &["SAMSUNG", "SKHYNIX"];
+
+/// Convert a global symbol to QFEX wire format, resolving the configured alias first
+/// (e.g. `"XAU"` -> `"GOLD"` -> `"GOLD-USD"`), then picking the quote currency the
+/// resolved base name actually trades in (e.g. `"SAMSUNG"` -> `"SAMSUNG-KRW"`).
+///
+/// This is the single source of truth for global -> QFEX symbol conversion; both the
+/// REST client (`QfexClient::parse_symbol`) and the WS adapter (`QfexWsClient`) must use
+/// it so REST and WS subscribe to the same wire symbol.
+pub fn parse_qfex_symbol(symbol: &str) -> String {
+    let base = crate::symbol_aliases::resolve_alias("qfex", symbol).to_uppercase();
+    if base.ends_with("-USD") || base.ends_with("-KRW") {
+        return base;
+    }
+    if KRW_QUOTED.contains(&base.as_str()) {
+        format!("{}-KRW", base)
+    } else {
+        format!("{}-USD", base)
+    }
+}
+
+/// Convert a QFEX wire symbol back to the global symbol, unresolving the configured
+/// alias (e.g. `"GOLD-USD"` -> `"GOLD"` -> `"XAU"`, `"SAMSUNG-KRW"` -> `"SAMSUNG"`).
+///
+/// Counterpart to [`parse_qfex_symbol`]; shared by the REST client and WS adapter.
+pub fn normalize_qfex_symbol(exchange_symbol: &str) -> String {
+    let upper = exchange_symbol.to_uppercase();
+    let mut base = upper.strip_suffix("-USD").unwrap_or(&upper);
+    base = base.strip_suffix("-KRW").unwrap_or(base);
+    crate::symbol_aliases::unresolve_alias("qfex", base).to_string()
 }
 
 /// Map standard kline interval to QFEX resolution string.

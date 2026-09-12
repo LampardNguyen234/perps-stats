@@ -7,6 +7,11 @@ use chrono::{DateTime, Utc};
 /// from different exchanges.
 #[async_trait]
 pub trait IPerps: Send + Sync {
+    /// Register the complete orderbook symbol set before the first read. REST-only clients do nothing.
+    async fn prewarm_streams(&self, _symbols: &[String]) -> anyhow::Result<()> {
+        Ok(())
+    }
+
     /// GetName returns the name of the exchange.
     fn get_name(&self) -> &str;
 

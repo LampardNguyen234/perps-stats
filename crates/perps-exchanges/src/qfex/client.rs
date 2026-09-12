@@ -1,6 +1,6 @@
 use crate::qfex::conversions::*;
 use crate::qfex::types::*;
-use crate::qfex::ws_client::OrderbookManager;
+use crate::qfex::ws_client::QfexWsClient;
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -9,22 +9,15 @@ use perps_core::{
     execute_with_retry, FundingRate, IPerps, Kline, Market, MarketStats, MultiResolutionOrderbook,
     OpenInterest, RateLimit, RateLimiter, RetryConfig, Ticker, Trade,
 };
+use perps_core::{WsOrderbookConfig, WsOrderbookManager};
 use reqwest::Client;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 
-/// Process-wide singleton `OrderbookManager` shared across all `QfexClient` instances.
-/// This ensures only one WS connection is maintained regardless of how many clients are created.
-static ORDERBOOK_MANAGER: OnceLock<Arc<OrderbookManager>> = OnceLock::new();
-
-fn shared_orderbook_manager() -> Arc<OrderbookManager> {
-    Arc::clone(ORDERBOOK_MANAGER.get_or_init(|| Arc::new(OrderbookManager::new(vec![0, 1, 2]))))
-}
-
 const BASE_URL: &str = "https://api.qfex.com";
 
-/// Cached snapshot of `GET /symbols/metrics` with a wall-clock timestamp.
+/// Cached snapshot of `GET /md/contracts` with a wall-clock timestamp.
 struct MetricsCache {
     data: Vec<SymbolMetrics>,
     fetched_at: Instant,
@@ -38,62 +31,35 @@ struct MetricsCache {
 ///
 /// Rate limit: 20 requests per second (conservative; QFEX does not publish a hard limit).
 ///
-/// The `/symbols/metrics` endpoint returns **all** symbols at once; results are shared via
+/// The `/md/contracts` endpoint returns **all** symbols at once; results are shared via
 /// a 5-second TTL cache so the many methods that need metrics only issue one network request
 /// per cycle.
 pub struct QfexClient {
     http: Client,
     base_url: String,
     rate_limiter: Arc<RateLimiter>,
-    /// Shared 5 s TTL cache for `GET /symbols/metrics` (returns ALL symbols at once).
+    /// Shared 5 s TTL cache for `GET /md/contracts` (returns ALL symbols at once).
     metrics_cache: Arc<RwLock<Option<MetricsCache>>>,
-    orderbook_manager: Arc<OrderbookManager>,
+    orderbook_manager: Arc<WsOrderbookManager>,
 }
 
 impl QfexClient {
-    /// Create a new `QfexClient` with default settings.
-    ///
-    /// Spawns a background task that fetches all available symbols and pre-subscribes
-    /// the WebSocket orderbook manager to them, so orderbook snapshots are available
-    /// before the first explicit `get_orderbook` call.
+    /// Construction is inert; prewarm or the first orderbook read starts streaming.
     pub fn new() -> Self {
-        let is_first = ORDERBOOK_MANAGER.get().is_none();
-        let this = Self {
+        Self {
             http: Client::new(),
             base_url: BASE_URL.to_string(),
             rate_limiter: Arc::new(RateLimiter::new(vec![RateLimit::per_second(20)])),
             metrics_cache: Arc::new(RwLock::new(None)),
-            orderbook_manager: shared_orderbook_manager(),
-        };
-
-        // Only the first client to initialize triggers the auto-subscribe bootstrap.
-        // Subsequent clients (e.g. short-lived validation clients) share the same WS
-        // connection without triggering redundant subscriptions.
-        if is_first {
-            let bootstrap = QfexClient {
-                http: this.http.clone(),
-                base_url: this.base_url.clone(),
-                rate_limiter: Arc::clone(&this.rate_limiter),
-                metrics_cache: Arc::clone(&this.metrics_cache),
-                orderbook_manager: Arc::clone(&this.orderbook_manager),
-            };
-            tokio::spawn(async move {
-                match bootstrap.get_cached_metrics().await {
-                    Ok(metrics) => {
-                        let symbols: Vec<String> =
-                            metrics.iter().map(|m| m.symbol.clone()).collect();
-                        tracing::info!(
-                            "qfex: auto-subscribing orderbook for {} symbols",
-                            symbols.len()
-                        );
-                        bootstrap.orderbook_manager.subscribe_symbols(symbols).await;
-                    }
-                    Err(e) => tracing::warn!("qfex: auto-subscribe startup failed: {}", e),
-                }
-            });
+            orderbook_manager: Arc::new(WsOrderbookManager::new(
+                Arc::new(QfexWsClient::with_sig_figs(vec![0, 1, 2])),
+                WsOrderbookConfig {
+                    reconnect_delay: Duration::from_secs(1),
+                    ..Default::default()
+                },
+                vec![],
+            )),
         }
-
-        this
     }
 
     // ---- HTTP helper --------------------------------------------------------
@@ -144,7 +110,7 @@ impl QfexClient {
 
     // ---- Metrics cache -------------------------------------------------------
 
-    /// Return cached metrics, fetching fresh data from `/symbols/metrics` on miss or expiry.
+    /// Return cached metrics, fetching fresh data from `/md/contracts` on miss or expiry.
     ///
     /// The cache TTL is 5 seconds; all callers within the window share the same snapshot,
     /// which avoids redundant API calls when multiple methods are invoked in quick succession.
@@ -161,12 +127,12 @@ impl QfexClient {
         }
 
         // Cache miss or stale: fetch from the API.
-        tracing::debug!("QFEX: fetching /symbols/metrics");
-        let resp: SymbolMetricsResponse = self
-            .get("/symbols/metrics", &[])
+        tracing::debug!("QFEX: fetching /md/contracts");
+        let resp: ContractsResponse = self
+            .get("/md/contracts", &[])
             .await
-            .context("failed to fetch /symbols/metrics")?;
-        let data = resp.data;
+            .context("failed to fetch /md/contracts")?;
+        let data: Vec<SymbolMetrics> = resp.data.iter().map(contract_to_symbol_metrics).collect();
 
         {
             let mut guard = self.metrics_cache.write().await;
@@ -189,6 +155,17 @@ impl Default for QfexClient {
 #[async_trait]
 impl IPerps for QfexClient {
     /// Returns the canonical exchange name used in database records and CLI output.
+    async fn prewarm_streams(&self, symbols: &[String]) -> Result<()> {
+        self.orderbook_manager
+            .prewarm(
+                symbols
+                    .iter()
+                    .map(|s| self.normalize_symbol(&self.parse_symbol(s)))
+                    .collect(),
+            )
+            .await
+    }
+
     fn get_name(&self) -> &str {
         "qfex"
     }
@@ -197,15 +174,11 @@ impl IPerps for QfexClient {
     ///
     /// The conversion is idempotent: passing `"NVDA-USD"` returns `"NVDA-USD"` unchanged.
     fn parse_symbol(&self, symbol: &str) -> String {
-        to_qfex_symbol(crate::symbol_aliases::resolve_alias("qfex", symbol))
+        parse_qfex_symbol(symbol)
     }
 
     fn normalize_symbol(&self, exchange_symbol: &str) -> String {
-        // "NVDA-USD" -> "NVDA", "GOLD-USD" -> "GOLD" -> unresolve -> "XAU"
-        let upper = exchange_symbol.to_uppercase();
-        let mut base = upper.strip_suffix("-USD").unwrap_or(&upper);
-        base = base.strip_suffix("-KRW").unwrap_or(&base);
-        crate::symbol_aliases::unresolve_alias("qfex", base).to_string()
+        normalize_qfex_symbol(exchange_symbol)
     }
 
     /// Fetch all active markets from `GET /refdata`.
@@ -321,7 +294,7 @@ impl IPerps for QfexClient {
 
         let mut ob = self
             .orderbook_manager
-            .get_orderbook(&qfex_sym, depth as usize)
+            .wait_for_orderbook(&self.normalize_symbol(&qfex_sym), depth)
             .await
             .with_context(|| format!("failed to get orderbook for {}", qfex_sym))?;
         ob.symbol = self.normalize_symbol(&qfex_sym);

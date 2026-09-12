@@ -13,10 +13,9 @@ use tokio::sync::RwLock;
 
 const BASE_URL: &str = "https://api.starknet.extended.exchange/api/v1";
 
-/// Shared StreamManager — one per process regardless of how many ExtendedClient instances exist.
+/// Shared WsOrderbookManager — one per process regardless of how many ExtendedClient instances exist.
 #[cfg(feature = "streaming")]
-#[allow(dead_code)] // Streaming initialization is parked pending multi-agg-level support.
-static STREAM_MANAGER: std::sync::OnceLock<Arc<perps_core::StreamManager>> =
+static STREAM_MANAGER: std::sync::OnceLock<Arc<perps_core::WsOrderbookManager>> =
     std::sync::OnceLock::new();
 
 /// A client for the Extended Exchange (Starknet L2 DEX).
@@ -29,7 +28,7 @@ pub struct ExtendedClient {
     rate_limiter: Arc<RateLimiter>,
     /// Optional stream manager for WebSocket-based orderbook streaming
     #[cfg(feature = "streaming")]
-    stream_manager: Option<Arc<perps_core::StreamManager>>,
+    stream_manager: Option<Arc<perps_core::WsOrderbookManager>>,
     /// Track active WebSocket streams (for backward compatibility with old code)
     #[cfg(feature = "streaming")]
     #[allow(dead_code)]
@@ -56,32 +55,70 @@ impl ExtendedClient {
         }
     }
 
-    /// Create a new client. WS disabled pending multi-agg-level orderbook support.
+    /// Create a new client.
+    ///
+    /// Automatically enables WebSocket streaming if:
+    /// - DATABASE_URL environment variable is set
+    /// - ENABLE_ORDERBOOK_STREAMING=true
+    /// - `streaming` feature is enabled
+    ///
+    /// Falls back to REST-only mode if streaming initialization fails.
     pub async fn new() -> Result<Self> {
+        #[cfg(feature = "streaming")]
+        {
+            let should_enable_streaming = std::env::var("DATABASE_URL").is_ok()
+                && std::env::var("ENABLE_ORDERBOOK_STREAMING")
+                    .map(|v| v.to_lowercase() == "true")
+                    .unwrap_or(false);
+
+            if should_enable_streaming {
+                match Self::try_init_streaming().await {
+                    Ok(client) => {
+                        tracing::info!("✓ ExtendedClient initialized with WebSocket streaming");
+                        return Ok(client);
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to initialize streaming for ExtendedClient: {}", e);
+                        tracing::warn!("Falling back to REST-only mode");
+                    }
+                }
+            }
+        }
+
         Ok(Self::new_rest_only())
     }
 
-    /// Try to initialize with streaming support using StreamManager
+    /// Try to initialize with streaming support using WsOrderbookManager
     #[cfg(feature = "streaming")]
-    #[allow(dead_code)] // Kept ready for when Extended streaming is re-enabled.
     async fn try_init_streaming() -> Result<Self> {
         use super::ws_client::ExtendedWsClient;
-        use perps_core::{StreamConfig, StreamManager};
+        use perps_core::{DeltaOrderbookAdapter, WsOrderbookConfig, WsOrderbookManager};
 
-        tracing::info!("Initializing ExtendedClient with StreamManager");
+        tracing::info!("Initializing ExtendedClient with WsOrderbookManager");
 
         let http = reqwest::Client::builder()
             .user_agent("perps-stats/0.1.0")
             .build()
             .expect("Failed to build HTTP client");
 
-        // Reuse the shared StreamManager if already created (avoids duplicate WS connections
+        // Reuse the shared WsOrderbookManager if already created (avoids duplicate WS connections
         // when start.rs creates separate clients for ticker and liquidity tasks).
         let stream_manager = Arc::clone(STREAM_MANAGER.get_or_init(|| {
             let ws_client = Arc::new(ExtendedWsClient::new());
-            Arc::new(StreamManager::new(
-                ws_client as Arc<dyn perps_core::OrderbookStreamer>,
-                StreamConfig::default(),
+            Arc::new(WsOrderbookManager::new(
+                Arc::new(DeltaOrderbookAdapter(
+                    ws_client as Arc<dyn perps_core::OrderbookStreamer>,
+                )),
+                WsOrderbookConfig {
+                    // Extended's orderbook WS has no per-market subscribe frame: a
+                    // connection with no market path streams every market at once,
+                    // multiplexed by symbol. So all requested symbols fit in one shard.
+                    max_symbols_per_connection: 256,
+                    with_delta: true,
+                    staleness_threshold: std::time::Duration::from_secs(1),
+                    ..Default::default()
+                },
+                vec![],
             ))
         }));
 
@@ -141,8 +178,20 @@ impl ExtendedClient {
                                 ));
                             }
 
-                            // Parse response wrapper
-                            let wrapper: ExtendedResponse<T> = response.json().await?;
+                            // Parse response wrapper. Read as text first so a parse
+                            // failure can report the actual body instead of reqwest's
+                            // opaque "error decoding response body".
+                            let body = response.text().await?;
+                            let wrapper: ExtendedResponse<T> =
+                                serde_json::from_str(&body).map_err(|e| {
+                                    let preview: String = body.chars().take(300).collect();
+                                    anyhow!(
+                                        "Failed to parse response from {}: {} (body: {})",
+                                        url,
+                                        e,
+                                        preview
+                                    )
+                                })?;
                             if wrapper.status != "OK" {
                                 let error = wrapper.error.unwrap_or(ExtendedError {
                                     code: "UNKNOWN".to_string(),
@@ -189,6 +238,18 @@ impl Default for ExtendedClient {
 
 #[async_trait]
 impl IPerps for ExtendedClient {
+    async fn prewarm_streams(&self, symbols: &[String]) -> anyhow::Result<()> {
+        #[cfg(feature = "streaming")]
+        if let Some(manager) = &self.stream_manager {
+            manager
+                .prewarm(symbols.iter().map(|s| self.parse_symbol(s)).collect())
+                .await?;
+        }
+        #[cfg(not(feature = "streaming"))]
+        let _ = symbols;
+        Ok(())
+    }
+
     fn get_name(&self) -> &str {
         "extended"
     }
@@ -220,7 +281,9 @@ impl IPerps for ExtendedClient {
             .into_iter()
             // RFQ-only markets (e.g. DRAM) have no real orderbook — they're
             // quoted on request by a market maker, not backed by a CLOB.
-            .filter(|m| m.active && !m.is_rfq)
+            // `active` alone is unreliable: delisted markets (e.g. SPCX) can still report
+            // active=true while status="DELISTED", leaving a permanently empty book.
+            .filter(|m| m.active && !m.is_rfq && m.status == "ACTIVE")
             .map(|m| {
                 // Calculate precision from asset precision
                 let price_scale = m.collateral_asset_precision.max(0);
@@ -391,7 +454,7 @@ impl IPerps for ExtendedClient {
     }
 
     async fn get_orderbook(&self, symbol: &str, depth: u32) -> Result<MultiResolutionOrderbook> {
-        // Check if StreamManager is available (streaming mode)
+        // Check if WsOrderbookManager is available (streaming mode)
         #[cfg(feature = "streaming")]
         if let Some(ref manager) = self.stream_manager {
             let exchange_symbol = self.parse_symbol(symbol);
@@ -403,16 +466,22 @@ impl IPerps for ExtendedClient {
             // Extended REST has no sequence number; use current timestamp (ms) as lastUpdateId
             // so all buffered WS events (lower timestamps) are treated stale and the next WS
             // snapshot takes over cleanly.
-            let http = self.http.clone();
+            let client = self.clone();
             let exchange_symbol_clone = exchange_symbol.clone();
-            let base_url = BASE_URL.to_string();
             let mut orderbook = manager
                 .get_orderbook(&exchange_symbol, depth, || async move {
-                    let url = format!(
-                        "{}/info/markets/{}/orderbook",
-                        base_url, exchange_symbol_clone
-                    );
-                    let resp: ExtendedOrderbook = http.get(&url).send().await?.json().await?;
+                    // Use self.get() (not a raw http.get().json()) so this fallback goes
+                    // through the ExtendedResponse<T> envelope unwrap, rate limiting and
+                    // retry-on-429 like every other REST call — a raw json() here was
+                    // parsing straight into ExtendedOrderbook while the API actually
+                    // returns it wrapped in {"status":"OK","data":{...}}, which failed
+                    // to decode on every call.
+                    let resp: ExtendedOrderbook = client
+                        .get(&format!(
+                            "/info/markets/{}/orderbook",
+                            exchange_symbol_clone
+                        ))
+                        .await?;
                     let bids = resp
                         .bid
                         .iter()

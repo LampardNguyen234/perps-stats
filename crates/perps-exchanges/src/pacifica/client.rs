@@ -3,8 +3,8 @@ use crate::pacifica::types::*;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, TimeZone, Utc};
-use perps_core::stream_manager::StreamManager;
 use perps_core::types::*;
+use perps_core::WsOrderbookManager;
 use perps_core::{execute_with_retry, IPerps, RateLimiter, RetryConfig};
 use rust_decimal::Decimal;
 use std::str::FromStr;
@@ -20,8 +20,8 @@ pub struct PacificaClient {
     symbols_cache: SymbolsCache,
     /// Rate limiter for API requests
     rate_limiter: Arc<RateLimiter>,
-    /// Optional StreamManager for WebSocket orderbook streaming
-    stream_manager: Option<Arc<StreamManager>>,
+    /// Optional WsOrderbookManager for WebSocket orderbook streaming
+    stream_manager: Option<Arc<WsOrderbookManager>>,
 }
 
 impl PacificaClient {
@@ -33,7 +33,7 @@ impl PacificaClient {
             .expect("Failed to build HTTP client");
 
         // WS disabled until multi-agg-level support is implemented
-        let stream_manager: Option<Arc<StreamManager>> = None;
+        let stream_manager: Option<Arc<WsOrderbookManager>> = None;
 
         Self {
             http,
@@ -54,7 +54,7 @@ impl PacificaClient {
     }
 
     /// Fetch orderbook from REST API with specific aggregation level
-    /// Returns (Orderbook, sequence_number) tuple for StreamManager compatibility
+    /// Returns (Orderbook, sequence_number) tuple for WsOrderbookManager compatibility
     ///
     /// # Arguments
     /// * `symbol` - Exchange symbol
@@ -113,7 +113,7 @@ impl PacificaClient {
     }
 
     /// Fetch orderbook from REST API (backward-compatible wrapper)
-    /// Returns (Orderbook, sequence_number) tuple for StreamManager compatibility
+    /// Returns (Orderbook, sequence_number) tuple for WsOrderbookManager compatibility
     /// Uses default agg_level=10
     async fn fetch_orderbook_rest(&self, symbol: &str, _depth: u32) -> Result<(Orderbook, u64)> {
         self.fetch_orderbook_with_agg_level(symbol, 10).await
@@ -374,7 +374,7 @@ impl IPerps for PacificaClient {
     async fn get_orderbook(&self, symbol: &str, depth: u32) -> Result<MultiResolutionOrderbook> {
         let exchange_symbol = self.parse_symbol(symbol);
 
-        // Try StreamManager first (if enabled)
+        // Try WsOrderbookManager first (if enabled)
         if let Some(stream_manager) = &self.stream_manager {
             // Subscribe (idempotent, auto-starts streaming)
             stream_manager.subscribe(exchange_symbol.clone()).await?;
@@ -399,7 +399,7 @@ impl IPerps for PacificaClient {
                 }
                 Err(e) => {
                     tracing::warn!(
-                        "[Pacifica] StreamManager failed, falling back to REST: {}",
+                        "[Pacifica] WsOrderbookManager failed, falling back to REST: {}",
                         e
                     );
                 }

@@ -7,9 +7,15 @@ pub struct ExtendedWsLevel {
     #[serde(rename = "p")]
     pub price: String,
 
-    /// Quantity
+    /// Quantity — the delta in DELTA messages, already absolute in SNAPSHOT messages
     #[serde(rename = "q")]
     pub quantity: String,
+
+    /// Absolute resulting quantity at this price level after applying the update.
+    /// Only present on DELTA messages; SNAPSHOT messages have no `c` since `q` is
+    /// already absolute there.
+    #[serde(default, rename = "c")]
+    pub cumulative_quantity: Option<String>,
 }
 
 /// Extended WebSocket orderbook data (nested inside message)

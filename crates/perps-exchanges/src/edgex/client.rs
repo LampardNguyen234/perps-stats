@@ -13,8 +13,8 @@ use chrono::{DateTime, Utc};
 use futures::future::join_all;
 use perps_core::{
     execute_with_retry, FundingRate, IPerps, IPerpsStream, Kline, Market, MarketStats,
-    MultiResolutionOrderbook, OpenInterest, OrderbookPushCache, RateLimit, RateLimiter,
-    RetryConfig, Ticker, Trade,
+    MultiResolutionOrderbook, OpenInterest, RateLimit, RateLimiter, RetryConfig, Ticker, Trade,
+    WsOrderbookManager,
 };
 use reqwest::Client;
 use std::collections::HashMap;
@@ -98,7 +98,7 @@ fn shared_state() -> Arc<EdgexSharedState> {
     }))
 }
 
-/// Process-wide push-based orderbook cache (see `perps_core::OrderbookPushCache`), enabled
+/// Process-wide push-based orderbook cache (see `perps_core::WsOrderbookManager`), enabled
 /// only when `DATABASE_URL` is set and `ENABLE_ORDERBOOK_STREAMING=true` - same convention as
 /// every other client that offers this (`binance`, `aster`, `kucoin`, `extended`). `None`
 /// otherwise, in which case `get_orderbook` always uses the plain REST path below.
@@ -109,9 +109,9 @@ fn shared_state() -> Arc<EdgexSharedState> {
 /// would re-enter `SHARED_STATE.get_or_init` before the outer call had returned. Calling this
 /// function only from `get_orderbook` (never during `EdgexClient::new()`/`shared_state()`
 /// construction) means `shared_state()` has always already returned by the time this runs.
-static ORDERBOOK_CACHE: OnceLock<Option<Arc<OrderbookPushCache>>> = OnceLock::new();
+static ORDERBOOK_CACHE: OnceLock<Option<Arc<WsOrderbookManager>>> = OnceLock::new();
 
-fn orderbook_cache() -> Option<Arc<OrderbookPushCache>> {
+fn orderbook_cache() -> Option<Arc<WsOrderbookManager>> {
     ORDERBOOK_CACHE
         .get_or_init(|| {
             let enabled = std::env::var("DATABASE_URL").is_ok()
@@ -124,7 +124,11 @@ fn orderbook_cache() -> Option<Arc<OrderbookPushCache>> {
             }
             tracing::info!("EdgeX: orderbook push-cache enabled (WebSocket-backed)");
             let ws: Arc<dyn IPerpsStream> = Arc::new(super::ws_client::EdgexWsClient::new());
-            Some(Arc::new(OrderbookPushCache::new(ws)))
+            Some(Arc::new(WsOrderbookManager::new(
+                Arc::new(perps_core::FullOrderbookAdapter(ws)),
+                perps_core::WsOrderbookConfig::default(),
+                vec![],
+            )))
         })
         .clone()
 }
@@ -472,6 +476,15 @@ impl Default for EdgexClient {
 
 #[async_trait]
 impl IPerps for EdgexClient {
+    async fn prewarm_streams(&self, symbols: &[String]) -> Result<()> {
+        if let Some(cache) = orderbook_cache() {
+            cache
+                .prewarm(symbols.iter().map(|s| self.normalize_symbol(s)).collect())
+                .await?;
+        }
+        Ok(())
+    }
+
     fn get_name(&self) -> &str {
         "edgex"
     }
@@ -558,7 +571,7 @@ impl IPerps for EdgexClient {
     async fn get_orderbook(&self, symbol: &str, depth: u32) -> Result<MultiResolutionOrderbook> {
         if let Some(cache) = orderbook_cache() {
             let normalized = self.normalize_symbol(symbol);
-            cache.subscribe(&normalized).await;
+            cache.subscribe(normalized.clone()).await?;
             if let Some(orderbook) = cache.get(&normalized, depth).await {
                 return Ok(MultiResolutionOrderbook::from_single(orderbook));
             }

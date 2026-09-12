@@ -27,7 +27,7 @@ pub struct BinanceClient {
     /// Rate limiter for API calls
     rate_limiter: Arc<RateLimiter>,
     /// Optional stream manager for WebSocket-based orderbook streaming
-    stream_manager: Option<Arc<perps_core::StreamManager>>,
+    stream_manager: Option<Arc<perps_core::WsOrderbookManager>>,
 }
 
 impl Clone for BinanceClient {
@@ -91,21 +91,28 @@ impl BinanceClient {
         }
     }
 
-    /// Try to initialize with streaming support using StreamManager
+    /// Try to initialize with streaming support using WsOrderbookManager
     #[cfg(feature = "streaming")]
     async fn try_init_streaming() -> anyhow::Result<Self> {
         use super::ws_client::BinanceWsClient;
-        use perps_core::{StreamConfig, StreamManager};
+        use perps_core::{DeltaOrderbookAdapter, WsOrderbookConfig, WsOrderbookManager};
 
-        tracing::info!("Initializing BinanceClient with StreamManager");
+        tracing::info!("Initializing BinanceClient with WsOrderbookManager");
 
         // Create WebSocket client
         let ws_client = Arc::new(BinanceWsClient::new());
 
-        // Create StreamManager with default config
-        let stream_manager = Arc::new(StreamManager::new(
-            ws_client as Arc<dyn perps_core::OrderbookStreamer>,
-            StreamConfig::default(),
+        // Create WsOrderbookManager with default config
+        let stream_manager = Arc::new(WsOrderbookManager::new(
+            Arc::new(DeltaOrderbookAdapter(
+                ws_client as Arc<dyn perps_core::OrderbookStreamer>,
+            )),
+            WsOrderbookConfig {
+                with_delta: true,
+                staleness_threshold: std::time::Duration::from_secs(1),
+                ..Default::default()
+            },
+            vec![],
         ));
 
         Ok(Self {
@@ -610,6 +617,23 @@ impl BinanceClient {
 
 #[async_trait]
 impl IPerps for BinanceClient {
+    async fn prewarm_streams(&self, symbols: &[String]) -> anyhow::Result<()> {
+        #[cfg(feature = "streaming")]
+        if let Some(manager) = &self.stream_manager {
+            manager
+                .prewarm(
+                    symbols
+                        .iter()
+                        .map(|s| denormalize_symbol(&self.parse_symbol(s)))
+                        .collect(),
+                )
+                .await?;
+        }
+        #[cfg(not(feature = "streaming"))]
+        let _ = symbols;
+        Ok(())
+    }
+
     fn get_name(&self) -> &str {
         "Binance"
     }
@@ -786,7 +810,7 @@ impl IPerps for BinanceClient {
         symbol: &str,
         depth: u32,
     ) -> anyhow::Result<MultiResolutionOrderbook> {
-        // Check if StreamManager is available
+        // Check if WsOrderbookManager is available
         if let Some(ref manager) = self.stream_manager {
             let binance_symbol = denormalize_symbol(&self.parse_symbol(symbol));
 
@@ -808,7 +832,7 @@ impl IPerps for BinanceClient {
             return Ok(MultiResolutionOrderbook::from_single(orderbook));
         }
 
-        // Fallback when StreamManager is not available: direct REST API call
+        // Fallback when WsOrderbookManager is not available: direct REST API call
         let binance_symbol = denormalize_symbol(&self.parse_symbol(symbol));
         let endpoint = format!("/fapi/v1/depth?symbol={}&limit={}", binance_symbol, depth);
         let data: serde_json::Value = self.get(&endpoint).await?;

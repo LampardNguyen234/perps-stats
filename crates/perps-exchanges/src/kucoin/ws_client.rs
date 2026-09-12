@@ -9,6 +9,7 @@ use perps_core::streaming::*;
 use perps_core::types::*;
 use rust_decimal::prelude::FromPrimitive;
 use rust_decimal::Decimal;
+use std::collections::HashMap;
 use std::str::FromStr;
 use tokio::net::TcpStream;
 use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
@@ -50,6 +51,51 @@ impl KuCoinWsClient {
     }
 
     /// Get WebSocket token and endpoint
+    fn parse_level2(
+        &self,
+        response: KuCoinWsResponse,
+        contracts: &HashMap<String, KucoinContract>,
+    ) -> Result<Option<DepthUpdate>> {
+        let Some(symbol) = response
+            .topic
+            .as_deref()
+            .and_then(|topic| topic.strip_prefix("/contractMarket/level2:"))
+        else {
+            return Ok(None);
+        };
+        let Some(contract) = contracts.get(symbol) else {
+            return Ok(None);
+        };
+        let update: KuCoinWsLevel2 = serde_json::from_value(
+            response
+                .data
+                .ok_or_else(|| anyhow!("missing KuCoin level2 data"))?,
+        )?;
+        let parts: Vec<_> = update.change.split(',').collect();
+        if parts.len() != 3 {
+            return Err(anyhow!("invalid KuCoin level2 change"));
+        }
+        let level = OrderbookLevel {
+            price: Decimal::from_str(parts[0])?,
+            quantity: self.convert_lot_to_real_quantity(parts[2].parse()?, contract),
+        };
+        let (bids, asks) = match parts[1] {
+            "buy" => (vec![level], vec![]),
+            "sell" => (vec![], vec![level]),
+            side => return Err(anyhow!("invalid KuCoin level2 side {side}")),
+        };
+        let sequence = u64::try_from(update.sequence)?;
+        Ok(Some(DepthUpdate {
+            symbol: symbol.to_string(),
+            first_update_id: sequence,
+            final_update_id: sequence,
+            previous_id: 0,
+            bids,
+            asks,
+            is_snapshot: false,
+        }))
+    }
+
     async fn get_ws_token(&self) -> Result<(String, String)> {
         let url = format!("{}/api/v1/bullet-public", self.api_base_url);
         let response = reqwest::Client::new().post(&url).send().await?;
@@ -597,44 +643,31 @@ impl IPerpsStream for KuCoinWsClient {
 ///
 /// KuCoin Level 2 Depth Streaming:
 /// - Uses `/contractMarket/level2Depth50:{symbol}` topic
-/// - Provides 50-level orderbook snapshots with sequence numbers
-/// - Updates are full snapshots (not incremental deltas)
-/// - Sequence numbers increment monotonically
-/// - Uses full price update mode (is_incremental_delta = false)
+/// - Multiplexes level2 topics and routes updates to each contract
+/// - Updates carry absolute level quantities and per-symbol sequence numbers
+/// - REST snapshots initialize the delta reconstruction engine
 #[async_trait]
 impl OrderbookStreamer for KuCoinWsClient {
     async fn stream_depth_updates(&self, symbols: Vec<String>) -> Result<DepthUpdateStream> {
-        if symbols.len() != 1 {
-            return Err(anyhow!(
-                "KuCoin only supports streaming one symbol at a time (got {} symbols). Each symbol requires a separate WebSocket connection.",
-                symbols.len()
-            ));
+        let mut contracts = HashMap::new();
+        for symbol in &symbols {
+            let contract = self
+                .contract_cache
+                .get(symbol)
+                .await
+                .ok_or_else(|| anyhow!("Contract info required for symbol: {symbol}"))?;
+            contracts.insert(symbol.clone(), contract);
+        }
+        let mut ws_stream = self.connect().await?;
+        for symbol in &symbols {
+            self.subscribe(
+                &mut ws_stream,
+                format!("/contractMarket/level2:{symbol}"),
+                format!("depth-{symbol}"),
+            )
+            .await?;
         }
 
-        let symbol = &symbols[0];
-        let mut ws_stream = self.connect().await?;
-
-        // Subscribe to level2Depth50 topic
-        let topic = format!("/contractMarket/level2:{}", symbol);
-        self.subscribe(&mut ws_stream, topic.clone(), format!("depth-{}", symbol))
-            .await?;
-
-        tracing::info!("[KuCoin] Subscribed to {} for {}", topic, symbol);
-
-        // Get contract info for quantity conversion
-        let contract = match self.contract_cache.get(symbol).await {
-            Some(c) => c,
-            None => {
-                tracing::warn!(
-                    "[KuCoin] Contract info not found for {}, quantities will not be converted",
-                    symbol
-                );
-                // Return error - we need contract info for proper conversion
-                return Err(anyhow!("Contract info required for symbol: {}", symbol));
-            }
-        };
-
-        let symbol_clone = symbol.clone();
         let client_clone = self.clone();
         let stream = async_stream::stream! {
             // Set up ping interval (30 seconds as per requirement)
@@ -651,79 +684,10 @@ impl OrderbookStreamer for KuCoinWsClient {
                                 if let Ok(response) = serde_json::from_str::<KuCoinWsResponse>(&text) {
                                     match response.msg_type.as_str() {
                                         "message" => {
-                                            // Check if this is level2 data (incremental updates)
-                                            if let Some(topic_str) = &response.topic {
-                                                if topic_str.starts_with("/contractMarket/level2") {
-                                                    if let Some(data) = response.data {
-                                                        match serde_json::from_value::<KuCoinWsLevel2>(data.clone()) {
-                                                            Ok(level2) => {
-                                                                // Parse change: "price,side,size"
-                                                                let parts: Vec<&str> = level2.change.split(',').collect();
-                                                                if parts.len() != 3 {
-                                                                    tracing::warn!("[KuCoin] Invalid change format: {}", level2.change);
-                                                                    continue;
-                                                                }
-
-                                                                let price = parts[0];
-                                                                let side = parts[1]; // "buy" or "sell"
-                                                                let lot_size_str = parts[2];
-
-                                                                // Parse lot size
-                                                                let lot_size = match lot_size_str.parse::<i64>() {
-                                                                    Ok(s) => s,
-                                                                    Err(e) => {
-                                                                        tracing::warn!("[KuCoin] Failed to parse size '{}': {}", lot_size_str, e);
-                                                                        continue;
-                                                                    }
-                                                                };
-
-                                                                // Convert lot to real quantity
-                                                                let real_qty = client_clone.convert_lot_to_real_quantity(lot_size, &contract);
-
-                                                                // Create orderbook level
-                                                                let level = OrderbookLevel {
-                                                                    price: Decimal::from_str(price).unwrap_or(Decimal::ZERO),
-                                                                    quantity: real_qty,
-                                                                };
-
-                                                                // Put in appropriate side (bids for buy, asks for sell)
-                                                                let (bids, asks) = if side == "buy" {
-                                                                    (vec![level], vec![])
-                                                                } else {
-                                                                    (vec![], vec![level])
-                                                                };
-
-                                                                let sequence = level2.sequence as u64;
-
-                                                                tracing::trace!(
-                                                                    "[KuCoin] Level2 update for {} (seq={}, side={}, price={}, qty={})",
-                                                                    symbol_clone,
-                                                                    sequence,
-                                                                    side,
-                                                                    price,
-                                                                    real_qty
-                                                                );
-
-                                                                yield Ok(DepthUpdate {
-                                                                    symbol: symbol_clone.clone(),
-                                                                    first_update_id: sequence,
-                                                                    final_update_id: sequence,
-                                                                    previous_id: 0, // KuCoin uses gap detection mode
-                                                                    bids,
-                                                                    asks,
-                                                                    is_snapshot: false, // KuCoin sends incremental updates
-                                                                });
-                                                            }
-                                                            Err(e) => {
-                                                                tracing::warn!(
-                                                                    "[KuCoin] Failed to parse level2 data: {}. Raw data: {}",
-                                                                    e,
-                                                                    serde_json::to_string(&data).unwrap_or_else(|_| "failed to serialize".to_string())
-                                                                );
-                                                            }
-                                                        }
-                                                    }
-                                                }
+                                            match client_clone.parse_level2(response, &contracts) {
+                                                Ok(Some(update)) => yield Ok(update),
+                                                Ok(None) => {},
+                                                Err(error) => { yield Err(error); break; }
                                             }
                                         }
                                         "welcome" => {
@@ -769,7 +733,7 @@ impl OrderbookStreamer for KuCoinWsClient {
                     // Send periodic ping messages (every 30 seconds)
                     _ = ping_interval.tick() => {
                         ping_counter += 1;
-                        let ping_id = format!("ping-{}-{}", symbol_clone, ping_counter);
+                        let ping_id = format!("ping-{ping_counter}");
                         let ping_msg = KuCoinWsPingRequest {
                             id: ping_id.clone(),
                             msg_type: "ping".to_string(),
@@ -777,7 +741,7 @@ impl OrderbookStreamer for KuCoinWsClient {
 
                         match serde_json::to_string(&ping_msg) {
                             Ok(ping_json) => {
-                                tracing::debug!("[KuCoin] Sending ping {}/{}: {}", symbol_clone, ping_counter, ping_id);
+                                tracing::trace!(%ping_id, "KuCoin sending ping");
                                 if let Err(e) = ws_stream.send(Message::Text(ping_json)).await {
                                     tracing::error!("[KuCoin] Failed to send ping: {}", e);
                                     yield Err(anyhow!("Failed to send ping: {}", e));
@@ -818,5 +782,84 @@ impl OrderbookStreamer for KuCoinWsClient {
             reconnect_delay: std::time::Duration::from_secs(2),
             max_reconnect_attempts: 10,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rust_decimal_macros::dec;
+
+    fn contract(symbol: &str, multiplier: f64) -> KucoinContract {
+        serde_json::from_value(serde_json::json!({
+            "symbol": symbol, "baseCurrency": "BTC", "quoteCurrency": "USDT",
+            "settleCurrency": "USDT", "tickSize": 0.1, "lotSize": 1,
+            "maxOrderQty": 10000, "maxLeverage": 100, "initialMargin": 0.01,
+            "multiplier": multiplier, "maintainMargin": 0.005,
+            "makerFeeRate": 0.0002, "takerFeeRate": 0.0006, "status": "Open"
+        }))
+        .unwrap()
+    }
+    fn response(symbol: &str, sequence: i64, change: &str) -> KuCoinWsResponse {
+        serde_json::from_value(serde_json::json!({
+            "type": "message", "topic": format!("/contractMarket/level2:{symbol}"),
+            "data": {"sequence": sequence, "change": change, "timestamp": 0}
+        }))
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn interleaved_topics_use_their_own_contract_and_book() {
+        let client = KuCoinWsClient::new();
+        let contracts: HashMap<String, KucoinContract> = HashMap::from([
+            ("XBTUSDTM".into(), contract("XBTUSDTM", 0.001)),
+            ("ETHUSDTM".into(), contract("ETHUSDTM", 0.01)),
+        ]);
+        let manager = perps_core::OrderbookManager::new(
+            "kucoin".into(),
+            perps_core::OrderbookManagerConfig::for_kucoin(),
+        );
+        for symbol in contracts.keys() {
+            manager.initialize_empty_orderbook(symbol.clone()).await;
+            manager
+                .apply_snapshot(symbol, vec![], vec![], 1)
+                .await
+                .unwrap();
+        }
+        for message in [
+            response("XBTUSDTM", 2, "100,buy,2"),
+            response("ETHUSDTM", 2, "200,buy,3"),
+            response("XBTUSDTM", 3, "101,sell,4"),
+            response("ETHUSDTM", 3, "201,sell,5"),
+        ] {
+            let update = client.parse_level2(message, &contracts).unwrap().unwrap();
+            manager
+                .apply_update(
+                    &update.symbol,
+                    update.first_update_id,
+                    update.final_update_id,
+                    update.previous_id,
+                    update.bids,
+                    update.asks,
+                    false,
+                )
+                .await
+                .unwrap();
+        }
+        let btc = manager.get_orderbook("XBTUSDTM", 0).await.unwrap();
+        let eth = manager.get_orderbook("ETHUSDTM", 0).await.unwrap();
+        assert_eq!(btc.bids[0].quantity, dec!(0.002));
+        assert_eq!(btc.asks[0].quantity, dec!(0.004));
+        assert_eq!(eth.bids[0].quantity, dec!(0.03));
+        assert_eq!(eth.asks[0].quantity, dec!(0.05));
+        assert_eq!(btc.bids[0].price, dec!(100));
+        assert_eq!(eth.bids[0].price, dec!(200));
+        assert!(client
+            .parse_level2(response("UNKNOWN", 1, "100,buy,1"), &contracts)
+            .unwrap()
+            .is_none());
+        assert!(client
+            .parse_level2(response("XBTUSDTM", 4, "bad,buy,1"), &contracts)
+            .is_err());
     }
 }

@@ -52,6 +52,14 @@ struct OrderbookData {
 
     /// Maximum buffer size (configured per exchange)
     buffer_size: usize,
+
+    /// Set when the last applied update left best_bid >= best_ask (a stale price level
+    /// that never received its removal/update message — see apply_delta_internal).
+    /// Cleared on the next clean snapshot. Callers use this to force a REST resync
+    /// instead of waiting on Extended's periodic snapshot, since exchanges with no
+    /// gap/sequence signal (previous_id always 0) can't detect a dropped message any
+    /// other way.
+    crossed: bool,
 }
 
 /// Represents a local orderbook that maintains state and applies delta updates
@@ -79,6 +87,7 @@ impl LocalOrderbook {
             timestamp: Utc::now(),
             update_buffer: VecDeque::with_capacity(buffer_size),
             buffer_size,
+            crossed: false,
         };
 
         Self {
@@ -119,6 +128,7 @@ impl LocalOrderbook {
             timestamp: Utc::now(),
             update_buffer: VecDeque::with_capacity(buffer_size),
             buffer_size,
+            crossed: false,
         };
 
         Self {
@@ -162,6 +172,7 @@ impl LocalOrderbook {
         // Clear current state
         data.bids.clear();
         data.asks.clear();
+        data.crossed = false;
 
         // Apply snapshot
         for level in bids {
@@ -566,7 +577,11 @@ impl LocalOrderbook {
             );
         }
 
-        if new_best_ask < new_best_bid {
+        // Reflects whether the book is crossed *right now*, not "was ever crossed" —
+        // cleared here the moment a later update resolves it, same as it's set here the
+        // moment one appears.
+        data.crossed = new_best_ask < new_best_bid;
+        if data.crossed {
             let top_bids: Vec<String> = data
                 .bids
                 .iter()
@@ -658,6 +673,12 @@ impl LocalOrderbook {
     pub fn get_timestamp(&self) -> DateTime<Utc> {
         let data = self.data.read();
         data.timestamp
+    }
+
+    /// True if the last applied update left best_bid >= best_ask (see `crossed` on
+    /// `OrderbookData`).
+    pub fn is_crossed(&self) -> bool {
+        self.data.read().crossed
     }
 }
 
@@ -955,6 +976,18 @@ impl OrderbookManager {
         }
     }
 
+    /// True if the last applied update left the book crossed (best_bid >= best_ask) —
+    /// a stale price level that never received its removal/update message. Callers use
+    /// this to force a REST resync instead of waiting on the exchange's own periodic
+    /// snapshot cadence.
+    pub async fn is_crossed(&self, symbol: &str) -> bool {
+        let orderbook_arc = {
+            let orderbooks = self.orderbooks.read().await;
+            orderbooks.get(symbol).cloned()
+        };
+        orderbook_arc.map_or(false, |orderbook| orderbook.is_crossed())
+    }
+
     /// Get health status
     pub async fn health(&self) -> OrderbookManagerHealth {
         let orderbooks = self.orderbooks.read().await;
@@ -1020,17 +1053,17 @@ mod tests {
             100, // buffer_size
         );
 
-        assert_eq!(orderbook.exchange, "binance");
-        assert_eq!(orderbook.symbol, "BTC");
-        assert_eq!(orderbook.bids.len(), 2);
-        assert_eq!(orderbook.asks.len(), 2);
-        assert_eq!(orderbook.last_update_id, 12345);
-        assert_eq!(orderbook.buffer_size, 100);
+        assert_eq!(orderbook.data.read().exchange, "binance");
+        assert_eq!(orderbook.data.read().symbol, "BTC");
+        assert_eq!(orderbook.data.read().bids.len(), 2);
+        assert_eq!(orderbook.data.read().asks.len(), 2);
+        assert_eq!(orderbook.data.read().last_update_id, 12345);
+        assert_eq!(orderbook.data.read().buffer_size, 100);
     }
 
     #[test]
     fn test_apply_delta_update() {
-        let mut orderbook = LocalOrderbook::from_snapshot(
+        let orderbook = LocalOrderbook::from_snapshot(
             "binance".to_string(),
             "BTC".to_string(),
             vec![OrderbookLevel {
@@ -1063,14 +1096,14 @@ mod tests {
 
         assert!(result.is_ok());
         assert!(result.unwrap());
-        assert_eq!(orderbook.last_update_id, 12346);
-        assert_eq!(orderbook.bids.get(&dec!(100.0)), Some(&dec!(2.0)));
-        assert_eq!(orderbook.asks.get(&dec!(102.0)), Some(&dec!(1.0)));
+        assert_eq!(orderbook.data.read().last_update_id, 12346);
+        assert_eq!(orderbook.data.read().bids.get(&dec!(100.0)), Some(&dec!(2.0)));
+        assert_eq!(orderbook.data.read().asks.get(&dec!(102.0)), Some(&dec!(1.0)));
     }
 
     #[test]
     fn test_apply_delta_removes_zero_quantity() {
-        let mut orderbook = LocalOrderbook::from_snapshot(
+        let orderbook = LocalOrderbook::from_snapshot(
             "binance".to_string(),
             "BTC".to_string(),
             vec![OrderbookLevel {
@@ -1096,12 +1129,12 @@ mod tests {
         );
 
         assert!(result.is_ok());
-        assert!(orderbook.bids.is_empty());
+        assert!(orderbook.data.read().bids.is_empty());
     }
 
     #[test]
     fn test_apply_delta_incremental_arithmetic() {
-        let mut orderbook = LocalOrderbook::from_snapshot(
+        let orderbook = LocalOrderbook::from_snapshot(
             "binance".to_string(),
             "BTC".to_string(),
             vec![OrderbookLevel {
@@ -1127,7 +1160,7 @@ mod tests {
         );
 
         assert!(result.is_ok());
-        assert_eq!(orderbook.bids.get(&dec!(100.0)), Some(&dec!(0.5)));
+        assert_eq!(orderbook.data.read().bids.get(&dec!(100.0)), Some(&dec!(0.5)));
 
         // Apply delta that removes level via incremental reduction
         let result2 = orderbook.apply_delta(
@@ -1143,12 +1176,12 @@ mod tests {
         );
 
         assert!(result2.is_ok());
-        assert!(orderbook.bids.is_empty());
+        assert!(orderbook.data.read().bids.is_empty());
     }
 
     #[test]
     fn test_apply_delta_gap_without_previous_id_in_incremental_mode() {
-        let mut orderbook = LocalOrderbook::from_snapshot(
+        let orderbook = LocalOrderbook::from_snapshot(
             "binance".to_string(),
             "BTC".to_string(),
             vec![],
@@ -1171,12 +1204,12 @@ mod tests {
         // Without previous_id, gaps are not detected - update is applied
         assert!(result.is_ok());
         assert!(result.unwrap()); // Should be applied (no gap detection)
-        assert_eq!(orderbook.last_update_id, 12350); // Updated
+        assert_eq!(orderbook.data.read().last_update_id, 12350); // Updated
     }
 
     #[test]
     fn test_apply_delta_gap_without_previous_id_in_full_price_mode() {
-        let mut orderbook = LocalOrderbook::from_snapshot(
+        let orderbook = LocalOrderbook::from_snapshot(
             "binance".to_string(),
             "BTC".to_string(),
             vec![],
@@ -1199,12 +1232,12 @@ mod tests {
         // Without previous_id, gaps are not detected - update is applied
         assert!(result.is_ok());
         assert!(result.unwrap()); // Should be applied (no gap detection)
-        assert_eq!(orderbook.last_update_id, 12350); // Updated
+        assert_eq!(orderbook.data.read().last_update_id, 12350); // Updated
     }
 
     #[test]
     fn test_apply_delta_drops_stale() {
-        let mut orderbook = LocalOrderbook::from_snapshot(
+        let orderbook = LocalOrderbook::from_snapshot(
             "binance".to_string(),
             "BTC".to_string(),
             vec![],
@@ -1218,12 +1251,12 @@ mod tests {
 
         assert!(result.is_ok());
         assert!(!result.unwrap()); // Should be dropped
-        assert_eq!(orderbook.last_update_id, 12345); // Unchanged
+        assert_eq!(orderbook.data.read().last_update_id, 12345); // Unchanged
     }
 
     #[test]
     fn test_apply_delta_previous_id_validation() {
-        let mut orderbook = LocalOrderbook::from_snapshot(
+        let orderbook = LocalOrderbook::from_snapshot(
             "binance".to_string(),
             "BTC".to_string(),
             vec![],
@@ -1243,7 +1276,7 @@ mod tests {
         );
 
         assert!(result.is_ok());
-        assert_eq!(orderbook.last_update_id, 12346);
+        assert_eq!(orderbook.data.read().last_update_id, 12346);
 
         // Invalid previous_id (doesn't match last_update_id)
         let result2 = orderbook.apply_delta(
@@ -1256,13 +1289,13 @@ mod tests {
         );
 
         assert!(result2.is_err()); // Should error on previous_id mismatch
-        assert_eq!(orderbook.last_update_id, 12346); // Unchanged
+        assert_eq!(orderbook.data.read().last_update_id, 12346); // Unchanged
     }
 
     #[test]
     fn test_apply_snapshot_with_straddling_event() {
         // Test Binance Step 5: "The first processed event should have U <= lastUpdateId AND u >= lastUpdateId"
-        let mut orderbook =
+        let orderbook =
             LocalOrderbook::new_empty("binance".to_string(), "BTC".to_string(), 100);
 
         // Simulate buffering before snapshot
@@ -1326,32 +1359,32 @@ mod tests {
 
         // Verify final state contains updates from both replayed events
         assert_eq!(
-            orderbook.bids.get(&dec!(101.0)),
+            orderbook.data.read().bids.get(&dec!(101.0)),
             Some(&dec!(2.0)),
             "Straddling event should be applied"
         );
         assert_eq!(
-            orderbook.bids.get(&dec!(102.0)),
+            orderbook.data.read().bids.get(&dec!(102.0)),
             Some(&dec!(3.0)),
             "After event should be applied"
         );
 
         // Event entirely before snapshot should not be in final state (was skipped)
         assert_eq!(
-            orderbook.bids.get(&dec!(100.0)),
+            orderbook.data.read().bids.get(&dec!(100.0)),
             None,
             "Pre-snapshot event should be skipped"
         );
 
         // Snapshot data should be present
         assert_eq!(
-            orderbook.bids.get(&dec!(99.0)),
+            orderbook.data.read().bids.get(&dec!(99.0)),
             Some(&dec!(5.0)),
             "Snapshot data should be present"
         );
 
         // Final last_update_id should be from the last replayed event
-        assert_eq!(orderbook.last_update_id, 1005);
+        assert_eq!(orderbook.data.read().last_update_id, 1005);
     }
 
     #[test]

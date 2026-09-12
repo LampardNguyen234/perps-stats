@@ -15,7 +15,8 @@ use tokio::sync::RwLock;
 
 use super::conversions::*;
 use super::types::*;
-use super::ws_client::RisexOrderbookManager;
+use super::ws_client::RisexWsClient;
+use perps_core::{FullOrderbookAdapter, WsOrderbookConfig, WsOrderbookManager};
 
 const BASE_URL: &str = "https://api.rise.trade";
 /// Responses reused for this long before a fresh fetch is made.
@@ -32,7 +33,7 @@ const ORDERBOOK_MAX_DEPTH: u32 = 250;
 /// a separate `GET /v1/orderbook` per symbol, also cached at the same TTL.
 ///
 /// When `ENABLE_ORDERBOOK_STREAMING=true` (and `DATABASE_URL` is set), `get_orderbook`
-/// uses a persistent WebSocket connection via `RisexOrderbookManager` instead of REST.
+/// uses a persistent WebSocket connection via `WsOrderbookManager` instead of REST.
 ///
 /// Rate limit: conservative 20 req/s (undocumented by API).
 #[derive(Clone)]
@@ -48,7 +49,7 @@ pub struct RiseXClient {
     rate_limiter: Arc<RateLimiter>,
     /// Present when ENABLE_ORDERBOOK_STREAMING=true. Shares market_id_cache Arc so it
     /// sees populated ids as soon as ensure_cache_initialized() runs.
-    orderbook_manager: Option<Arc<RisexOrderbookManager>>,
+    orderbook_manager: Option<Arc<WsOrderbookManager>>,
 }
 
 impl RiseXClient {
@@ -60,8 +61,17 @@ impl RiseXClient {
                 .unwrap_or(false)
         {
             tracing::info!("RiseXClient: WebSocket orderbook streaming enabled");
-            Some(Arc::new(RisexOrderbookManager::new(
-                market_id_cache.clone(),
+            Some(Arc::new(WsOrderbookManager::new(
+                Arc::new(FullOrderbookAdapter(Arc::new(RisexWsClient::new(
+                    market_id_cache.clone(),
+                )))),
+                WsOrderbookConfig {
+                    staleness_threshold: Duration::from_secs(30),
+                    wait_timeout: Duration::from_secs(30),
+                    reconnect_delay: Duration::from_secs(2),
+                    ..Default::default()
+                },
+                vec![],
             )))
         } else {
             None
@@ -242,6 +252,16 @@ impl Default for RiseXClient {
 
 #[async_trait]
 impl IPerps for RiseXClient {
+    async fn prewarm_streams(&self, symbols: &[String]) -> Result<()> {
+        if let Some(manager) = &self.orderbook_manager {
+            self.ensure_cache_initialized().await?;
+            manager
+                .prewarm(symbols.iter().map(|s| self.normalize_symbol(s)).collect())
+                .await?;
+        }
+        Ok(())
+    }
+
     fn get_name(&self) -> &str {
         "risex"
     }
@@ -330,17 +350,25 @@ impl IPerps for RiseXClient {
 
     async fn get_orderbook(&self, symbol: &str, depth: u32) -> Result<MultiResolutionOrderbook> {
         let sym = self.normalize_symbol(symbol);
+        let depth = depth.clamp(1, ORDERBOOK_MAX_DEPTH);
         // Use WS manager when streaming is enabled; otherwise fall back to REST.
         if let Some(mgr) = &self.orderbook_manager {
             self.ensure_cache_initialized().await?;
-            return mgr
-                .get_orderbook(&sym, depth.clamp(1, ORDERBOOK_MAX_DEPTH) as usize)
-                .await;
+            let client = self.clone();
+            let fallback_symbol = sym.clone();
+            let ob = mgr
+                .get_orderbook(&sym, depth, || async move {
+                    let market_id = client.market_id_for(&fallback_symbol).await?;
+                    let ob_resp = client.fetch_orderbook(market_id).await?;
+                    let ob = to_orderbook(&ob_resp, &fallback_symbol, depth as usize);
+                    Ok((ob, 0))
+                })
+                .await?;
+            return Ok(MultiResolutionOrderbook::from_single(ob));
         }
         let market_id = self.market_id_for(&sym).await?;
-        let depth = depth.clamp(1, ORDERBOOK_MAX_DEPTH) as usize;
         let ob_resp = self.fetch_orderbook(market_id).await?;
-        let ob = to_orderbook(&ob_resp, &sym, depth);
+        let ob = to_orderbook(&ob_resp, &sym, depth as usize);
         Ok(MultiResolutionOrderbook::from_single(ob))
     }
 

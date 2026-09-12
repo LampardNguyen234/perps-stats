@@ -15,7 +15,8 @@ use tracing;
 
 use super::conversions;
 use super::models::*;
-use super::ws_client::LighterOrderbookManager;
+use super::ws_client::LighterWsClient;
+use perps_core::{FullOrderbookAdapter, WsOrderbookConfig, WsOrderbookManager};
 
 const ORDER_BOOK_DETAILS_CACHE_TTL: Duration = Duration::from_secs(10);
 
@@ -38,7 +39,7 @@ pub struct LighterClient {
     order_book_details_cache: Arc<Mutex<Option<OrderBookDetailsCache>>>,
     /// Present when ENABLE_ORDERBOOK_STREAMING=true.  get_orderbook delegates
     /// to this instead of making a REST call.
-    orderbook_manager: Option<Arc<LighterOrderbookManager>>,
+    orderbook_manager: Option<Arc<WsOrderbookManager>>,
 }
 
 impl LighterClient {
@@ -51,9 +52,13 @@ impl LighterClient {
                 .to_lowercase()
                 == "true"
         {
-            Some(Arc::new(LighterOrderbookManager::new(
-                market_id_cache.clone(),
-                BASE_URL.to_string(),
+            Some(Arc::new(WsOrderbookManager::new(
+                Arc::new(FullOrderbookAdapter(Arc::new(LighterWsClient::new()))),
+                WsOrderbookConfig {
+                    reconnect_delay: Duration::from_secs(2),
+                    ..Default::default()
+                },
+                vec![],
             )))
         } else {
             None
@@ -87,7 +92,8 @@ impl LighterClient {
 
         let details = response.data.order_book_details;
         // Cache exact API names: never run user-input aliases over metadata names.
-        *self.market_id_cache.write().await = details.iter()
+        *self.market_id_cache.write().await = details
+            .iter()
             .filter(|d| d.is_collectable())
             .map(|d| (d.symbol.clone(), d.market_id))
             .collect();
@@ -147,7 +153,8 @@ impl LighterClient {
 
     async fn find_orderbook_detail(&self, symbol: &str) -> Result<OrderBookDetail> {
         let sym = self.parse_symbol(symbol);
-        self.get_order_book_details().await?
+        self.get_order_book_details()
+            .await?
             .into_iter()
             .find(|d| d.symbol == sym && d.market_type == "perp")
             .ok_or_else(|| anyhow!("Symbol {} not found in Lighter perpetual markets", symbol))
@@ -161,7 +168,6 @@ impl LighterClient {
         }
         Ok(detail)
     }
-
 }
 
 impl Default for LighterClient {
@@ -172,6 +178,21 @@ impl Default for LighterClient {
 
 #[async_trait]
 impl IPerps for LighterClient {
+    async fn prewarm_streams(&self, symbols: &[String]) -> Result<()> {
+        if let Some(manager) = &self.orderbook_manager {
+            self.get_order_book_details().await?;
+            manager
+                .prewarm(
+                    symbols
+                        .iter()
+                        .map(|s| self.normalize_symbol(&self.parse_symbol(s)))
+                        .collect(),
+                )
+                .await?;
+        }
+        Ok(())
+    }
+
     fn get_name(&self) -> &str {
         "lighter"
     }
@@ -185,7 +206,8 @@ impl IPerps for LighterClient {
     }
 
     async fn get_markets(&self) -> Result<Vec<Market>> {
-        self.get_order_book_details().await?
+        self.get_order_book_details()
+            .await?
             .iter()
             .filter(|d| d.is_collectable())
             .map(|d| {
@@ -246,13 +268,34 @@ impl IPerps for LighterClient {
         let detail = self.fetch_orderbook_detail(&symbol).await?;
 
         if let Some(mgr) = &self.orderbook_manager {
-            let mut mob = mgr.get_orderbook(&symbol, depth).await?;
+            let normalized = self.normalize_symbol(&symbol);
+            let mut ob = mgr
+                .get_orderbook(&normalized, depth, || async {
+                    let capped_depth = depth.min(100);
+                    let market_id = detail.market_id;
+                    let url = format!(
+                        "{}/orderBookOrders?market_id={}&limit={}",
+                        self.base_url, market_id, capped_depth
+                    );
+                    let response: LighterResponse<OrderBookOrdersResponse> =
+                        self.get(&url).await?;
+                    if response.code != 200 {
+                        return Err(anyhow!("API error: code {}", response.code));
+                    }
+                    let orderbook = conversions::to_orderbook(
+                        &normalized,
+                        &response.data.bids,
+                        &response.data.asks,
+                    )?;
+                    Ok((orderbook, 0))
+                })
+                .await?;
             // symbol passed to manager is exchange-level (post parse_symbol, e.g. "WTI").
             // Normalize back to global symbol ("CL") so stored data is consistent with REST path.
-            let global = self.normalize_symbol(&symbol);
-            mob.symbol = global.clone();
-            for ob in &mut mob.orderbooks {
-                ob.symbol = global.clone();
+            ob.symbol = normalized.clone();
+            let mut mob = MultiResolutionOrderbook::from_single(ob);
+            for level in &mut mob.orderbooks {
+                level.symbol = normalized.clone();
             }
             return Ok(mob);
         }
@@ -499,7 +542,10 @@ impl IPerps for LighterClient {
     async fn is_supported(&self, symbol: &str) -> Result<bool> {
         let sym = self.parse_symbol(symbol);
         let details = self.get_order_book_details().await?;
-        match details.iter().find(|d| d.symbol == sym && d.market_type == "perp") {
+        match details
+            .iter()
+            .find(|d| d.symbol == sym && d.market_type == "perp")
+        {
             Some(detail) => {
                 if let Some(reason) = detail.exclusion_reason() {
                     tracing::info!("Lighter market {} excluded: {}", symbol, reason);

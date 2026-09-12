@@ -57,9 +57,10 @@ pub fn global_symbol_from_risex_symbol(symbol: &str) -> String {
     crate::symbol_aliases::unresolve_alias("risex", &base).to_string()
 }
 
-/// User/global symbol → RISEx symbol. "BTC" → "BTC/USDC"; "BTC/USDC" → "BTC/USDC".
+/// User/global symbol → RISEx symbol. "BTC" → "BTC/USDC"; "BRENTOIL" → "BZ/USDC" (aliased);
+/// "BTC/USDC" → "BTC/USDC" (idempotent).
 pub fn risex_symbol_from_input(symbol: &str) -> String {
-    let upper = symbol.to_uppercase();
+    let upper = crate::symbol_aliases::resolve_alias("risex", symbol).to_uppercase();
     if upper.contains('/') {
         upper
     } else {

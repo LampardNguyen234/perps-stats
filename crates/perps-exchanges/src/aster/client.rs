@@ -47,7 +47,7 @@ pub struct AsterClient {
     /// Cached book ticker data
     book_ticker_cache: Arc<RwLock<Option<BookTickerCache>>>,
     /// Optional stream manager for WebSocket orderbook streaming
-    stream_manager: Option<Arc<perps_core::StreamManager>>,
+    stream_manager: Option<Arc<perps_core::WsOrderbookManager>>,
 }
 
 impl AsterClient {
@@ -88,21 +88,28 @@ impl AsterClient {
         }
     }
 
-    /// Try to initialize with streaming support using StreamManager
+    /// Try to initialize with streaming support using WsOrderbookManager
     #[cfg(feature = "streaming")]
     async fn try_init_streaming() -> Result<Self> {
         use crate::aster::ws_client::AsterWsClient;
-        use perps_core::{StreamConfig, StreamManager};
+        use perps_core::{DeltaOrderbookAdapter, WsOrderbookConfig, WsOrderbookManager};
 
-        tracing::info!("Initializing AsterClient with StreamManager");
+        tracing::info!("Initializing AsterClient with WsOrderbookManager");
 
         // Create AsterWsClient as the OrderbookStreamer implementation
         let ws_client = Arc::new(AsterWsClient::new());
 
-        // Create StreamManager with default config
-        let stream_manager = Arc::new(StreamManager::new(
-            ws_client as Arc<dyn perps_core::streaming::OrderbookStreamer>,
-            StreamConfig::default(),
+        // Create WsOrderbookManager with default config
+        let stream_manager = Arc::new(WsOrderbookManager::new(
+            Arc::new(DeltaOrderbookAdapter(
+                ws_client as Arc<dyn perps_core::streaming::OrderbookStreamer>,
+            )),
+            WsOrderbookConfig {
+                with_delta: true,
+                staleness_threshold: std::time::Duration::from_secs(1),
+                ..Default::default()
+            },
+            vec![],
         ));
 
         Ok(Self {
@@ -216,6 +223,18 @@ impl AsterClient {
 
 #[async_trait]
 impl IPerps for AsterClient {
+    async fn prewarm_streams(&self, symbols: &[String]) -> anyhow::Result<()> {
+        #[cfg(feature = "streaming")]
+        if let Some(manager) = &self.stream_manager {
+            manager
+                .prewarm(symbols.iter().map(|s| self.parse_symbol(s)).collect())
+                .await?;
+        }
+        #[cfg(not(feature = "streaming"))]
+        let _ = symbols;
+        Ok(())
+    }
+
     fn get_name(&self) -> &str {
         "aster"
     }
@@ -407,13 +426,13 @@ impl IPerps for AsterClient {
 
         let normalized = self.normalize_symbol(symbol);
 
-        // Check if StreamManager is available
+        // Check if WsOrderbookManager is available
         if let Some(ref manager) = self.stream_manager {
             // Subscribe to symbol (idempotent - no-op if already subscribed)
             manager.subscribe(parsed_symbol.clone()).await?;
 
             // Get orderbook from cache or REST fallback
-            // StreamManager handles all complexity: caching, staleness checks, WebSocket streaming
+            // WsOrderbookManager handles all complexity: caching, staleness checks, WebSocket streaming
             let client_clone = self.clone();
             let symbol_clone = parsed_symbol.clone();
             let mut orderbook = manager
@@ -429,7 +448,7 @@ impl IPerps for AsterClient {
             return Ok(MultiResolutionOrderbook::from_single(orderbook));
         }
 
-        // Fallback when StreamManager is not available: direct REST API call
+        // Fallback when WsOrderbookManager is not available: direct REST API call
         let mut orderbook = self.fetch_orderbook_rest(&parsed_symbol, depth).await?;
         orderbook.symbol = normalized;
         Ok(MultiResolutionOrderbook::from_single(orderbook))
@@ -673,7 +692,7 @@ impl IPerps for AsterClient {
 
 impl AsterClient {
     /// Fetch orderbook snapshot with lastUpdateId from REST API
-    /// Returns (Orderbook, lastUpdateId) for StreamManager initialization
+    /// Returns (Orderbook, lastUpdateId) for WsOrderbookManager initialization
     async fn fetch_orderbook_snapshot_with_update_id(
         &self,
         symbol: &str,
@@ -722,7 +741,7 @@ impl AsterClient {
         ))
     }
 
-    /// Fetch orderbook directly from REST API (used as fallback when StreamManager is not available)
+    /// Fetch orderbook directly from REST API (used as fallback when WsOrderbookManager is not available)
     async fn fetch_orderbook_rest(&self, symbol: &str, depth: u32) -> Result<Orderbook> {
         let limit = depth.min(1000); // Aster max depth is 1000
         let orderbook: Depth = self

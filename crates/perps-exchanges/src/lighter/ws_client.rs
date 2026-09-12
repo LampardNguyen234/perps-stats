@@ -1,6 +1,6 @@
-use super::ws_types::*;
 use super::models::{LighterResponse, OrderBookDetailsResponse};
 use super::symbols::{to_exchange_symbol, to_global_symbol};
+use super::ws_types::*;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use chrono::{TimeZone, Utc};
@@ -9,29 +9,12 @@ use perps_core::streaming::*;
 use perps_core::types::*;
 use rust_decimal::prelude::FromPrimitive;
 use rust_decimal::Decimal;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::str::FromStr;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
 use tokio::net::TcpStream;
-use tokio::sync::{mpsc, Mutex, Notify, RwLock};
 use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
 
 const WS_BASE_URL: &str = "wss://mainnet.zklighter.elliot.ai/stream";
-const SNAPSHOT_TTL: Duration = Duration::from_secs(5);
-
-fn clip_orderbook(mut ob: Orderbook, depth: u32) -> Orderbook {
-    let d = depth as usize;
-    ob.bids.truncate(d);
-    ob.asks.truncate(d);
-    ob
-}
-
-struct SnapshotEntry {
-    orderbook: Orderbook,
-    captured_at: Instant,
-}
-
 /// Per-market local L2 state maintained by the WS background task.
 ///
 /// First message for a market = full snapshot → replaces maps.
@@ -120,314 +103,6 @@ impl MarketState {
     }
 }
 
-/// Persistent WS-backed orderbook manager for Lighter.
-///
-/// Maintains a reconnecting WS connection, applies incremental deltas onto
-/// per-market BTreeMaps, and caches the resulting Orderbook for pull-based
-/// `get_orderbook` calls.  Wired into `LighterClient::get_orderbook` when
-/// `ENABLE_ORDERBOOK_STREAMING=true`.
-pub struct LighterOrderbookManager {
-    snapshots: Arc<RwLock<HashMap<String, SnapshotEntry>>>,
-    notifiers: Arc<Mutex<HashMap<String, Arc<Notify>>>>,
-    subscribed: Arc<Mutex<HashSet<String>>>,
-    subscribe_tx: mpsc::Sender<Vec<String>>,
-}
-
-impl LighterOrderbookManager {
-    pub fn new(market_id_cache: Arc<RwLock<HashMap<String, u64>>>, base_url: String) -> Self {
-        let snapshots: Arc<RwLock<HashMap<String, SnapshotEntry>>> =
-            Arc::new(RwLock::new(HashMap::new()));
-        let notifiers: Arc<Mutex<HashMap<String, Arc<Notify>>>> =
-            Arc::new(Mutex::new(HashMap::new()));
-        let subscribed: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
-        let (subscribe_tx, subscribe_rx) = mpsc::channel::<Vec<String>>(64);
-
-        tokio::spawn(run_background_task(
-            snapshots.clone(),
-            notifiers.clone(),
-            subscribed.clone(),
-            subscribe_rx,
-            market_id_cache,
-            base_url,
-        ));
-
-        Self {
-            snapshots,
-            notifiers,
-            subscribed,
-            subscribe_tx,
-        }
-    }
-
-    pub async fn get_orderbook(
-        &self,
-        symbol: &str,
-        depth: u32,
-    ) -> Result<MultiResolutionOrderbook> {
-        let notifier = {
-            let mut g = self.notifiers.lock().await;
-            g.entry(symbol.to_string())
-                .or_insert_with(|| Arc::new(Notify::new()))
-                .clone()
-        };
-
-        let newly = { self.subscribed.lock().await.insert(symbol.to_string()) };
-        if newly {
-            let _ = self.subscribe_tx.send(vec![symbol.to_string()]).await;
-        }
-
-        {
-            let snap = self.snapshots.read().await;
-            if let Some(e) = snap.get(symbol) {
-                if e.captured_at.elapsed() < SNAPSHOT_TTL {
-                    return Ok(MultiResolutionOrderbook::from_single(clip_orderbook(
-                        e.orderbook.clone(),
-                        depth,
-                    )));
-                }
-            }
-        }
-
-        tokio::time::timeout(Duration::from_secs(10), notifier.notified())
-            .await
-            .map_err(|_| anyhow!("Lighter orderbook timeout for {}", symbol))?;
-
-        let snap = self.snapshots.read().await;
-        let e = snap
-            .get(symbol)
-            .ok_or_else(|| anyhow!("No Lighter snapshot for {} after notify", symbol))?;
-        Ok(MultiResolutionOrderbook::from_single(clip_orderbook(
-            e.orderbook.clone(),
-            depth,
-        )))
-    }
-}
-
-/// Fetch market_id → symbol reverse map.  Uses the shared cache; falls back to
-/// a one-shot REST call when the cache is empty (e.g. on first connect before
-/// any REST call has populated it).
-async fn resolve_id_to_symbol(
-    cache: &Arc<RwLock<HashMap<String, u64>>>,
-    base_url: &str,
-) -> HashMap<u64, String> {
-    {
-        let g = cache.read().await;
-        if !g.is_empty() {
-            return g.iter().map(|(s, &id)| (id, s.clone())).collect();
-        }
-    }
-    let url = format!("{}/orderBookDetails", base_url);
-    match reqwest::get(&url).await {
-        Ok(resp) => {
-            match resp.json::<LighterResponse<OrderBookDetailsResponse>>().await {
-                Ok(w) if w.code == 200 => {
-                    let mut g = cache.write().await;
-                    *g = w.data.order_book_details.into_iter()
-                        .filter(|d| d.is_collectable())
-                        .map(|d| (d.symbol, d.market_id))
-                        .collect();
-                    g.iter().map(|(s, &id)| (id, s.clone())).collect()
-                }
-                Ok(w) => {
-                    tracing::warn!("LighterOrderbookManager: API error {}", w.code);
-                    HashMap::new()
-                }
-                Err(e) => {
-                    tracing::warn!("LighterOrderbookManager: market_id parse error: {}", e);
-                    HashMap::new()
-                }
-            }
-        }
-        Err(e) => {
-            tracing::warn!("LighterOrderbookManager: market_id fetch error: {}", e);
-            HashMap::new()
-        }
-    }
-}
-
-async fn run_background_task(
-    snapshots: Arc<RwLock<HashMap<String, SnapshotEntry>>>,
-    notifiers: Arc<Mutex<HashMap<String, Arc<Notify>>>>,
-    subscribed: Arc<Mutex<HashSet<String>>>,
-    mut subscribe_rx: mpsc::Receiver<Vec<String>>,
-    market_id_cache: Arc<RwLock<HashMap<String, u64>>>,
-    base_url: String,
-) {
-    loop {
-        let id_to_symbol = resolve_id_to_symbol(&market_id_cache, &base_url).await;
-        let symbol_to_id: HashMap<String, u64> = id_to_symbol
-            .iter()
-            .map(|(id, s)| (s.clone(), *id))
-            .collect();
-
-        let ws_stream = match connect_async(WS_BASE_URL).await {
-            Ok((s, _)) => s,
-            Err(e) => {
-                tracing::warn!("LighterOrderbookManager: connect error: {}", e);
-                tokio::time::sleep(Duration::from_secs(2)).await;
-                continue;
-            }
-        };
-        tracing::info!("LighterOrderbookManager: connected");
-
-        // Stale snapshots cleared so callers wait for fresh data on reconnect.
-        snapshots.write().await.clear();
-
-        let (mut write, mut read) = ws_stream.split();
-
-        // Local book state per market; rebuilt fresh on every connection cycle.
-        let mut market_states: HashMap<u64, MarketState> = HashMap::new();
-
-        // Re-subscribe all tracked symbols.
-        {
-            let syms: Vec<String> = subscribed.lock().await.iter().cloned().collect();
-            for sym in &syms {
-                if let Some(&id) = symbol_to_id.get(sym) {
-                    send_subscribe(&mut write, id).await;
-                } else {
-                    tracing::warn!("LighterOrderbookManager: no market_id for {}", sym);
-                }
-            }
-        }
-
-        let mut keepalive = tokio::time::interval(Duration::from_secs(30));
-        keepalive.tick().await;
-
-        'conn: loop {
-            tokio::select! {
-                maybe_msg = read.next() => {
-                    match maybe_msg {
-                        Some(Ok(Message::Text(text))) => {
-                            // Ignore non-orderbook messages (acks, market_stats, etc.)
-                            let ob_msg = match serde_json::from_str::<LighterWsOrderbook>(&text) {
-                                Ok(m) => m,
-                                Err(_) => continue,
-                            };
-                            // Channel on receive: "order_book:{market_id}"
-                            let market_id: u64 = match ob_msg.channel
-                                .strip_prefix("order_book:")
-                                .and_then(|s| s.parse().ok())
-                            {
-                                Some(id) => id,
-                                None => continue,
-                            };
-                            let symbol = match id_to_symbol.get(&market_id) {
-                                Some(s) => s.clone(),
-                                None => continue,
-                            };
-
-                            let apply_result = if let Some(state) = market_states.get_mut(&market_id) {
-                                // Incremental delta
-                                state.apply_delta(&ob_msg.order_book)
-                            } else {
-                                // First message = full snapshot
-                                let mut state = MarketState::new();
-                                let r = state.apply_snapshot(&ob_msg.order_book);
-                                if r.is_ok() {
-                                    market_states.insert(market_id, state);
-                                }
-                                r
-                            };
-
-                            match apply_result {
-                                Err(e) => {
-                                    // Nonce gap or parse error — drop state, reconnect.
-                                    tracing::warn!(
-                                        "LighterOrderbookManager: {} error: {} — reconnecting",
-                                        symbol, e
-                                    );
-                                    market_states.remove(&market_id);
-                                    snapshots.write().await.remove(&symbol);
-                                    break 'conn;
-                                }
-                                Ok(()) => {
-                                    if let Some(state) = market_states.get(&market_id) {
-                                        let ob = state.to_orderbook(&symbol);
-                                        let best_bid = ob.bids.first().map(|l| l.price);
-                                        let best_ask = ob.asks.first().map(|l| l.price);
-                                        let mid = best_bid.zip(best_ask).map(|(b, a)| (b + a) / Decimal::TWO);
-                                        let bid_liq: Decimal = ob.bids.iter().map(|l| l.price * l.quantity).sum();
-                                        let ask_liq: Decimal = ob.asks.iter().map(|l| l.price * l.quantity).sum();
-                                        tracing::debug!(
-                                            "LighterOrderbookManager: {} bestBid={} bestAsk={} mid={} bidLiq={:.4} askLiq={:.4}",
-                                            symbol,
-                                            best_bid.map(|p| format!("{:.2}", p)).unwrap_or_else(|| "-".to_string()),
-                                            best_ask.map(|p| format!("{:.2}", p)).unwrap_or_else(|| "-".to_string()),
-                                            mid.map(|m| format!("{:.2}", m)).unwrap_or_else(|| "-".to_string()),
-                                            bid_liq, ask_liq,
-                                        );
-                                        snapshots.write().await.insert(
-                                            symbol.clone(),
-                                            SnapshotEntry { orderbook: ob, captured_at: Instant::now() },
-                                        );
-                                        let g = notifiers.lock().await;
-                                        if let Some(n) = g.get(&symbol) {
-                                            n.notify_waiters();
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        Some(Ok(Message::Ping(p))) => {
-                            let _ = write.send(Message::Pong(p)).await;
-                        }
-                        Some(Ok(Message::Close(_))) | None => {
-                            tracing::info!("LighterOrderbookManager: disconnected, reconnecting");
-                            break 'conn;
-                        }
-                        Some(Err(e)) => {
-                            tracing::warn!("LighterOrderbookManager: ws error: {}", e);
-                            break 'conn;
-                        }
-                        _ => {}
-                    }
-                }
-                Some(new_syms) = subscribe_rx.recv() => {
-                    for sym in new_syms {
-                        if let Some(&id) = symbol_to_id.get(&sym) {
-                            send_subscribe(&mut write, id).await;
-                        } else {
-                            tracing::warn!("LighterOrderbookManager: no market_id for {}", sym);
-                        }
-                    }
-                }
-                _ = keepalive.tick() => {
-                    if let Err(e) = write.send(Message::Ping(vec![])).await {
-                        tracing::warn!("LighterOrderbookManager: keepalive error: {}", e);
-                        break 'conn;
-                    }
-                }
-            }
-        }
-
-        tokio::time::sleep(Duration::from_secs(2)).await;
-    }
-}
-
-async fn send_subscribe(
-    write: &mut futures::stream::SplitSink<
-        tokio_tungstenite::WebSocketStream<
-            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-        >,
-        Message,
-    >,
-    market_id: u64,
-) {
-    let req = LighterWsSubscribeRequest {
-        msg_type: "subscribe".to_string(),
-        channel: format!("order_book/{}", market_id),
-    };
-    if let Ok(msg) = serde_json::to_string(&req) {
-        if let Err(e) = write.send(Message::Text(msg)).await {
-            tracing::warn!("LighterOrderbookManager: subscribe send error: {}", e);
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// IPerpsStream impl (existing streaming API — unchanged)
-// ---------------------------------------------------------------------------
-
 /// Lighter WebSocket streaming client
 #[derive(Clone)]
 pub struct LighterWsClient {
@@ -479,17 +154,27 @@ impl LighterWsClient {
         }
 
         let url = "https://mainnet.zklighter.elliot.ai/api/v1/orderBookDetails";
-        let response: LighterResponse<OrderBookDetailsResponse> = reqwest::get(url).await?
-            .error_for_status()?.json().await?;
+        let response: LighterResponse<OrderBookDetailsResponse> =
+            reqwest::get(url).await?.error_for_status()?.json().await?;
         if response.code != 200 {
             return Err(anyhow!("Lighter API error: {}", response.code));
         }
-        self.symbol_to_market_id = response.data.order_book_details.into_iter()
+        self.symbol_to_market_id = response
+            .data
+            .order_book_details
+            .into_iter()
             .filter(|d| d.is_collectable())
             .map(|d| (d.symbol, d.market_id))
             .collect();
-        self.symbol_to_market_id.get(&symbol).copied()
-            .ok_or_else(|| anyhow!("Lighter market {} unavailable: absent, inactive or reduce_only", symbol))
+        self.symbol_to_market_id
+            .get(&symbol)
+            .copied()
+            .ok_or_else(|| {
+                anyhow!(
+                    "Lighter market {} unavailable: absent, inactive or reduce_only",
+                    symbol
+                )
+            })
     }
 
     /// Convert Lighter market stats to our Ticker type
@@ -940,5 +625,32 @@ impl IPerpsStream for LighterWsClient {
         };
 
         Ok(Box::pin(stream))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn update(begin: u64, nonce: u64, size: &str) -> LighterOrderBook {
+        serde_json::from_value(serde_json::json!({"begin_nonce": begin, "nonce": nonce,
+            "bids": [{"price": "100", "size": size}], "asks": [{"price": "101", "size": "1"}]}))
+        .unwrap()
+    }
+    #[test]
+    fn state_persists_per_market_and_a_gap_requires_a_new_snapshot() {
+        let mut a = MarketState::new();
+        let mut b = MarketState::new();
+        a.apply_snapshot(&update(0, 10, "1")).unwrap();
+        b.apply_snapshot(&update(0, 30, "7")).unwrap();
+        a.apply_delta(&update(10, 11, "2")).unwrap();
+        assert_eq!(a.to_orderbook("A").bids[0].quantity, Decimal::TWO);
+        assert_eq!(b.to_orderbook("B").bids[0].quantity, Decimal::from(7));
+        assert!(a.apply_delta(&update(12, 13, "3")).is_err());
+        let mut replacement = MarketState::new();
+        replacement.apply_snapshot(&update(0, 50, "9")).unwrap();
+        assert_eq!(
+            replacement.to_orderbook("A").bids[0].quantity,
+            Decimal::from(9)
+        );
     }
 }

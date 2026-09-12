@@ -1092,6 +1092,11 @@ async fn spawn_liquidity_report_task(
         for exchange in exchange_symbols.keys() {
             match factory::get_exchange(exchange).await {
                 Ok(client) => {
+                    if let Some(symbols) = exchange_symbols.get(exchange) {
+                        if let Err(error) = client.prewarm_streams(symbols).await {
+                            tracing::warn!(%exchange, %error, "Orderbook prewarm failed; reads will retry");
+                        }
+                    }
                     clients.insert(exchange.clone(), client);
                 }
                 Err(e) => {

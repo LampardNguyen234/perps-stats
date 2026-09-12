@@ -22,7 +22,7 @@ anyhow = "1.0"
 # Async streams
 futures = "0.3"
 
-# Async runtime for rate limiter and StreamManager
+# Async runtime for rate limiter and orderbook shards
 tokio = { version = "1.0", features = ["sync", "time", "rt", "macros"] }
 
 # Logging

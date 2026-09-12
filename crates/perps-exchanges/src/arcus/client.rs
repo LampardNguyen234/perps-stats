@@ -7,8 +7,8 @@ use futures::future::join_all;
 use once_cell::sync::OnceCell;
 use perps_core::{
     execute_with_retry, FundingRate, IPerps, IPerpsStream, Kline, Market, MarketStats,
-    MultiResolutionOrderbook, OpenInterest, OrderbookPushCache, RateLimit, RateLimiter,
-    RetryConfig, Ticker, Trade,
+    MultiResolutionOrderbook, OpenInterest, RateLimit, RateLimiter, RetryConfig, Ticker, Trade,
+    WsOrderbookManager,
 };
 use reqwest::Client;
 use std::sync::Arc;
@@ -63,15 +63,15 @@ fn shared_state() -> Arc<ArcusSharedState> {
         .clone()
 }
 
-/// Process-wide push-based orderbook cache (see `perps_core::OrderbookPushCache`), enabled
+/// Process-wide push-based orderbook cache (see `perps_core::WsOrderbookManager`), enabled
 /// only when `DATABASE_URL` is set and `ENABLE_ORDERBOOK_STREAMING=true` - same convention as
 /// `binance`/`aster`/`kucoin`/`extended`. `None` otherwise, in which case `get_orderbook`
 /// always uses the plain REST path. A separate `OnceCell` from `SHARED_STATE` for the same
 /// reason EdgeX's is: constructing `ArcusWsClient` here must happen after `shared_state()`
 /// has already returned once, not from inside its own initializer.
-static ORDERBOOK_CACHE: OnceCell<Option<Arc<OrderbookPushCache>>> = OnceCell::new();
+static ORDERBOOK_CACHE: OnceCell<Option<Arc<WsOrderbookManager>>> = OnceCell::new();
 
-fn orderbook_cache() -> Option<Arc<OrderbookPushCache>> {
+fn orderbook_cache() -> Option<Arc<WsOrderbookManager>> {
     ORDERBOOK_CACHE
         .get_or_init(|| {
             let enabled = std::env::var("DATABASE_URL").is_ok()
@@ -84,7 +84,11 @@ fn orderbook_cache() -> Option<Arc<OrderbookPushCache>> {
             }
             tracing::info!("Arcus: orderbook push-cache enabled (WebSocket-backed)");
             let ws: Arc<dyn IPerpsStream> = Arc::new(super::ws_client::ArcusWsClient::new());
-            Some(Arc::new(OrderbookPushCache::new(ws)))
+            Some(Arc::new(WsOrderbookManager::new(
+                Arc::new(perps_core::FullOrderbookAdapter(ws)),
+                perps_core::WsOrderbookConfig::default(),
+                vec![],
+            )))
         })
         .clone()
 }
@@ -256,6 +260,15 @@ impl Default for ArcusClient {
 
 #[async_trait]
 impl IPerps for ArcusClient {
+    async fn prewarm_streams(&self, symbols: &[String]) -> Result<()> {
+        if let Some(cache) = orderbook_cache() {
+            cache
+                .prewarm(symbols.iter().map(|s| self.normalize_symbol(s)).collect())
+                .await?;
+        }
+        Ok(())
+    }
+
     fn get_name(&self) -> &str {
         "arcus"
     }
@@ -372,7 +385,7 @@ impl IPerps for ArcusClient {
     async fn get_orderbook(&self, symbol: &str, depth: u32) -> Result<MultiResolutionOrderbook> {
         if let Some(cache) = orderbook_cache() {
             let normalized = self.normalize_symbol(symbol);
-            cache.subscribe(&normalized).await;
+            cache.subscribe(normalized.clone()).await?;
             if let Some(orderbook) = cache.get(&normalized, depth).await {
                 return Ok(MultiResolutionOrderbook::from_single(orderbook));
             }

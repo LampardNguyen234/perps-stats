@@ -31,25 +31,49 @@ pub struct RefDataItem {
     pub product_category: Option<String>,
 }
 
-// ── GET /symbols/metrics ─────────────────────────────────────────────────────
+// ── GET /md/contracts ─────────────────────────────────────────────────────────
+//
+// `/symbols/metrics` (used previously) no longer exists on the live API (404) —
+// `/md/contracts` is its public replacement, confirmed against `GET /openapi.yaml`.
 
-/// Response from `GET /symbols/metrics` — metrics for all symbols.
+/// Response from `GET /md/contracts` — current market data for all symbols.
 #[derive(Debug, Deserialize)]
-pub struct SymbolMetricsResponse {
-    pub data: Vec<SymbolMetrics>,
+pub struct ContractsResponse {
+    pub data: Vec<ContractEntry>,
 }
 
-/// Metrics for a single QFEX symbol.
+/// One symbol's current market data from `/md/contracts`.
 ///
-/// **Important field semantics (verified against live API):**
+/// All numeric fields are JSON strings on the wire (see `openapi.yaml`'s `Contract` schema).
+#[derive(Debug, Clone, Deserialize)]
+pub struct ContractEntry {
+    /// QFEX symbol, e.g. `"NVDA-USD"`.
+    pub ticker_id: String,
+    /// Last traded price in USD.
+    pub last_price: Option<String>,
+    /// 24h base-asset (share/contract) volume.
+    pub base_volume: Option<String>,
+    /// 24h USD notional volume (= turnover_24h in core).
+    pub target_volume: Option<String>,
+    /// Open interest in **contracts (shares)**.
+    pub open_interest: Option<String>,
+    /// Open interest in USD notional, computed server-side.
+    pub open_interest_usd: Option<String>,
+    /// Funding rate as a decimal ratio (e.g. `-0.0005` = -0.05%) — use directly.
+    pub funding_rate: Option<String>,
+}
+
+/// Normalized metrics for a single QFEX symbol, built from a `ContractEntry`.
+///
+/// **Important field semantics:**
 /// - `current_mark_price`: USD float, direct use.
 /// - `volume_24h_usd_notional`: USD turnover (not base volume).
-/// - `mark_price_change_24h_pct`: **percentage** (e.g. `0.3563` = +0.3563%) — **divide by 100** to get ratio.
 /// - `open_interest`: in **contracts (shares)** — multiply by mark price for notional.
-/// - `funding_rate_bps`: decimal ratio **despite the name** (e.g. `-0.0005` = -0.05%) — **use directly**.
+/// - `funding_rate_bps`: decimal ratio **despite the name** — **use directly**.
 ///
-/// Note: API returns snake_case field names (not camelCase).
-#[derive(Debug, Clone, Deserialize)]
+/// `/md/contracts` does not expose a 24h price-change field, so
+/// `mark_price_change_24h_pct` is always `None`.
+#[derive(Debug, Clone)]
 pub struct SymbolMetrics {
     /// QFEX symbol, e.g. `"NVDA-USD"`.
     pub symbol: String,
@@ -57,7 +81,7 @@ pub struct SymbolMetrics {
     pub current_mark_price: Option<f64>,
     /// 24h USD notional volume (= turnover_24h in core).
     pub volume_24h_usd_notional: Option<f64>,
-    /// 24h price change as a **percentage** (divide by 100 → ratio).
+    /// 24h price change as a **percentage** (divide by 100 → ratio). Unavailable from `/md/contracts`.
     pub mark_price_change_24h_pct: Option<f64>,
     /// Open interest in **contracts** (shares).
     pub open_interest: Option<f64>,

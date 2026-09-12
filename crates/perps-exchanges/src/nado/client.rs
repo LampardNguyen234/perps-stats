@@ -111,7 +111,7 @@ impl Default for NadoClient {
 #[async_trait]
 impl IPerps for NadoClient {
     fn get_name(&self) -> &str {
-        "nano"
+        "nado"
     }
 
     fn normalize_symbol(&self, exchange_symbol: &str) -> String {

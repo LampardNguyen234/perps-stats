@@ -23,7 +23,7 @@ pub struct KucoinClient {
     rate_limiter: Arc<RateLimiter>,
     /// Optional stream manager for WebSocket-based orderbook streaming
     #[cfg(feature = "streaming")]
-    stream_manager: Option<Arc<perps_core::StreamManager>>,
+    stream_manager: Option<Arc<perps_core::WsOrderbookManager>>,
 }
 
 impl KucoinClient {
@@ -59,13 +59,13 @@ impl KucoinClient {
         }
     }
 
-    /// Try to initialize with streaming support using StreamManager
+    /// Try to initialize with streaming support using WsOrderbookManager
     #[cfg(feature = "streaming")]
     async fn try_init_streaming() -> anyhow::Result<Self> {
         use super::ws_client::KuCoinWsClient;
-        use perps_core::{StreamConfig, StreamManager};
+        use perps_core::{DeltaOrderbookAdapter, WsOrderbookConfig, WsOrderbookManager};
 
-        tracing::info!("Initializing KucoinClient with StreamManager");
+        tracing::info!("Initializing KucoinClient with WsOrderbookManager");
 
         // Create contract cache and initialize it immediately
         let contract_cache = ContractCache::new();
@@ -106,10 +106,17 @@ impl KucoinClient {
         // Create WebSocket client with shared and initialized contract cache
         let ws_client = Arc::new(KuCoinWsClient::new_with_cache(contract_cache.clone()));
 
-        // Create StreamManager with default config
-        let stream_manager = Arc::new(StreamManager::new(
-            ws_client as Arc<dyn perps_core::OrderbookStreamer>,
-            StreamConfig::default(),
+        // Create WsOrderbookManager with default config
+        let stream_manager = Arc::new(WsOrderbookManager::new(
+            Arc::new(DeltaOrderbookAdapter(
+                ws_client as Arc<dyn perps_core::OrderbookStreamer>,
+            )),
+            WsOrderbookConfig {
+                with_delta: true,
+                staleness_threshold: std::time::Duration::from_secs(1),
+                ..Default::default()
+            },
+            vec![],
         ));
 
         Ok(Self {
@@ -205,7 +212,7 @@ impl KucoinClient {
         .await
     }
 
-    /// Fetch orderbook snapshot with update ID (sequence number) for StreamManager
+    /// Fetch orderbook snapshot with update ID (sequence number) for WsOrderbookManager
     #[cfg(feature = "streaming")]
     async fn get_orderbook_snapshot_with_update_id(
         &self,
@@ -262,6 +269,18 @@ impl Default for KucoinClient {
 
 #[async_trait]
 impl IPerps for KucoinClient {
+    async fn prewarm_streams(&self, symbols: &[String]) -> anyhow::Result<()> {
+        #[cfg(feature = "streaming")]
+        if let Some(manager) = &self.stream_manager {
+            manager
+                .prewarm(symbols.iter().map(|s| self.parse_symbol(s)).collect())
+                .await?;
+        }
+        #[cfg(not(feature = "streaming"))]
+        let _ = symbols;
+        Ok(())
+    }
+
     fn get_name(&self) -> &str {
         "kucoin"
     }
@@ -349,7 +368,7 @@ impl IPerps for KucoinClient {
     }
 
     async fn get_orderbook(&self, symbol: &str, depth: u32) -> Result<MultiResolutionOrderbook> {
-        // Check if StreamManager is available
+        // Check if WsOrderbookManager is available
         #[cfg(feature = "streaming")]
         if let Some(ref manager) = self.stream_manager {
             let kucoin_symbol = self.parse_symbol(symbol);

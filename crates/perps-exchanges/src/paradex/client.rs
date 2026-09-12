@@ -258,13 +258,14 @@ impl IPerps for ParadexClient {
             "1h" => ("60", 3600),
             _ => ("1", 60), // Default to 1m
         };
+        let paradex_symbol = self.parse_symbol(symbol);
         let start = start_time
             .unwrap_or_else(|| Utc::now() - chrono::Duration::days(1))
             .timestamp_millis();
         let end = end_time.unwrap_or_else(Utc::now).timestamp_millis();
         let endpoint = format!(
             "/markets/klines?symbol={}&resolution={}&start_at={}&end_at={}",
-            symbol, resolution, start, end
+            paradex_symbol, resolution, start, end
         );
         let response: KlinesResponse = self.get(&endpoint).await?;
         let klines = response
@@ -272,7 +273,7 @@ impl IPerps for ParadexClient {
             .into_iter()
             .map(|k| {
                 Ok(Kline {
-                    symbol: self.normalize_symbol(symbol),
+                    symbol: self.normalize_symbol(&paradex_symbol),
                     interval: interval.to_string(),
                     open_time: Utc.timestamp_millis_opt(k.0 as i64).unwrap(),
                     close_time: Utc

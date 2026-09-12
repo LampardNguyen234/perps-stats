@@ -91,29 +91,31 @@ impl ExtendedWsClient {
     fn convert_to_depth_update(&self, ws_orderbook: &ExtendedWsOrderbook) -> Result<DepthUpdate> {
         let is_snapshot = ws_orderbook.data.update_type == "SNAPSHOT";
 
-        let bids: Vec<OrderbookLevel> = ws_orderbook
-            .data
-            .bids
-            .iter()
-            .map(|level| {
-                let price = Decimal::from_str(&level.price)?;
-                let quantity = Decimal::from_str(&level.quantity)?;
+        // DELTA messages carry both `q` (the change) and `c` (the resulting absolute
+        // quantity at that price). We always use the absolute value: `c` for DELTA, `q`
+        // for SNAPSHOT (which has no `c` since `q` is already absolute there). This
+        // reconstructs every level from ground truth on each message instead of summing
+        // `q` over time, which would drift permanently the moment a single message is
+        // lost — Extended gives no sequence/gap signal to detect that (previous_id is
+        // always 0 below).
+        let to_levels = |raw: &[ExtendedWsLevel]| -> Result<Vec<OrderbookLevel>> {
+            raw.iter()
+                .map(|level| {
+                    let price = Decimal::from_str(&level.price)?;
+                    let quantity_str = if is_snapshot {
+                        &level.quantity
+                    } else {
+                        level.cumulative_quantity.as_ref().unwrap_or(&level.quantity)
+                    };
+                    let quantity = Decimal::from_str(quantity_str)?;
 
-                Ok(OrderbookLevel { price, quantity })
-            })
-            .collect::<Result<Vec<_>>>()?;
+                    Ok(OrderbookLevel { price, quantity })
+                })
+                .collect()
+        };
 
-        let asks: Vec<OrderbookLevel> = ws_orderbook
-            .data
-            .asks
-            .iter()
-            .map(|level| {
-                let price = Decimal::from_str(&level.price)?;
-                let quantity = Decimal::from_str(&level.quantity)?;
-
-                Ok(OrderbookLevel { price, quantity })
-            })
-            .collect::<Result<Vec<_>>>()?;
+        let bids = to_levels(&ws_orderbook.data.bids)?;
+        let asks = to_levels(&ws_orderbook.data.asks)?;
 
         // Keep symbol in Extended format (BTC-USD) to match subscription
         let symbol = ws_orderbook.data.market.clone();
@@ -129,31 +131,6 @@ impl ExtendedWsClient {
             })
         }) as u64;
 
-        // Log delta updates (not snapshots) for debugging bid-ask invariant violations
-        if !is_snapshot && (!bids.is_empty() || !asks.is_empty()) {
-            let bid_summary: Vec<String> = bids
-                .iter()
-                .take(3)
-                .map(|l| format!("{}@{}", l.price, l.quantity))
-                .collect();
-            let ask_summary: Vec<String> = asks
-                .iter()
-                .take(3)
-                .map(|l| format!("{}@{}", l.price, l.quantity))
-                .collect();
-
-            tracing::trace!(
-                "[Extended Delta] {} seq={} type={}: {} bids {:?}, {} asks {:?}",
-                symbol,
-                sequence,
-                ws_orderbook.data.update_type,
-                bids.len(),
-                bid_summary,
-                asks.len(),
-                ask_summary
-            );
-        }
-
         Ok(DepthUpdate {
             symbol,
             first_update_id: sequence,
@@ -165,16 +142,18 @@ impl ExtendedWsClient {
         })
     }
 
-    /// Subscribe to orderbook stream for a specific market
+    /// Subscribe to the orderbook stream for a specific market, or every market at once
+    /// if `market` is `None`.
     ///
-    /// Extended uses market-specific WebSocket URLs instead of subscription messages.
-    /// URL format: wss://api.starknet.extended.exchange/stream.extended.exchange/v1/orderbooks/{MARKET}
+    /// Extended has no per-market subscribe frame: the market is picked by URL path.
+    /// Omitting it (`GET .../v1/orderbooks`, no trailing segment) streams all markets
+    /// multiplexed on the one connection, each message tagged with `data.m`.
     ///
     /// Extended requires a User-Agent header to accept WebSocket connections.
     /// Without it, the server returns 403 Forbidden.
     pub async fn subscribe_orderbook(
         &self,
-        market: &str,
+        market: Option<&str>,
     ) -> Result<
         tokio_tungstenite::WebSocketStream<
             tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
@@ -182,11 +161,12 @@ impl ExtendedWsClient {
     > {
         use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
-        // Build market-specific WebSocket URL
-        let market_url = format!(
-            "wss://api.starknet.extended.exchange/stream.extended.exchange/v1/orderbooks/{}",
-            market
-        );
+        const STREAM_BASE: &str =
+            "wss://api.starknet.extended.exchange/stream.extended.exchange/v1/orderbooks";
+        let market_url = match market {
+            Some(m) => format!("{STREAM_BASE}/{m}"),
+            None => STREAM_BASE.to_string(),
+        };
 
         // Build WebSocket request with User-Agent header
         // Extended requires User-Agent or returns 403 Forbidden
@@ -197,7 +177,7 @@ impl ExtendedWsClient {
 
         tracing::debug!(
             "Connecting to Extended WebSocket for {} with User-Agent: {}",
-            market,
+            market.unwrap_or("ALL markets"),
             USER_AGENT
         );
 
@@ -206,7 +186,7 @@ impl ExtendedWsClient {
         tracing::info!(
             "✓ Extended WebSocket connected: status={}, market={}, url={}",
             response.status(),
-            market,
+            market.unwrap_or("ALL"),
             market_url
         );
 
@@ -224,19 +204,18 @@ impl Default for ExtendedWsClient {
 #[async_trait]
 impl OrderbookStreamer for ExtendedWsClient {
     async fn stream_depth_updates(&self, symbols: Vec<String>) -> Result<DepthUpdateStream> {
-        if symbols.len() != 1 {
+        if symbols.is_empty() {
             return Err(anyhow::anyhow!(
-                "Extended Exchange only supports streaming one symbol at a time (got {} symbols). Each symbol requires a separate WebSocket connection.",
-                symbols.len()
+                "stream_depth_updates called with no symbols"
             ));
         }
 
-        let symbol = &symbols[0];
-        // Symbol is already in Extended format (BTC-USD) from the client
-        // No need to convert - use it directly
-        let market = symbol.clone();
+        // Extended has no per-market subscribe frame, so one connection with no market
+        // path streams every market. Any number of requested symbols fit on this single
+        // connection — we just filter client-side to the ones we were asked for.
+        let wanted: std::collections::HashSet<String> = symbols.into_iter().collect();
 
-        let mut ws_stream = self.subscribe_orderbook(&market).await?;
+        let mut ws_stream = self.subscribe_orderbook(None).await?;
         let client = self.clone();
 
         let stream = async_stream::stream! {
@@ -245,6 +224,9 @@ impl OrderbookStreamer for ExtendedWsClient {
                     Ok(Message::Text(text)) => {
                         match serde_json::from_str::<ExtendedWsOrderbook>(&text) {
                             Ok(ws_orderbook) => {
+                                if !wanted.contains(&ws_orderbook.data.market) {
+                                    continue;
+                                }
                                 match client.convert_to_depth_update(&ws_orderbook) {
                                     Ok(depth_update) => yield Ok(depth_update),
                                     Err(e) => {
@@ -289,7 +271,10 @@ impl OrderbookStreamer for ExtendedWsClient {
     }
 
     fn is_incremental_delta(&self) -> bool {
-        true // Extended uses incremental delta updates (quantities represent changes)
+        // We use Extended's `c` field (absolute resulting quantity) for DELTA messages
+        // and `q` (already absolute) for SNAPSHOT messages — see convert_to_depth_update.
+        // Every level is therefore an absolute replacement, never accumulated.
+        false
     }
 
     fn exchange_name(&self) -> &str {
