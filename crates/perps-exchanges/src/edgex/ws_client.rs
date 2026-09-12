@@ -23,7 +23,9 @@ use tokio::net::TcpStream;
 use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
 
 use super::client::{to_edgex_symbol, to_global_symbol, EdgexClient};
-use super::conversions::{datetime_from_ms, interval_duration_ms, parse_decimal, parse_ms, KLINE_INTERVALS};
+use super::conversions::{
+    datetime_from_ms, interval_duration_ms, parse_decimal, parse_ms, KLINE_INTERVALS,
+};
 use super::types::ContractMeta;
 use super::ws_types::{
     EdgexWsContent, EdgexWsEnvelope, WsBookLevel, WsDepthRecord, WsKlineRecord, WsTickerRecord,
@@ -249,9 +251,13 @@ fn ws_ticker_to_ticker(record: &WsTickerRecord, book: Option<&DepthBook>) -> Res
         mark_price,
         index_price: parse_decimal(&record.index_price, "indexPrice")?,
         best_bid_price,
-        best_bid_qty: book.map(|b| b.qty_at(true, best_bid_price)).unwrap_or(Decimal::ZERO),
+        best_bid_qty: book
+            .map(|b| b.qty_at(true, best_bid_price))
+            .unwrap_or(Decimal::ZERO),
         best_ask_price,
-        best_ask_qty: book.map(|b| b.qty_at(false, best_ask_price)).unwrap_or(Decimal::ZERO),
+        best_ask_qty: book
+            .map(|b| b.qty_at(false, best_ask_price))
+            .unwrap_or(Decimal::ZERO),
         volume_24h: parse_decimal(&record.size, "size")?,
         turnover_24h: parse_decimal(&record.value, "value")?,
         open_interest,
@@ -409,7 +415,9 @@ impl IPerpsStream for EdgexWsClient {
         let wants_funding = config.data_types.contains(&StreamDataType::FundingRate);
         let wants_kline = config.data_types.contains(&StreamDataType::Kline);
         if !wants_ticker && !wants_trade && !wants_orderbook && !wants_funding && !wants_kline {
-            return Err(anyhow!("EdgeX stream config contains no supported data types"));
+            return Err(anyhow!(
+                "EdgeX stream config contains no supported data types"
+            ));
         }
 
         let kline_type = if wants_kline {
@@ -451,7 +459,9 @@ impl IPerpsStream for EdgexWsClient {
                     .rest
                     .find_contract_by_name(&contract_name)
                     .await
-                    .with_context(|| format!("failed to fetch EdgeX contract metadata for {symbol}"))?;
+                    .with_context(|| {
+                        format!("failed to fetch EdgeX contract metadata for {symbol}")
+                    })?;
                 contract_meta.insert(meta.contract_id.clone(), meta);
             }
         }
@@ -723,14 +733,23 @@ mod tests {
         let record = btc_ticker_record();
         let mut book = DepthBook::default();
         book.apply_snapshot(
-            &[WsBookLevel { price: "79031.1".to_string(), size: "0.5".to_string() }],
-            &[WsBookLevel { price: "79031.4".to_string(), size: "0.3".to_string() }],
+            &[WsBookLevel {
+                price: "79031.1".to_string(),
+                size: "0.5".to_string(),
+            }],
+            &[WsBookLevel {
+                price: "79031.4".to_string(),
+                size: "0.3".to_string(),
+            }],
             1,
         )
         .unwrap();
 
         let ticker = ws_ticker_to_ticker(&record, Some(&book)).unwrap();
-        assert_eq!(ticker.best_bid_price, Decimal::from_str_exact("79031.1").unwrap());
+        assert_eq!(
+            ticker.best_bid_price,
+            Decimal::from_str_exact("79031.1").unwrap()
+        );
         assert_eq!(ticker.best_bid_qty, Decimal::from_str_exact("0.5").unwrap());
         assert_eq!(ticker.best_ask_qty, Decimal::from_str_exact("0.3").unwrap());
         assert_eq!(
@@ -767,11 +786,17 @@ mod tests {
         let record = btc_ticker_record();
         let meta = btc_contract_meta();
         let fr = ws_ticker_to_funding_rate(&record, &meta).unwrap();
-        assert_eq!(fr.funding_rate, Decimal::from_str_exact("-0.00005754").unwrap());
+        assert_eq!(
+            fr.funding_rate,
+            Decimal::from_str_exact("-0.00005754").unwrap()
+        );
         // No forecast field on the wire - predicted_rate mirrors funding_rate.
         assert_eq!(fr.predicted_rate, fr.funding_rate);
         assert_eq!(fr.funding_interval, 4);
-        assert_eq!(fr.funding_rate_cap_floor, Decimal::from_str_exact("0.002").unwrap());
+        assert_eq!(
+            fr.funding_rate_cap_floor,
+            Decimal::from_str_exact("0.002").unwrap()
+        );
         assert_eq!((fr.next_funding_time - fr.funding_time).num_minutes(), 240);
     }
 
@@ -819,10 +844,19 @@ mod tests {
         let mut book = DepthBook::default();
         book.apply_snapshot(
             &[
-                WsBookLevel { price: "79031.2".to_string(), size: "1.0".to_string() },
-                WsBookLevel { price: "79030.0".to_string(), size: "2.0".to_string() },
+                WsBookLevel {
+                    price: "79031.2".to_string(),
+                    size: "1.0".to_string(),
+                },
+                WsBookLevel {
+                    price: "79030.0".to_string(),
+                    size: "2.0".to_string(),
+                },
             ],
-            &[WsBookLevel { price: "79031.4".to_string(), size: "1.175".to_string() }],
+            &[WsBookLevel {
+                price: "79031.4".to_string(),
+                size: "1.175".to_string(),
+            }],
             100,
         )
         .unwrap();
@@ -835,8 +869,14 @@ mod tests {
         // removes another via size == "0", not an additive delta.
         book.apply_changed(
             &[
-                WsBookLevel { price: "79031.2".to_string(), size: "0.720".to_string() },
-                WsBookLevel { price: "79030.0".to_string(), size: "0".to_string() },
+                WsBookLevel {
+                    price: "79031.2".to_string(),
+                    size: "0.720".to_string(),
+                },
+                WsBookLevel {
+                    price: "79030.0".to_string(),
+                    size: "0".to_string(),
+                },
             ],
             &[],
             100,
@@ -847,14 +887,20 @@ mod tests {
             book.qty_at(true, Decimal::from_str_exact("79031.2").unwrap()),
             Decimal::from_str_exact("0.720").unwrap()
         );
-        assert_eq!(book.qty_at(true, Decimal::from_str_exact("79030.0").unwrap()), Decimal::ZERO);
+        assert_eq!(
+            book.qty_at(true, Decimal::from_str_exact("79030.0").unwrap()),
+            Decimal::ZERO
+        );
     }
 
     #[test]
     fn depth_book_apply_changed_on_unseeded_book_is_a_noop_not_a_panic() {
         let mut book = DepthBook::default();
         book.apply_changed(
-            &[WsBookLevel { price: "1".to_string(), size: "1".to_string() }],
+            &[WsBookLevel {
+                price: "1".to_string(),
+                size: "1".to_string(),
+            }],
             &[],
             0,
             1,
@@ -868,22 +914,48 @@ mod tests {
         let mut book = DepthBook::default();
         book.apply_snapshot(
             &[
-                WsBookLevel { price: "100".to_string(), size: "1".to_string() },
-                WsBookLevel { price: "101".to_string(), size: "1".to_string() },
+                WsBookLevel {
+                    price: "100".to_string(),
+                    size: "1".to_string(),
+                },
+                WsBookLevel {
+                    price: "101".to_string(),
+                    size: "1".to_string(),
+                },
             ],
             &[
-                WsBookLevel { price: "103".to_string(), size: "1".to_string() },
-                WsBookLevel { price: "102".to_string(), size: "1".to_string() },
+                WsBookLevel {
+                    price: "103".to_string(),
+                    size: "1".to_string(),
+                },
+                WsBookLevel {
+                    price: "102".to_string(),
+                    size: "1".to_string(),
+                },
             ],
             1,
         )
         .unwrap();
 
         let ob = book.to_orderbook("BTC", Utc::now());
-        assert_eq!(ob.bids[0].price, Decimal::from(101), "best bid is the highest price, first");
-        assert_eq!(ob.asks[0].price, Decimal::from(102), "best ask is the lowest price, first");
-        assert!(ob.bids[0].price > ob.bids[1].price, "bids must be descending");
-        assert!(ob.asks[0].price < ob.asks[1].price, "asks must be ascending");
+        assert_eq!(
+            ob.bids[0].price,
+            Decimal::from(101),
+            "best bid is the highest price, first"
+        );
+        assert_eq!(
+            ob.asks[0].price,
+            Decimal::from(102),
+            "best ask is the lowest price, first"
+        );
+        assert!(
+            ob.bids[0].price > ob.bids[1].price,
+            "bids must be descending"
+        );
+        assert!(
+            ob.asks[0].price < ob.asks[1].price,
+            "asks must be ascending"
+        );
     }
 
     #[test]
@@ -891,7 +963,10 @@ mod tests {
         assert_eq!(ticker_all_channel(), "ticker.all.1s");
         assert_eq!(depth_channel("30000001"), "depth.30000001.200");
         assert_eq!(trades_channel("30000001"), "trades.30000001");
-        assert_eq!(kline_channel("30000001", "MINUTE_1"), "kline.LAST_PRICE.30000001.MINUTE_1");
+        assert_eq!(
+            kline_channel("30000001", "MINUTE_1"),
+            "kline.LAST_PRICE.30000001.MINUTE_1"
+        );
     }
 
     #[test]

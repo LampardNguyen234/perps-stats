@@ -17,6 +17,37 @@ fn parse_gravity_price(price_str: &str) -> Result<Decimal> {
     Decimal::from_str(price_str).map_err(|_| anyhow!("Failed to parse price: {}", price_str))
 }
 
+/// Convert a global or already-Gravity-formatted symbol to Gravity's format.
+/// Idempotent — safe to call multiple times.
+/// - "BTC" -> "BTC_USDT_Perp"
+/// - "BTC_USDT_Perp" -> "BTC_USDT_Perp" (already correct)
+///
+/// Shared between `GravityClient` (REST) and `GravityWsClient` (WS) so both
+/// convert symbols identically without duplicating the logic.
+pub fn gravity_denormalize_symbol(symbol: &str) -> String {
+    let upper = symbol.to_uppercase();
+    if upper.ends_with("_USDT_PERP") {
+        symbol.to_string()
+    } else if upper.ends_with("_USDT") {
+        format!("{}_Perp", upper)
+    } else {
+        format!("{}_USDT_Perp", upper)
+    }
+}
+
+/// Global/alias symbol -> Gravity instrument, including alias resolution.
+pub fn gravity_parse_symbol(symbol: &str) -> String {
+    let resolved = crate::symbol_aliases::resolve_alias("gravity", symbol);
+    gravity_denormalize_symbol(resolved)
+}
+
+/// Gravity instrument -> global symbol, including alias un-resolution.
+pub fn gravity_normalize_symbol(exchange_symbol: &str) -> String {
+    let upper = exchange_symbol.to_uppercase();
+    let base = upper.split('_').next().unwrap_or(&upper);
+    crate::symbol_aliases::unresolve_alias("gravity", base).to_string()
+}
+
 /// Convert GravityTicker to perps_core::Ticker
 ///
 /// Maps Gravity's 9-decimal prices and nanosecond timestamps to Decimal prices

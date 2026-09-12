@@ -51,8 +51,14 @@ mod tests {
     fn korean_equities_roundtrip_and_accept_quote_suffixes() {
         for base in ["SKHYNIX", "SAMSUNG"] {
             let exchange = format!("{base}USD");
-            for input in [base.to_string(), base.to_lowercase(), exchange.clone(),
-                format!("{base}-USDT"), format!("{base}USDT"), format!("{base}-USD")] {
+            for input in [
+                base.to_string(),
+                base.to_lowercase(),
+                exchange.clone(),
+                format!("{base}-USDT"),
+                format!("{base}USDT"),
+                format!("{base}-USD"),
+            ] {
                 assert_eq!(to_exchange_symbol(&input), exchange);
             }
             assert_eq!(to_exchange_symbol(&exchange), exchange);

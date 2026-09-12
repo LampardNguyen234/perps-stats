@@ -105,7 +105,10 @@ impl ExtendedWsClient {
                     let quantity_str = if is_snapshot {
                         &level.quantity
                     } else {
-                        level.cumulative_quantity.as_ref().unwrap_or(&level.quantity)
+                        level
+                            .cumulative_quantity
+                            .as_ref()
+                            .unwrap_or(&level.quantity)
                     };
                     let quantity = Decimal::from_str(quantity_str)?;
 

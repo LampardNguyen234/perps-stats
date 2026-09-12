@@ -182,8 +182,8 @@ impl ExtendedClient {
                             // failure can report the actual body instead of reqwest's
                             // opaque "error decoding response body".
                             let body = response.text().await?;
-                            let wrapper: ExtendedResponse<T> =
-                                serde_json::from_str(&body).map_err(|e| {
+                            let wrapper: ExtendedResponse<T> = serde_json::from_str(&body)
+                                .map_err(|e| {
                                     let preview: String = body.chars().take(300).collect();
                                     anyhow!(
                                         "Failed to parse response from {}: {} (body: {})",

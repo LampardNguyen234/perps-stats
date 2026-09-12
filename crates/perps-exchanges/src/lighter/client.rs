@@ -277,8 +277,7 @@ impl IPerps for LighterClient {
                         "{}/orderBookOrders?market_id={}&limit={}",
                         self.base_url, market_id, capped_depth
                     );
-                    let response: LighterResponse<OrderBookOrdersResponse> =
-                        self.get(&url).await?;
+                    let response: LighterResponse<OrderBookOrdersResponse> = self.get(&url).await?;
                     if response.code != 200 {
                         return Err(anyhow!("API error: code {}", response.code));
                     }

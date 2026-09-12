@@ -1,18 +1,23 @@
 use super::conversions::*;
 use super::types::*;
+use super::ws_client::GravityWsClient;
 use crate::cache::SymbolsCache;
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use perps_core::{
-    execute_with_retry, FundingRate, IPerps, Kline, Market, MarketStats, MultiResolutionOrderbook,
-    OpenInterest, RateLimiter, RetryConfig, Ticker, Trade,
+    execute_with_retry, FullOrderbookAdapter, FundingRate, IPerps, Kline, Market, MarketStats,
+    MultiResolutionOrderbook, OpenInterest, RateLimiter, RetryConfig, Ticker, Trade,
+    WsOrderbookConfig, WsOrderbookManager,
 };
 use reqwest::Client;
 use serde_json::json;
 use std::sync::Arc;
 
 const BASE_URL: &str = "https://market-data.grvt.io";
+/// Gravity API has a maximum depth limit of 100 — matches the WS subscription
+/// depth in `ws_client.rs`'s `SELECTOR_SUFFIX`.
+const ORDERBOOK_MAX_DEPTH: u32 = 100;
 
 /// Gravity DEX REST client for market data
 ///
@@ -27,6 +32,10 @@ pub struct GravityClient {
     base_url: String,
     symbols_cache: SymbolsCache,
     rate_limiter: Arc<RateLimiter>,
+    /// Present when `ENABLE_ORDERBOOK_STREAMING=true` (and `DATABASE_URL` is
+    /// set). When present, `get_orderbook` uses a persistent WebSocket
+    /// connection via `WsOrderbookManager` instead of REST.
+    orderbook_manager: Option<Arc<WsOrderbookManager>>,
 }
 
 impl GravityClient {
@@ -35,11 +44,31 @@ impl GravityClient {
     /// # Returns
     /// A new GravityClient instance ready to make API requests
     pub fn new() -> Self {
+        let orderbook_manager = if std::env::var("DATABASE_URL").is_ok()
+            && std::env::var("ENABLE_ORDERBOOK_STREAMING")
+                .map(|v| v.to_lowercase() == "true")
+                .unwrap_or(false)
+        {
+            tracing::info!("GravityClient: WebSocket orderbook streaming enabled");
+            Some(Arc::new(WsOrderbookManager::new(
+                Arc::new(FullOrderbookAdapter(Arc::new(GravityWsClient::new()))),
+                WsOrderbookConfig {
+                    staleness_threshold: std::time::Duration::from_secs(30),
+                    wait_timeout: std::time::Duration::from_secs(30),
+                    reconnect_delay: std::time::Duration::from_secs(2),
+                    ..Default::default()
+                },
+                vec![],
+            )))
+        } else {
+            None
+        };
         Self {
             http: Client::new(),
             base_url: BASE_URL.to_string(),
             symbols_cache: SymbolsCache::new(),
             rate_limiter: Arc::new(RateLimiter::gravity()),
+            orderbook_manager,
         }
     }
 
@@ -272,26 +301,6 @@ impl GravityClient {
             .result
             .ok_or_else(|| anyhow::anyhow!("No result in trades response for {}", gravity_symbol))
     }
-
-    /// Convert symbol to Gravity format (idempotent - safe to call multiple times)
-    /// - "BTC" → "BTC_USDT_Perp"
-    /// - "BTC_USDT_Perp" → "BTC_USDT_Perp" (already in correct format)
-    fn denormalize_symbol(&self, symbol: &str) -> String {
-        let upper = symbol.to_uppercase();
-        if upper.ends_with("_USDT_PERP") {
-            // Already in correct format
-            symbol.to_string()
-        } else if upper.ends_with("_USDT") {
-            // Add "_Perp" suffix: "BTC_USDT" → "BTC_USDT_Perp"
-            format!("{}_Perp", upper)
-        } else if upper.contains('_') {
-            // Already has underscore but wrong format, treat as base and normalize
-            format!("{}_USDT_Perp", upper)
-        } else {
-            // Pure base currency: "BTC" → "BTC_USDT_Perp"
-            format!("{}_USDT_Perp", upper)
-        }
-    }
 }
 
 impl Default for GravityClient {
@@ -302,21 +311,25 @@ impl Default for GravityClient {
 
 #[async_trait]
 impl IPerps for GravityClient {
+    async fn prewarm_streams(&self, symbols: &[String]) -> Result<()> {
+        if let Some(manager) = &self.orderbook_manager {
+            manager
+                .prewarm(symbols.iter().map(|s| self.normalize_symbol(s)).collect())
+                .await?;
+        }
+        Ok(())
+    }
+
     fn get_name(&self) -> &str {
         "gravity"
     }
 
     fn parse_symbol(&self, symbol: &str) -> String {
-        let symbol = crate::symbol_aliases::resolve_alias("gravity", symbol);
-        // Delegate to idempotent denormalize_symbol — handles already-formatted inputs too
-        self.denormalize_symbol(symbol)
+        gravity_parse_symbol(symbol)
     }
 
     fn normalize_symbol(&self, exchange_symbol: &str) -> String {
-        // "BTC_USDT_Perp" -> "BTC" -> unresolve alias
-        let upper = exchange_symbol.to_uppercase();
-        let base = upper.split('_').next().unwrap_or(&upper);
-        crate::symbol_aliases::unresolve_alias("gravity", base).to_string()
+        gravity_normalize_symbol(exchange_symbol)
     }
 
     async fn get_markets(&self) -> Result<Vec<Market>> {
@@ -375,9 +388,28 @@ impl IPerps for GravityClient {
     }
 
     async fn get_orderbook(&self, symbol: &str, depth: u32) -> Result<MultiResolutionOrderbook> {
+        let normalized = self.normalize_symbol(symbol);
+
+        if let Some(mgr) = &self.orderbook_manager {
+            // WS subscription is fixed at ORDERBOOK_MAX_DEPTH; the manager clips
+            // down to whatever a caller actually asked for.
+            let depth = depth.clamp(1, ORDERBOOK_MAX_DEPTH);
+            let client = self.clone();
+            let fallback_symbol = normalized.clone();
+            let ob = mgr
+                .get_orderbook(&normalized, depth, || async move {
+                    let gravity_symbol = client.parse_symbol(&fallback_symbol);
+                    let gravity_orderbook = client.fetch_orderbook(&gravity_symbol, depth).await?;
+                    let ob =
+                        gravity_orderbook_to_orderbook(gravity_orderbook, fallback_symbol.clone())?;
+                    Ok((ob, 0))
+                })
+                .await?;
+            return Ok(MultiResolutionOrderbook::from_single(ob));
+        }
+
         let gravity_symbol = self.parse_symbol(symbol);
         let gravity_orderbook = self.fetch_orderbook(&gravity_symbol, depth).await?;
-        let normalized = self.normalize_symbol(symbol);
         let orderbook = gravity_orderbook_to_orderbook(gravity_orderbook, normalized.clone())?;
         let timestamp = orderbook.timestamp;
 
