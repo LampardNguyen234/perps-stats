@@ -1,11 +1,14 @@
+use super::ws_client::PacificaWsClient;
 use crate::cache::SymbolsCache;
 use crate::pacifica::types::*;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, TimeZone, Utc};
 use perps_core::types::*;
-use perps_core::WsOrderbookManager;
-use perps_core::{execute_with_retry, IPerps, RateLimiter, RetryConfig};
+use perps_core::{
+    execute_with_retry, DeltaOrderbookAdapter, IPerps, OrderbookStreamer, RateLimiter, RetryConfig,
+    WsOrderbookConfig, WsOrderbookManager,
+};
 use rust_decimal::Decimal;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -20,7 +23,10 @@ pub struct PacificaClient {
     symbols_cache: SymbolsCache,
     /// Rate limiter for API requests
     rate_limiter: Arc<RateLimiter>,
-    /// Optional WsOrderbookManager for WebSocket orderbook streaming
+    /// Present when `DATABASE_URL` is set and `ENABLE_ORDERBOOK_STREAMING=true` - same
+    /// convention as `arcus`/`edgex`/`gravity`. When present, `get_orderbook` uses a
+    /// persistent WebSocket connection via `WsOrderbookManager` instead of REST for the
+    /// default (agg_level=1) resolution; the multi-resolution REST fan-out is unaffected.
     stream_manager: Option<Arc<WsOrderbookManager>>,
 }
 
@@ -32,8 +38,24 @@ impl PacificaClient {
             .build()
             .expect("Failed to build HTTP client");
 
-        // WS disabled until multi-agg-level support is implemented
-        let stream_manager: Option<Arc<WsOrderbookManager>> = None;
+        let stream_manager = if std::env::var("DATABASE_URL").is_ok()
+            && std::env::var("ENABLE_ORDERBOOK_STREAMING")
+                .map(|v| v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false)
+        {
+            tracing::info!("PacificaClient: WebSocket orderbook streaming enabled");
+            let ws: Arc<dyn OrderbookStreamer> = Arc::new(PacificaWsClient::new());
+            Some(Arc::new(WsOrderbookManager::new(
+                Arc::new(DeltaOrderbookAdapter(ws)),
+                WsOrderbookConfig {
+                    with_delta: true,
+                    ..Default::default()
+                },
+                vec![],
+            )))
+        } else {
+            None
+        };
 
         Self {
             http,
@@ -181,6 +203,15 @@ impl Default for PacificaClient {
 
 #[async_trait]
 impl IPerps for PacificaClient {
+    async fn prewarm_streams(&self, symbols: &[String]) -> Result<()> {
+        if let Some(manager) = &self.stream_manager {
+            manager
+                .prewarm(symbols.iter().map(|s| self.parse_symbol(s)).collect())
+                .await?;
+        }
+        Ok(())
+    }
+
     fn get_name(&self) -> &str {
         "pacifica"
     }

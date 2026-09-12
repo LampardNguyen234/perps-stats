@@ -62,6 +62,5 @@ pub struct PacificaWsOrderbookLevel {
 /// Pacifica WebSocket ping request
 #[derive(Debug, Clone, Serialize)]
 pub struct PacificaWsPingRequest {
-    #[serde(rename = "type")]
-    pub msg_type: String, // "ping"
+    pub method: String, // "ping"
 }

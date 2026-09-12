@@ -1070,6 +1070,7 @@ fn build_symbol_exchanges(
 /// concurrently. For each symbol, all exchanges fire in parallel.
 async fn spawn_liquidity_report_task(
     exchange_symbols: HashMap<String, Vec<String>>,
+    clients: Arc<HashMap<String, Box<dyn perps_core::IPerps + Send + Sync>>>,
     report_interval: u64,
     max_concurrent_symbols: usize,
     repository: Arc<Mutex<PostgresRepository>>,
@@ -1086,24 +1087,6 @@ async fn spawn_liquidity_report_task(
 
         let mut tick = interval(Duration::from_secs(report_interval));
         let aggregator = Aggregator::new();
-
-        let mut clients: HashMap<String, Box<dyn perps_core::IPerps + Send + Sync>> =
-            HashMap::new();
-        for exchange in exchange_symbols.keys() {
-            match factory::get_exchange(exchange).await {
-                Ok(client) => {
-                    if let Some(symbols) = exchange_symbols.get(exchange) {
-                        if let Err(error) = client.prewarm_streams(symbols).await {
-                            tracing::warn!(%exchange, %error, "Orderbook prewarm failed; reads will retry");
-                        }
-                    }
-                    clients.insert(exchange.clone(), client);
-                }
-                Err(e) => {
-                    tracing::error!("Failed to initialize REST client for {}: {}", exchange, e);
-                }
-            }
-        }
 
         let (all_symbols, symbol_exchanges) = build_symbol_exchanges(&exchange_symbols);
 
@@ -1340,6 +1323,7 @@ async fn spawn_liquidity_report_task(
 /// concurrently. For each symbol, all exchanges fire in parallel.
 async fn spawn_ticker_report_task(
     exchange_symbols: HashMap<String, Vec<String>>,
+    clients: Arc<HashMap<String, Box<dyn perps_core::IPerps + Send + Sync>>>,
     report_interval: u64,
     max_concurrent_symbols: usize,
     repository: Arc<Mutex<PostgresRepository>>,
@@ -1352,19 +1336,6 @@ async fn spawn_ticker_report_task(
         );
 
         let mut tick = interval(Duration::from_secs(report_interval));
-
-        let mut clients: HashMap<String, Box<dyn perps_core::IPerps + Send + Sync>> =
-            HashMap::new();
-        for exchange in exchange_symbols.keys() {
-            match factory::get_exchange(exchange).await {
-                Ok(client) => {
-                    clients.insert(exchange.clone(), client);
-                }
-                Err(e) => {
-                    tracing::error!("Failed to initialize REST client for {}: {}", exchange, e);
-                }
-            }
-        }
 
         let (all_symbols, symbol_exchanges) = build_symbol_exchanges(&exchange_symbols);
 
@@ -1672,9 +1643,31 @@ pub async fn execute(args: StartArgs) -> Result<()> {
     ));
     tracing::info!("Parquet orderbook storage directory: {}", args.parquet_dir);
 
+    // Build one REST client per exchange, shared between the liquidity and ticker report
+    // tasks. Each client owns an exchange's WsOrderbookManager (when streaming is enabled),
+    // which in turn owns its live WebSocket connections - constructing a separate client per
+    // task would open a second, redundant connection subscribing to the same symbols.
+    let mut clients_map: HashMap<String, Box<dyn perps_core::IPerps + Send + Sync>> =
+        HashMap::new();
+    for (exchange, symbols) in &exchange_symbols {
+        match factory::get_exchange(exchange).await {
+            Ok(client) => {
+                if let Err(error) = client.prewarm_streams(symbols).await {
+                    tracing::warn!(%exchange, %error, "Orderbook prewarm failed; reads will retry");
+                }
+                clients_map.insert(exchange.clone(), client);
+            }
+            Err(e) => {
+                tracing::error!("Failed to initialize REST client for {}: {}", exchange, e);
+            }
+        }
+    }
+    let clients = Arc::new(clients_map);
+
     // Spawn liquidity report task (parallel: semaphore-gated symbols, all exchanges per symbol)
     let liquidity_task = spawn_liquidity_report_task(
         exchange_symbols.clone(),
+        clients.clone(),
         args.report_interval,
         args.chunk,
         repository.clone(),
@@ -1689,6 +1682,7 @@ pub async fn execute(args: StartArgs) -> Result<()> {
     // Spawn ticker report task (parallel: semaphore-gated symbols, all exchanges per symbol)
     let ticker_task = spawn_ticker_report_task(
         exchange_symbols.clone(),
+        clients.clone(),
         args.report_interval,
         args.chunk,
         repository.clone(),

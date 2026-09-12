@@ -131,21 +131,20 @@ impl Default for PacificaWsClient {
 #[async_trait]
 impl OrderbookStreamer for PacificaWsClient {
     async fn stream_depth_updates(&self, symbols: Vec<String>) -> Result<DepthUpdateStream> {
-        // Pacifica supports one symbol per WebSocket connection
-        if symbols.len() != 1 {
-            return Err(anyhow!(
-                "Pacifica only supports one symbol per WebSocket connection (got {} symbols). Each symbol requires a separate connection.",
-                symbols.len()
-            ));
+        if symbols.is_empty() {
+            return Err(anyhow!("Pacifica requires at least one symbol to stream"));
         }
 
-        let symbol = &symbols[0];
         let mut ws_stream = self.connect().await?;
 
-        // Subscribe to orderbook with agg_level=10 as specified
-        self.subscribe(&mut ws_stream, symbol.clone(), 1).await?;
+        // One connection, one "subscribe" message per symbol (agg_level=1, finest
+        // resolution) - Pacifica multiplexes all subscriptions over the same socket
+        // and tags each push with its own `symbol` field, so incoming messages need
+        // no per-connection symbol filtering beyond what `run_session` already does.
+        for symbol in &symbols {
+            self.subscribe(&mut ws_stream, symbol.clone(), 1).await?;
+        }
 
-        let symbol_clone = symbol.clone();
         let client_clone = self.clone();
 
         let stream = async_stream::stream! {
@@ -167,7 +166,7 @@ impl OrderbookStreamer for PacificaWsClient {
                                         tracing::trace!("[Pacifica] Parsed channel: {}", response.channel);
                                         match response.channel.as_str() {
                                         "subscribe" => {
-                                            tracing::info!("[Pacifica] Subscription confirmed for {}", symbol_clone);
+                                            tracing::info!("[Pacifica] Subscription confirmed");
                                         }
                                         "book" => {
                                             if let Some(data) = response.data {
@@ -177,7 +176,7 @@ impl OrderbookStreamer for PacificaWsClient {
                                                             Ok(depth_update) => {
                                                                 tracing::trace!(
                                                                     "[Pacifica] Orderbook update for {}: {} bids, {} asks",
-                                                                    symbol_clone,
+                                                                    depth_update.symbol,
                                                                     depth_update.bids.len(),
                                                                     depth_update.asks.len()
                                                                 );
@@ -246,7 +245,7 @@ impl OrderbookStreamer for PacificaWsClient {
                     _ = ping_interval.tick() => {
                         ping_counter += 1;
                         let ping_msg = PacificaWsPingRequest {
-                            msg_type: "ping".to_string(),
+                            method: "ping".to_string(),
                         };
 
                         match serde_json::to_string(&ping_msg) {
