@@ -31,11 +31,19 @@ impl BybitClient {
     }
 
     /// Ensure the symbols cache is initialized
+    ///
+    /// Cache holds exchange-format symbols (e.g. "BTCUSDT"), matching what
+    /// `is_supported` looks up via `parse_symbol`. `get_markets()` returns
+    /// global symbols (e.g. "BTC"), so each one is converted back here —
+    /// storing them as-is would make `is_supported` always return false.
     async fn ensure_cache_initialized(&self) -> Result<()> {
         self.symbols_cache
             .get_or_init(|| async {
                 let markets = self.get_markets().await?;
-                Ok(markets.into_iter().map(|m| m.symbol).collect())
+                Ok(markets
+                    .into_iter()
+                    .map(|m| self.parse_symbol(&m.symbol))
+                    .collect())
             })
             .await
     }
