@@ -16,6 +16,7 @@ serde_json = "1.0"
 
 # WebSocket client
 tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+yawc = "0.3.4"
 url = "2.5"
 futures = "0.3"
 async-stream = "0.3"
