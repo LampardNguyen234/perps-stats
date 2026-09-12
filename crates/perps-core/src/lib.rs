@@ -1,3 +1,4 @@
+pub mod orderbook_cache;
 pub mod orderbook_manager;
 pub mod rate_limiter;
 pub mod retry;
@@ -7,6 +8,7 @@ pub mod traits;
 pub mod types;
 pub mod utils;
 
+pub use orderbook_cache::OrderbookPushCache;
 pub use orderbook_manager::{
     LocalOrderbook, OrderbookManager, OrderbookManagerConfig, OrderbookManagerHealth,
 };

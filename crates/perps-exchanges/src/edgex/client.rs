@@ -12,8 +12,9 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use futures::future::join_all;
 use perps_core::{
-    execute_with_retry, FundingRate, IPerps, Kline, Market, MarketStats, MultiResolutionOrderbook,
-    OpenInterest, RateLimit, RateLimiter, RetryConfig, Ticker, Trade,
+    execute_with_retry, FundingRate, IPerps, IPerpsStream, Kline, Market, MarketStats,
+    MultiResolutionOrderbook, OpenInterest, OrderbookPushCache, RateLimit, RateLimiter,
+    RetryConfig, Ticker, Trade,
 };
 use reqwest::Client;
 use std::collections::HashMap;
@@ -95,6 +96,37 @@ fn shared_state() -> Arc<EdgexSharedState> {
             refresh_guards: Mutex::new(HashMap::new()),
         })
     }))
+}
+
+/// Process-wide push-based orderbook cache (see `perps_core::OrderbookPushCache`), enabled
+/// only when `DATABASE_URL` is set and `ENABLE_ORDERBOOK_STREAMING=true` - same convention as
+/// every other client that offers this (`binance`, `aster`, `kucoin`, `extended`). `None`
+/// otherwise, in which case `get_orderbook` always uses the plain REST path below.
+///
+/// A separate `OnceLock` from `SHARED_STATE`: the initializer here constructs an
+/// `EdgexWsClient`, which itself owns an `EdgexClient` (`resolve_contract_id`'s home) - if
+/// this lived inside `shared_state()`'s own closure, that inner `EdgexClient::new()` call
+/// would re-enter `SHARED_STATE.get_or_init` before the outer call had returned. Calling this
+/// function only from `get_orderbook` (never during `EdgexClient::new()`/`shared_state()`
+/// construction) means `shared_state()` has always already returned by the time this runs.
+static ORDERBOOK_CACHE: OnceLock<Option<Arc<OrderbookPushCache>>> = OnceLock::new();
+
+fn orderbook_cache() -> Option<Arc<OrderbookPushCache>> {
+    ORDERBOOK_CACHE
+        .get_or_init(|| {
+            let enabled = std::env::var("DATABASE_URL").is_ok()
+                && std::env::var("ENABLE_ORDERBOOK_STREAMING")
+                    .map(|v| v.eq_ignore_ascii_case("true"))
+                    .unwrap_or(false);
+            if !enabled {
+                tracing::debug!("EdgeX: orderbook push-cache disabled, using REST-only mode");
+                return None;
+            }
+            tracing::info!("EdgeX: orderbook push-cache enabled (WebSocket-backed)");
+            let ws: Arc<dyn IPerpsStream> = Arc::new(super::ws_client::EdgexWsClient::new());
+            Some(Arc::new(OrderbookPushCache::new(ws)))
+        })
+        .clone()
 }
 
 /// REST client for the EdgeX perpetuals exchange (`https://edgex-prod-v2.edgex.exchange`).
@@ -517,7 +549,25 @@ impl IPerps for EdgexClient {
 
     /// `getDepth`'s `level` only accepts `15`/`200`; `depth` is clamped to the nearest
     /// supported level and the result truncated client-side to the caller's request.
+    ///
+    /// When the WS-backed orderbook push-cache is enabled (`ENABLE_ORDERBOOK_STREAMING=true`
+    /// + `DATABASE_URL` set), this serves from it instead: subscribes the symbol (idempotent,
+    /// auto-starts a background WS connection on first use) and returns the cached book on a
+    /// hit, falling back to the REST path below on a miss (not yet subscribed, or no frame has
+    /// arrived yet - e.g. immediately after process start).
     async fn get_orderbook(&self, symbol: &str, depth: u32) -> Result<MultiResolutionOrderbook> {
+        if let Some(cache) = orderbook_cache() {
+            let normalized = self.normalize_symbol(symbol);
+            cache.subscribe(&normalized).await;
+            if let Some(orderbook) = cache.get(&normalized, depth).await {
+                return Ok(MultiResolutionOrderbook::from_single(orderbook));
+            }
+            tracing::debug!(
+                "EdgeX: orderbook push-cache miss for {}, falling back to REST",
+                normalized
+            );
+        }
+
         let contract_id = self.resolve_contract_id(symbol).await?;
         let level = Self::depth_to_level(depth);
         tracing::debug!(

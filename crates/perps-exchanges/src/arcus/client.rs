@@ -6,8 +6,9 @@ use chrono::{DateTime, Utc};
 use futures::future::join_all;
 use once_cell::sync::OnceCell;
 use perps_core::{
-    execute_with_retry, FundingRate, IPerps, Kline, Market, MarketStats, MultiResolutionOrderbook,
-    OpenInterest, RateLimit, RateLimiter, RetryConfig, Ticker, Trade,
+    execute_with_retry, FundingRate, IPerps, IPerpsStream, Kline, Market, MarketStats,
+    MultiResolutionOrderbook, OpenInterest, OrderbookPushCache, RateLimit, RateLimiter,
+    RetryConfig, Ticker, Trade,
 };
 use reqwest::Client;
 use std::sync::Arc;
@@ -59,6 +60,32 @@ static SHARED_STATE: OnceCell<Arc<ArcusSharedState>> = OnceCell::new();
 fn shared_state() -> Arc<ArcusSharedState> {
     SHARED_STATE
         .get_or_init(|| Arc::new(ArcusSharedState::new()))
+        .clone()
+}
+
+/// Process-wide push-based orderbook cache (see `perps_core::OrderbookPushCache`), enabled
+/// only when `DATABASE_URL` is set and `ENABLE_ORDERBOOK_STREAMING=true` - same convention as
+/// `binance`/`aster`/`kucoin`/`extended`. `None` otherwise, in which case `get_orderbook`
+/// always uses the plain REST path. A separate `OnceCell` from `SHARED_STATE` for the same
+/// reason EdgeX's is: constructing `ArcusWsClient` here must happen after `shared_state()`
+/// has already returned once, not from inside its own initializer.
+static ORDERBOOK_CACHE: OnceCell<Option<Arc<OrderbookPushCache>>> = OnceCell::new();
+
+fn orderbook_cache() -> Option<Arc<OrderbookPushCache>> {
+    ORDERBOOK_CACHE
+        .get_or_init(|| {
+            let enabled = std::env::var("DATABASE_URL").is_ok()
+                && std::env::var("ENABLE_ORDERBOOK_STREAMING")
+                    .map(|v| v.eq_ignore_ascii_case("true"))
+                    .unwrap_or(false);
+            if !enabled {
+                tracing::debug!("Arcus: orderbook push-cache disabled, using REST-only mode");
+                return None;
+            }
+            tracing::info!("Arcus: orderbook push-cache enabled (WebSocket-backed)");
+            let ws: Arc<dyn IPerpsStream> = Arc::new(super::ws_client::ArcusWsClient::new());
+            Some(Arc::new(OrderbookPushCache::new(ws)))
+        })
         .clone()
 }
 
@@ -338,7 +365,23 @@ impl IPerps for ArcusClient {
         Ok(join_all(futures).await.into_iter().flatten().collect())
     }
 
+    /// When the WS-backed orderbook push-cache is enabled (`ENABLE_ORDERBOOK_STREAMING=true`
+    /// + `DATABASE_URL` set), this serves from it instead: subscribes the symbol (idempotent,
+    /// auto-starts a background WS connection on first use) and returns the cached book on a
+    /// hit, falling back to the REST path below on a miss.
     async fn get_orderbook(&self, symbol: &str, depth: u32) -> Result<MultiResolutionOrderbook> {
+        if let Some(cache) = orderbook_cache() {
+            let normalized = self.normalize_symbol(symbol);
+            cache.subscribe(&normalized).await;
+            if let Some(orderbook) = cache.get(&normalized, depth).await {
+                return Ok(MultiResolutionOrderbook::from_single(orderbook));
+            }
+            tracing::debug!(
+                "Arcus: orderbook push-cache miss for {}, falling back to REST",
+                normalized
+            );
+        }
+
         let arcus_symbol = self.parse_symbol(symbol);
         let raw = self.fetch_orderbook_raw(&arcus_symbol, depth).await?;
         let normalized = self.normalize_symbol(&arcus_symbol);
