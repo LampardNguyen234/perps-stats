@@ -315,18 +315,29 @@ mod tests {
         let data = MarketLiquidityData {
             product_id: 1,
             bids: vec![
-                ["50000000000000000000000".into(), "1500000000000000000".into()],
-                ["49999000000000000000000".into(), "2000000000000000000".into()],
+                [
+                    "50000000000000000000000".into(),
+                    "1500000000000000000".into(),
+                ],
+                [
+                    "49999000000000000000000".into(),
+                    "2000000000000000000".into(),
+                ],
             ],
             asks: vec![
-                ["50001000000000000000000".into(), "1000000000000000000".into()],
-                ["50002000000000000000000".into(), "1500000000000000000".into()],
+                [
+                    "50001000000000000000000".into(),
+                    "1000000000000000000".into(),
+                ],
+                [
+                    "50002000000000000000000".into(),
+                    "1500000000000000000".into(),
+                ],
             ],
             timestamp: "1694379600000000000".to_string(),
         };
 
-        let (orderbook, sequence) =
-            market_liquidity_to_orderbook("BTC-PERP_USDT0", &data).unwrap();
+        let (orderbook, sequence) = market_liquidity_to_orderbook("BTC-PERP_USDT0", &data).unwrap();
         assert_eq!(orderbook.symbol, "BTC-PERP_USDT0");
         assert_eq!(orderbook.bids.len(), 2);
         assert_eq!(orderbook.asks.len(), 2);

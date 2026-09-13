@@ -1171,8 +1171,14 @@ mod tests {
         assert!(result.is_ok());
         assert!(result.unwrap());
         assert_eq!(orderbook.data.read().last_update_id, 12346);
-        assert_eq!(orderbook.data.read().bids.get(&dec!(100.0)), Some(&dec!(2.0)));
-        assert_eq!(orderbook.data.read().asks.get(&dec!(102.0)), Some(&dec!(1.0)));
+        assert_eq!(
+            orderbook.data.read().bids.get(&dec!(100.0)),
+            Some(&dec!(2.0))
+        );
+        assert_eq!(
+            orderbook.data.read().asks.get(&dec!(102.0)),
+            Some(&dec!(1.0))
+        );
     }
 
     #[test]
@@ -1234,7 +1240,10 @@ mod tests {
         );
 
         assert!(result.is_ok());
-        assert_eq!(orderbook.data.read().bids.get(&dec!(100.0)), Some(&dec!(0.5)));
+        assert_eq!(
+            orderbook.data.read().bids.get(&dec!(100.0)),
+            Some(&dec!(0.5))
+        );
 
         // Apply delta that removes level via incremental reduction
         let result2 = orderbook.apply_delta(
@@ -1372,13 +1381,15 @@ mod tests {
         // replay bridges zero buffered events must still enforce Rule 4 strictly: this is
         // exactly what a real missed delta right after bootstrap looks like for those
         // exchanges, and must still force a reconnect.
-        let orderbook =
-            LocalOrderbook::new_empty("binance".to_string(), "BTC".to_string(), 100);
+        let orderbook = LocalOrderbook::new_empty("binance".to_string(), "BTC".to_string(), 100);
         let replayed = orderbook.apply_snapshot(vec![], vec![], 1000).unwrap();
         assert_eq!(replayed, 0);
 
         let result = orderbook.apply_delta(1005, 1005, 1002, vec![], vec![], false);
-        assert!(result.is_err(), "non-Nado exchanges must not get the seam exemption");
+        assert!(
+            result.is_err(),
+            "non-Nado exchanges must not get the seam exemption"
+        );
     }
 
     #[test]
@@ -1395,20 +1406,25 @@ mod tests {
 
         // previous_id=997 doesn't match snapshot_lastUpdateId=1000, but is exempted exactly once.
         let first = orderbook.apply_delta(1005, 1005, 997, vec![], vec![], false);
-        assert!(first.is_ok(), "first post-snapshot delta must be exempted from Rule 4");
+        assert!(
+            first.is_ok(),
+            "first post-snapshot delta must be exempted from Rule 4"
+        );
         assert_eq!(orderbook.data.read().last_update_id, 1005);
 
         // The exemption does not persist: a genuine gap on the very next delta must still fail.
         let second = orderbook.apply_delta(1010, 1010, 1006, vec![], vec![], false);
-        assert!(second.is_err(), "exemption must not carry over past the first delta");
+        assert!(
+            second.is_err(),
+            "exemption must not carry over past the first delta"
+        );
         assert_eq!(orderbook.data.read().last_update_id, 1005); // unchanged
     }
 
     #[test]
     fn test_apply_snapshot_with_straddling_event() {
         // Test Binance Step 5: "The first processed event should have U <= lastUpdateId AND u >= lastUpdateId"
-        let orderbook =
-            LocalOrderbook::new_empty("binance".to_string(), "BTC".to_string(), 100);
+        let orderbook = LocalOrderbook::new_empty("binance".to_string(), "BTC".to_string(), 100);
 
         // Simulate buffering before snapshot
         // Event 1: U=995, u=998 (entirely before snapshot)

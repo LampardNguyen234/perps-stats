@@ -236,6 +236,13 @@ impl RateLimiter {
         Self::new(vec![RateLimit::per_second(50), RateLimit::per_minute(3000)])
     }
 
+    /// Create preset rate limiter for StandX
+    /// - IP-level limit is 50 req/s (documented); using a conservative 20 req/s since
+    ///   StandX has no weight-bucket system (flat cost per request).
+    pub fn standx() -> Self {
+        Self::new(vec![RateLimit::per_second(20)])
+    }
+
     /// Create a disabled rate limiter (no limits)
     /// Useful for testing or when rate limiting is not needed
     pub fn disabled() -> Self {

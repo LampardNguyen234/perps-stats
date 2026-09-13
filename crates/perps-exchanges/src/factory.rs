@@ -16,6 +16,7 @@ use crate::pacifica::PacificaClient;
 use crate::paradex::ParadexClient;
 use crate::qfex::QfexClient;
 use crate::risex::RiseXClient;
+use crate::standx::StandxClient;
 use crate::tradexyz::TradexyzClient;
 use perps_core::traits::IPerps;
 
@@ -41,6 +42,7 @@ pub fn exchange_names() -> &'static [&'static str] {
         "paradex",
         "qfex",
         "risex",
+        "standx",
         "tradexyz",
     ]
 }
@@ -109,6 +111,10 @@ pub async fn all_exchanges() -> Vec<(String, Box<dyn IPerps + Send + Sync>)> {
         (
             "paradex".to_string(),
             Box::new(ParadexClient::new()) as Box<dyn IPerps + Send + Sync>,
+        ),
+        (
+            "standx".to_string(),
+            Box::new(StandxClient::new()) as Box<dyn IPerps + Send + Sync>,
         ),
     ];
 
@@ -185,8 +191,9 @@ pub async fn get_exchange(name: &str) -> anyhow::Result<Box<dyn IPerps + Send + 
         "paradex" => Ok(Box::new(ParadexClient::new())),
         "qfex" => Ok(Box::new(QfexClient::new())),
         "risex" => Ok(Box::new(RiseXClient::new())),
+        "standx" => Ok(Box::new(StandxClient::new())),
         "tradexyz" => Ok(Box::new(TradexyzClient::new())),
-        _ => anyhow::bail!("Unsupported exchange: {}. Currently supported: 01, arcus, aster, binance, bybit, edgex, extended, gravity, hibachi, hotstuff, hyperliquid, kucoin, lighter, nado, pacifica, paradex, qfex, risex, tradexyz", name),
+        _ => anyhow::bail!("Unsupported exchange: {}. Currently supported: 01, arcus, aster, binance, bybit, edgex, extended, gravity, hibachi, hotstuff, hyperliquid, kucoin, lighter, nado, pacifica, paradex, qfex, risex, standx, tradexyz", name),
     }
 }
 
@@ -313,6 +320,31 @@ mod tests {
         assert!(
             exchanges.iter().any(|(name, _)| name == "edgex"),
             "edgex missing from all_exchanges()"
+        );
+    }
+
+    /// Test that StandX exchange can be created via factory
+    #[tokio::test]
+    async fn test_get_exchange_standx() {
+        let result = get_exchange("standx").await;
+        assert!(result.is_ok(), "get_exchange(\"standx\") should succeed");
+        assert_eq!(result.unwrap().get_name(), "standx");
+    }
+
+    /// Test that StandX exchange respects case-insensitive exchange names
+    #[tokio::test]
+    async fn test_get_exchange_standx_case_insensitive() {
+        assert!(get_exchange("STANDX").await.is_ok());
+        assert!(get_exchange("StandX").await.is_ok());
+    }
+
+    /// Test that StandX is included in all_exchanges()
+    #[tokio::test]
+    async fn test_all_exchanges_includes_standx() {
+        let exchanges = all_exchanges().await;
+        assert!(
+            exchanges.iter().any(|(name, _)| name == "standx"),
+            "standx missing from all_exchanges()"
         );
     }
 

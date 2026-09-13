@@ -18,6 +18,7 @@ pub mod pacifica;
 pub mod paradex;
 pub mod qfex;
 pub mod risex;
+pub mod standx;
 pub mod symbol_aliases;
 pub mod tradexyz;
 
@@ -41,6 +42,7 @@ pub use pacifica::PacificaClient;
 pub use paradex::ParadexClient;
 pub use qfex::QfexClient;
 pub use risex::RiseXClient;
+pub use standx::StandxClient;
 pub use symbol_aliases::{init_aliases, resolve_alias, unresolve_alias};
 pub use tradexyz::TradexyzClient;
 
