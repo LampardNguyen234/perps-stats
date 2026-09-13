@@ -11,7 +11,7 @@ use tokio::sync::Mutex;
 
 #[derive(Args)]
 pub struct StreamArgs {
-    /// Exchange to stream from (supported: arcus, aster, binance, edgex, hyperliquid, bybit, kucoin, lighter, paradex, qfex)
+    /// Exchange to stream from (supported: arcus, aster, binance, edgex, hyperliquid, bybit, kucoin, lighter, paradex, qfex, 01)
     #[arg(short, long, default_value = "binance")]
     pub exchange: String,
 
@@ -61,8 +61,9 @@ pub async fn execute(args: StreamArgs) -> Result<()> {
             | "lighter"
             | "paradex"
             | "qfex"
+            | "01"
     ) {
-        anyhow::bail!("Only 'arcus', 'aster', 'binance', 'edgex', 'hyperliquid', 'bybit', 'kucoin', 'lighter', 'paradex', and 'qfex' exchanges are currently supported for streaming");
+        anyhow::bail!("Only 'arcus', 'aster', 'binance', 'edgex', 'hyperliquid', 'bybit', 'kucoin', 'lighter', 'paradex', 'qfex', and '01' exchanges are currently supported for streaming");
     }
 
     // Parse data types
@@ -265,6 +266,10 @@ pub async fn execute(args: StreamArgs) -> Result<()> {
             }
             "qfex" => {
                 let ws_client = perps_exchanges::qfex::QfexWsClient::new();
+                Box::new(ws_client.stream_multi(config).await?)
+            }
+            "01" => {
+                let ws_client = perps_exchanges::o1::O1WsClient::new();
                 Box::new(ws_client.stream_multi(config).await?)
             }
             _ => anyhow::bail!("Unsupported exchange for streaming: {}", args.exchange),

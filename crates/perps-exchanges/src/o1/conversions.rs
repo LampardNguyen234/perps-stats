@@ -10,7 +10,7 @@ use std::str::FromStr;
 /// Going through the string representation avoids the floating-point noise that
 /// `Decimal::from_f64_retain()` introduces (e.g. `0.00144` staying as `0.00144`
 /// instead of `0.0014400000000000000906913433`).
-fn f64_to_decimal(v: f64) -> Decimal {
+pub(crate) fn f64_to_decimal(v: f64) -> Decimal {
     if v.is_nan() || v.is_infinite() {
         return Decimal::ZERO;
     }
@@ -333,6 +333,7 @@ mod tests {
             imf: 0.02,
             mmf: 0.01,
             cmf: 0.0125,
+            mode: "clob".to_string(),
         };
 
         let market = nord_market_to_market(&m);

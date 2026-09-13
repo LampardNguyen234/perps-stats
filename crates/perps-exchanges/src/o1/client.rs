@@ -5,11 +5,12 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use perps_core::{
-    execute_with_retry, FundingRate, IPerps, Kline, Market, MarketStats, MultiResolutionOrderbook,
-    OpenInterest, RateLimiter, RetryConfig, Ticker, Trade,
+    execute_with_retry, FullOrderbookAdapter, FundingRate, IPerps, IPerpsStream, Kline, Market,
+    MarketStats, MultiResolutionOrderbook, OpenInterest, RateLimiter, RetryConfig, Ticker, Trade,
+    WsOrderbookConfig, WsOrderbookManager,
 };
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 
@@ -17,6 +18,39 @@ const BASE_URL: &str = "https://zo-mainnet.n1.xyz";
 const STATS_CACHE_TTL: Duration = Duration::from_secs(5);
 const ORDERBOOK_CACHE_TTL: Duration = Duration::from_secs(5);
 const MARKETS_CACHE_TTL: Duration = Duration::from_secs(300);
+
+/// Process-wide push-based orderbook cache (see `perps_core::WsOrderbookManager`), enabled
+/// only when `DATABASE_URL` is set and `ENABLE_ORDERBOOK_STREAMING=true` - same convention as
+/// every other client that offers this (`edgex`, `binance`, `aster`, `kucoin`, `extended`).
+/// `None` otherwise, in which case `get_orderbook` always uses the plain REST path below.
+///
+/// Named `WS_ORDERBOOK_CACHE` (not `ORDERBOOK_CACHE`) to avoid confusion with this file's
+/// existing per-market_id `ResponseCache<NordOrderbookInfo>` TTL cache, which this is
+/// unrelated to and layered in front of (a push-cache hit skips REST/`ResponseCache`
+/// entirely).
+static WS_ORDERBOOK_CACHE: OnceLock<Option<Arc<WsOrderbookManager>>> = OnceLock::new();
+
+fn ws_orderbook_cache() -> Option<Arc<WsOrderbookManager>> {
+    WS_ORDERBOOK_CACHE
+        .get_or_init(|| {
+            let enabled = std::env::var("DATABASE_URL").is_ok()
+                && std::env::var("ENABLE_ORDERBOOK_STREAMING")
+                    .map(|v| v.eq_ignore_ascii_case("true"))
+                    .unwrap_or(false);
+            if !enabled {
+                tracing::debug!("01: orderbook push-cache disabled, using REST-only mode");
+                return None;
+            }
+            tracing::info!("01: orderbook push-cache enabled (WebSocket-backed)");
+            let ws: Arc<dyn IPerpsStream> = Arc::new(super::ws_client::O1WsClient::new());
+            Some(Arc::new(WsOrderbookManager::new(
+                Arc::new(FullOrderbookAdapter(ws)),
+                WsOrderbookConfig::default(),
+                vec![],
+            )))
+        })
+        .clone()
+}
 
 // ---------------------------------------------------------------------------
 // ResponseCache<T> — generic TTL cache keyed by market_id (u32)
@@ -97,6 +131,7 @@ struct MarketsData {
 /// All endpoints use GET requests against the Nord mainnet API.
 ///
 /// Rate limit: 20 requests per second (conservative estimate).
+#[derive(Clone)]
 pub struct O1Client {
     http: reqwest::Client,
     base_url: String,
@@ -168,7 +203,11 @@ impl O1Client {
     }
 
     /// Make a rate-limited GET request with retry logic.
-    async fn get_request<T: serde::de::DeserializeOwned>(&self, path: &str) -> Result<T> {
+    ///
+    /// `pub(crate)` so `O1WsClient` can fetch an uncached, fresh orderbook snapshot to seed
+    /// its local book (the 5s TTL `orderbook_cache` would risk seeding from a snapshot
+    /// already older than the first WS delta).
+    pub(crate) async fn get_request<T: serde::de::DeserializeOwned>(&self, path: &str) -> Result<T> {
         let config = RetryConfig::default();
         let url = format!("{}{}", self.base_url, path);
         let client = self.http.clone();
@@ -220,10 +259,20 @@ impl O1Client {
         tracing::debug!("Fetching 01 markets info");
         let info: NordMarketsInfo = self.get_request("/info").await?;
 
+        // Only "clob" markets expose a public orderbook (`/market/{id}/orderbook`);
+        // "rfq" markets 404 on it. Since orderbook/liquidity data is core to this
+        // project, RFQ-mode markets are filtered out entirely rather than exposed
+        // as tickers with no book.
+        let clob_markets: Vec<NordMarketInfo> = info
+            .markets
+            .into_iter()
+            .filter(|m| m.mode == "clob")
+            .collect();
+
         let mut entries = HashMap::new();
         let mut symbol_set = std::collections::HashSet::new();
 
-        for m in &info.markets {
+        for m in &clob_markets {
             let global_symbol = self.normalize_symbol(&m.symbol);
             let entry = MarketEntry {
                 market_id: m.market_id,
@@ -239,7 +288,7 @@ impl O1Client {
         let mut guard = self.markets.write().await;
         *guard = Some(MarketsData {
             entries,
-            raw_markets: info.markets,
+            raw_markets: clob_markets,
             fetched_at: Instant::now(),
         });
 
@@ -247,7 +296,10 @@ impl O1Client {
     }
 
     /// Resolve a symbol (global or API format) to its market_id.
-    async fn resolve_market_id(&self, symbol: &str) -> Result<u32> {
+    ///
+    /// `pub(crate)` so `O1WsClient` can reuse the same cached market lookup rather than
+    /// duplicating `ensure_markets`/the entries map.
+    pub(crate) async fn resolve_market_id(&self, symbol: &str) -> Result<u32> {
         self.ensure_markets().await?;
         let api_symbol = self.parse_symbol(symbol);
 
@@ -295,6 +347,15 @@ impl Default for O1Client {
 
 #[async_trait]
 impl IPerps for O1Client {
+    async fn prewarm_streams(&self, symbols: &[String]) -> Result<()> {
+        if let Some(cache) = ws_orderbook_cache() {
+            cache
+                .prewarm(symbols.iter().map(|s| self.normalize_symbol(s)).collect())
+                .await?;
+        }
+        Ok(())
+    }
+
     fn get_name(&self) -> &str {
         "01"
     }
@@ -473,10 +534,21 @@ impl IPerps for O1Client {
         Ok(tickers)
     }
 
-    async fn get_orderbook(&self, symbol: &str, _depth: u32) -> Result<MultiResolutionOrderbook> {
-        let market_id = self.resolve_market_id(symbol).await?;
+    async fn get_orderbook(&self, symbol: &str, depth: u32) -> Result<MultiResolutionOrderbook> {
         let global_symbol = self.normalize_symbol(&self.parse_symbol(symbol));
 
+        if let Some(cache) = ws_orderbook_cache() {
+            cache.subscribe(global_symbol.clone()).await?;
+            if let Some(orderbook) = cache.get(&global_symbol, depth).await {
+                return Ok(MultiResolutionOrderbook::from_single(orderbook));
+            }
+            tracing::debug!(
+                "01: orderbook push-cache miss for {}, falling back to REST",
+                global_symbol
+            );
+        }
+
+        let market_id = self.resolve_market_id(symbol).await?;
         let ob = self.fetch_orderbook_cached(market_id).await?;
         let orderbook = nord_orderbook_to_orderbook(&ob, global_symbol.clone());
         let timestamp = orderbook.timestamp;

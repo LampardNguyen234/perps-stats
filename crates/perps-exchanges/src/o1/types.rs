@@ -20,6 +20,10 @@ pub struct NordMarketInfo {
     pub imf: f64,
     pub mmf: f64,
     pub cmf: f64,
+    /// "clob" (order book, `/market/{id}/orderbook` works) or "rfq" (quote-only,
+    /// no public order book - that endpoint 404s). Only "clob" markets are
+    /// exposed by this client since orderbook/liquidity data is core to this project.
+    pub mode: String,
 }
 
 /// A single token entry from the Nord `/info` endpoint
