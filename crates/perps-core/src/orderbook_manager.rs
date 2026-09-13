@@ -60,6 +60,19 @@ struct OrderbookData {
     /// gap/sequence signal (previous_id always 0) can't detect a dropped message any
     /// other way.
     crossed: bool,
+
+    /// Set by `apply_snapshot` when its replay bridged zero buffered events (every
+    /// buffered delta was stale/pre-snapshot). On some exchanges (Nado) the REST
+    /// snapshot's sequence value is a wall-clock sample of when it was computed, not a
+    /// checkpoint drawn from the same discrete id space as `previous_id` chains through
+    /// deltas - so it will never equal a delta's `previous_id`, even with zero data
+    /// loss. When true, `apply_delta`'s Rule 4 check is skipped exactly once (for the
+    /// first live delta that clears Rule 3's staleness bar), mirroring how Binance's own
+    /// snapshot spec never validates continuity for the snapshot-to-stream seam itself,
+    /// only for deltas relative to each other from that point on. Left false (and thus
+    /// never triggered) for exchanges like Binance/Aster where the snapshot's id already
+    /// is a valid point on the delta chain, so this never changes their behavior.
+    bootstrap_pending: bool,
 }
 
 /// Represents a local orderbook that maintains state and applies delta updates
@@ -72,6 +85,12 @@ pub struct LocalOrderbook {
     /// Protects the actual orderbook data
     /// Allows concurrent reads, exclusive writes
     data: ParkingRwLock<OrderbookData>,
+
+    /// Set once at construction (never mutated afterward, so no lock needed). See
+    /// `OrderbookData::bootstrap_pending`'s doc comment - only exchanges whose REST
+    /// snapshot sequence is NOT drawn from the same id space as delta `previous_id` chains
+    /// (currently: Nado) opt into this; everyone else keeps the original strict Rule 4.
+    tolerate_snapshot_seam: bool,
 }
 
 impl LocalOrderbook {
@@ -88,12 +107,23 @@ impl LocalOrderbook {
             update_buffer: VecDeque::with_capacity(buffer_size),
             buffer_size,
             crossed: false,
+            bootstrap_pending: false,
         };
 
         Self {
             snapshot_lock: ParkingMutex::new(()),
             data: ParkingRwLock::new(data),
+            tolerate_snapshot_seam: false,
         }
+    }
+
+    /// Opt this orderbook into the snapshot-seam Rule 4 exemption (see
+    /// `tolerate_snapshot_seam`'s doc comment). Builder-style so existing construction call
+    /// sites (tests included) are unaffected; only `OrderbookManager`'s init methods call this,
+    /// gated on `OrderbookManagerConfig::tolerate_snapshot_seam`.
+    pub(crate) fn with_tolerate_snapshot_seam(mut self, tolerate: bool) -> Self {
+        self.tolerate_snapshot_seam = tolerate;
+        self
     }
 
     /// Create a new LocalOrderbook from a snapshot
@@ -129,11 +159,13 @@ impl LocalOrderbook {
             update_buffer: VecDeque::with_capacity(buffer_size),
             buffer_size,
             crossed: false,
+            bootstrap_pending: false,
         };
 
         Self {
             snapshot_lock: ParkingMutex::new(()),
             data: ParkingRwLock::new(data),
+            tolerate_snapshot_seam: false,
         }
     }
 
@@ -264,6 +296,14 @@ impl LocalOrderbook {
             }
         }
 
+        // If nothing replayed, last_update_id is still the snapshot's own timestamp - not
+        // a checkpoint any delta's previous_id can ever equal on Nado (see bootstrap_pending's
+        // doc comment). Exempt exactly the next delta that clears Rule 3 from Rule 4. Gated on
+        // tolerate_snapshot_seam so exchanges with a chain-derived snapshot id (Binance/Aster/
+        // etc, where this same zero-replay case can legitimately mean a real missed delta)
+        // keep the original strict check.
+        data.bootstrap_pending = self.tolerate_snapshot_seam && replayed == 0;
+
         tracing::debug!(
             "[Snapshot] {}/{} replay complete: replayed={}, skipped={}, final_lastUpdateId={}",
             data.exchange,
@@ -363,22 +403,37 @@ impl LocalOrderbook {
             return Ok(false);
         }
 
-        // Rule 4: Continuity validation
+        // Rule 4: Continuity validation. The first delta to reach this point after a
+        // snapshot whose replay bridged zero events is exempted once (bootstrap_pending) -
+        // see its doc comment on OrderbookData for why that specific case is a false
+        // positive, not a real gap.
+        let bootstrap_exempt = data.bootstrap_pending;
+        data.bootstrap_pending = false;
         if previous_id != 0 && previous_id != data.last_update_id {
-            tracing::error!(
-                "[WS Update] {}/{} CRITICAL: previous_id mismatch (Rule 4)! pu={}, lastUpdateId={}. Reconnection required!",
-                data.exchange,
-                data.symbol,
-                previous_id,
-                data.last_update_id
-            );
-            return Err(anyhow::anyhow!(
-                "Previous ID mismatch for {}/{} (Rule 4): pu={}, expected={}. Sequence integrity violated.",
-                data.exchange,
-                data.symbol,
-                previous_id,
-                data.last_update_id
-            ));
+            if bootstrap_exempt {
+                tracing::debug!(
+                    "[WS Update] {}/{} snapshot-seam pu mismatch ignored (bootstrap replay bridged zero events): pu={}, snapshot_lastUpdateId={}",
+                    data.exchange,
+                    data.symbol,
+                    previous_id,
+                    data.last_update_id
+                );
+            } else {
+                tracing::error!(
+                    "[WS Update] {}/{} CRITICAL: previous_id mismatch (Rule 4)! pu={}, lastUpdateId={}. Reconnection required!",
+                    data.exchange,
+                    data.symbol,
+                    previous_id,
+                    data.last_update_id
+                );
+                return Err(anyhow::anyhow!(
+                    "Previous ID mismatch for {}/{} (Rule 4): pu={}, expected={}. Sequence integrity violated.",
+                    data.exchange,
+                    data.symbol,
+                    previous_id,
+                    data.last_update_id
+                ));
+            }
         }
 
         // All validation passed, apply the update
@@ -692,6 +747,12 @@ pub struct OrderbookManagerConfig {
     /// - Binance/Aster: Use 100 (handles race condition during REST snapshot fetch)
     /// - Extended: Use 1000 (SNAPSHOT arrives quickly via WebSocket)
     pub update_buffer_size: usize,
+
+    /// See `LocalOrderbook::tolerate_snapshot_seam`'s doc comment. Only true for exchanges
+    /// whose REST snapshot sequence value is independently sampled from the same clock as
+    /// deltas but not a checkpoint drawn from their discrete id chain (currently: Nado).
+    /// False for every other exchange, preserving the original strict Rule 4.
+    pub tolerate_snapshot_seam: bool,
 }
 
 impl Default for OrderbookManagerConfig {
@@ -699,6 +760,7 @@ impl Default for OrderbookManagerConfig {
         Self {
             staleness_threshold: std::time::Duration::from_secs(2),
             update_buffer_size: 100,
+            tolerate_snapshot_seam: false,
         }
     }
 }
@@ -709,6 +771,17 @@ impl OrderbookManagerConfig {
     pub fn for_binance_aster() -> Self {
         Self {
             update_buffer_size: 100,
+            ..Default::default()
+        }
+    }
+
+    /// Nado's `market_liquidity` REST snapshot timestamp is a wall-clock sample, not a
+    /// checkpoint drawn from the same discrete id space as the WS delta chain's
+    /// `previous_id` - see `LocalOrderbook::tolerate_snapshot_seam`'s doc comment for the
+    /// full mechanics of the false-positive Rule 4 this otherwise causes.
+    pub fn for_nado() -> Self {
+        Self {
+            tolerate_snapshot_seam: true,
             ..Default::default()
         }
     }
@@ -782,7 +855,8 @@ impl OrderbookManager {
             self.exchange.clone(),
             symbol.clone(),
             self.config.update_buffer_size,
-        );
+        )
+        .with_tolerate_snapshot_seam(self.config.tolerate_snapshot_seam);
 
         let mut orderbooks = self.orderbooks.write().await;
         orderbooks.insert(symbol.clone(), Arc::new(local_orderbook));
@@ -1290,6 +1364,44 @@ mod tests {
 
         assert!(result2.is_err()); // Should error on previous_id mismatch
         assert_eq!(orderbook.data.read().last_update_id, 12346); // Unchanged
+    }
+
+    #[test]
+    fn test_bootstrap_seam_exemption_requires_tolerate_flag() {
+        // Without tolerate_snapshot_seam (the default - Binance/Aster/etc), a snapshot whose
+        // replay bridges zero buffered events must still enforce Rule 4 strictly: this is
+        // exactly what a real missed delta right after bootstrap looks like for those
+        // exchanges, and must still force a reconnect.
+        let orderbook =
+            LocalOrderbook::new_empty("binance".to_string(), "BTC".to_string(), 100);
+        let replayed = orderbook.apply_snapshot(vec![], vec![], 1000).unwrap();
+        assert_eq!(replayed, 0);
+
+        let result = orderbook.apply_delta(1005, 1005, 1002, vec![], vec![], false);
+        assert!(result.is_err(), "non-Nado exchanges must not get the seam exemption");
+    }
+
+    #[test]
+    fn test_bootstrap_seam_exemption_applies_once_for_nado() {
+        // Reproduces the exact live-captured Nado sequence: market_liquidity's snapshot
+        // timestamp is a wall-clock sample, not a checkpoint on the WS delta chain, so when
+        // the only buffered event predates it (replayed=0), the next live delta's previous_id
+        // legitimately references that earlier discarded event instead of the snapshot's own
+        // timestamp - a false-positive Rule 4 with zero actual data loss.
+        let orderbook = LocalOrderbook::new_empty("nado".to_string(), "DOGE".to_string(), 100)
+            .with_tolerate_snapshot_seam(true);
+        let replayed = orderbook.apply_snapshot(vec![], vec![], 1000).unwrap();
+        assert_eq!(replayed, 0);
+
+        // previous_id=997 doesn't match snapshot_lastUpdateId=1000, but is exempted exactly once.
+        let first = orderbook.apply_delta(1005, 1005, 997, vec![], vec![], false);
+        assert!(first.is_ok(), "first post-snapshot delta must be exempted from Rule 4");
+        assert_eq!(orderbook.data.read().last_update_id, 1005);
+
+        // The exemption does not persist: a genuine gap on the very next delta must still fail.
+        let second = orderbook.apply_delta(1010, 1010, 1006, vec![], vec![], false);
+        assert!(second.is_err(), "exemption must not carry over past the first delta");
+        assert_eq!(orderbook.data.read().last_update_id, 1005); // unchanged
     }
 
     #[test]

@@ -51,16 +51,25 @@ pub struct ContractData {
     pub price_change_percent_24h: f64,
 }
 
-/// Response from the /orderbook endpoint
+/// Response envelope from `GET /query?type=market_liquidity&...`
+/// (all Nado gateway queries wrap their payload in `{status, data, request_type}`).
 #[derive(Debug, Deserialize, Clone)]
-pub struct OrderbookResponse {
+pub struct MarketLiquidityQueryResponse {
+    pub data: MarketLiquidityData,
+}
+
+/// `data` field of a `market_liquidity` query response.
+#[derive(Debug, Deserialize, Clone)]
+pub struct MarketLiquidityData {
     pub product_id: u32,
-    pub ticker_id: String,
-    /// Bids are [[price, quantity], ...]
-    pub bids: Vec<[f64; 2]>,
-    /// Asks are [[price, quantity], ...]
-    pub asks: Vec<[f64; 2]>,
-    pub timestamp: i64,
+    /// Bids are [[price_x18, size_x18], ...], best price first.
+    pub bids: Vec<[String; 2]>,
+    /// Asks are [[price_x18, size_x18], ...], best price first.
+    pub asks: Vec<[String; 2]>,
+    /// Nanosecond timestamp - lives in the same clock as the WS book_depth stream's
+    /// min/max/last_max_timestamp chain (per Nado's docs), unlike /orderbook's millisecond
+    /// wall-clock capture time. This is what makes it usable as apply_snapshot's last_update_id.
+    pub timestamp: String,
 }
 
 /// Response from the /trades endpoint

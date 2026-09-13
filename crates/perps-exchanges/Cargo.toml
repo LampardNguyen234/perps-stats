@@ -8,7 +8,11 @@ edition = "2021"
 perps-core = { path = "../perps-core" }
 
 # HTTP client
-reqwest = { version = "0.12", features = ["json"] }
+# gzip/brotli/deflate: Nado's gateway rejects requests whose Accept-Encoding doesn't advertise
+# one of these (403 "Invalid compression headers"); these features make reqwest send that
+# header and transparently decompress the response, rather than us building the header by hand
+# and then failing to decode a gzipped body.
+reqwest = { version = "0.12", features = ["json", "gzip", "brotli", "deflate"] }
 
 # JSON serialization
 serde = { version = "1.0", features = ["derive"] }

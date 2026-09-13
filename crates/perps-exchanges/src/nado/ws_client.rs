@@ -9,7 +9,6 @@ use futures::{SinkExt, StreamExt};
 use perps_core::{
     ConnectionConfig, DepthUpdate, DepthUpdateStream, OrderbookLevel, OrderbookStreamer,
 };
-use rust_decimal::Decimal;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -17,7 +16,6 @@ use tokio::sync::OnceCell;
 use yawc::{Frame, OpCode, Options, TcpWebSocket, WebSocket};
 
 const WS_BASE_URL: &str = "wss://gateway.prod.nado.xyz/v1/subscribe";
-const X18_SCALE: u32 = 18;
 
 #[derive(Debug, Default)]
 struct ProductMappings {
@@ -128,18 +126,13 @@ impl Default for NadoWsClient {
     }
 }
 
-fn x18_decimal(value: &str) -> Result<Decimal> {
-    let raw = value.parse::<i128>().context("invalid Nado x18 value")?;
-    Ok(Decimal::from_i128_with_scale(raw, X18_SCALE))
-}
-
 fn convert_levels(levels: Vec<[String; 2]>) -> Result<Vec<OrderbookLevel>> {
     levels
         .into_iter()
         .map(|[price, quantity]| {
             Ok(OrderbookLevel {
-                price: x18_decimal(&price)?,
-                quantity: x18_decimal(&quantity)?,
+                price: super::conversions::x18_decimal(&price)?,
+                quantity: super::conversions::x18_decimal(&quantity)?,
             })
         })
         .collect()
@@ -347,6 +340,7 @@ mod tests {
 
     #[test]
     fn converts_x18_values_exactly() {
+        use crate::nado::conversions::x18_decimal;
         assert_eq!(x18_decimal("77375000000000000000000").unwrap(), dec!(77375));
         assert_eq!(x18_decimal("1250000000000000000").unwrap(), dec!(1.25));
         assert_eq!(x18_decimal("1").unwrap(), dec!(0.000000000000000001));

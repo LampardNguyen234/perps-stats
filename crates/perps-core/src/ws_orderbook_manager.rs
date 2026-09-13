@@ -177,6 +177,7 @@ impl WsOrderbookManager {
             "binance" | "aster" => OrderbookManagerConfig::for_binance_aster(),
             "kucoin" => OrderbookManagerConfig::for_kucoin(),
             "extended" => OrderbookManagerConfig::for_extended(),
+            "nado" => OrderbookManagerConfig::for_nado(),
             _ => OrderbookManagerConfig::default(),
         };
         let shared = Arc::new(Shared {

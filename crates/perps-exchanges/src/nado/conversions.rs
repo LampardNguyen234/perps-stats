@@ -6,7 +6,7 @@ use perps_core::{
 use rust_decimal::prelude::FromPrimitive;
 use rust_decimal::Decimal;
 
-use super::types::{ContractData, OrderbookResponse, Pair, TickerData};
+use super::types::{ContractData, MarketLiquidityData, Pair, TickerData};
 
 /// Convert Nado Pair to core Market
 pub fn pair_to_market(pair: &Pair) -> Result<Market> {
@@ -149,26 +149,35 @@ pub fn merge_ticker_and_contract(ticker: &TickerData, contract: &ContractData) -
     })
 }
 
-/// Convert Nado OrderbookResponse to core Orderbook
-pub fn orderbook_response_to_orderbook(response: &OrderbookResponse) -> Result<Orderbook> {
-    let mut bid_levels = Vec::new();
-    let mut ask_levels = Vec::new();
+/// Parse a Nado x18 fixed-point string (decimal digits scaled by 10^18) into an exact Decimal.
+/// Shared with `ws_client.rs`'s book_depth conversion so both REST and WS parsing agree bit-for-bit.
+pub(crate) fn x18_decimal(value: &str) -> Result<Decimal> {
+    let raw = value.parse::<i128>().context("invalid Nado x18 value")?;
+    Ok(Decimal::from_i128_with_scale(raw, 18))
+}
 
-    // Convert bids [[price, quantity], ...]
-    for bid in &response.bids {
-        let price = Decimal::from_f64(bid[0]).context("Failed to parse bid price")?;
-        let quantity = Decimal::from_f64(bid[1]).context("Failed to parse bid quantity")?;
+fn convert_x18_levels(levels: &[[String; 2]]) -> Result<Vec<OrderbookLevel>> {
+    levels
+        .iter()
+        .map(|[price, quantity]| {
+            Ok(OrderbookLevel {
+                price: x18_decimal(price)?,
+                quantity: x18_decimal(quantity)?,
+            })
+        })
+        .collect()
+}
 
-        bid_levels.push(OrderbookLevel { price, quantity });
-    }
-
-    // Convert asks [[price, quantity], ...]
-    for ask in &response.asks {
-        let price = Decimal::from_f64(ask[0]).context("Failed to parse ask price")?;
-        let quantity = Decimal::from_f64(ask[1]).context("Failed to parse ask quantity")?;
-
-        ask_levels.push(OrderbookLevel { price, quantity });
-    }
+/// Convert a Nado `market_liquidity` snapshot into a core Orderbook plus its ns-precision
+/// sequence. That sequence is what `WsOrderbookManager` passes to `apply_snapshot` as
+/// `last_update_id` - see `MarketLiquidityData::timestamp` for why this endpoint (not
+/// `/orderbook`) is the correct REST bootstrap source for the book_depth WS stream.
+pub fn market_liquidity_to_orderbook(
+    ticker_id: &str,
+    data: &MarketLiquidityData,
+) -> Result<(Orderbook, u64)> {
+    let mut bid_levels = convert_x18_levels(&data.bids)?;
+    let mut ask_levels = convert_x18_levels(&data.asks)?;
 
     // Ensure bids are sorted descending (highest first)
     bid_levels.sort_by(|a, b| b.price.cmp(&a.price));
@@ -176,18 +185,21 @@ pub fn orderbook_response_to_orderbook(response: &OrderbookResponse) -> Result<O
     // Ensure asks are sorted ascending (lowest first)
     ask_levels.sort_by(|a, b| a.price.cmp(&b.price));
 
-    // Convert timestamp (milliseconds to DateTime)
-    let timestamp = Utc
-        .timestamp_millis_opt(response.timestamp)
-        .single()
-        .unwrap_or_else(Utc::now);
+    let sequence: u64 = data
+        .timestamp
+        .parse()
+        .context("invalid Nado market_liquidity timestamp")?;
+    let timestamp = Utc.timestamp_nanos(sequence as i64);
 
-    Ok(Orderbook {
-        symbol: response.ticker_id.clone(),
-        bids: bid_levels,
-        asks: ask_levels,
-        timestamp,
-    })
+    Ok((
+        Orderbook {
+            symbol: ticker_id.to_string(),
+            bids: bid_levels,
+            asks: ask_levels,
+            timestamp,
+        },
+        sequence,
+    ))
 }
 
 /// Convert ContractData to FundingRate
@@ -299,19 +311,26 @@ mod tests {
     }
 
     #[test]
-    fn test_orderbook_conversion() {
-        let response = OrderbookResponse {
+    fn test_market_liquidity_conversion() {
+        let data = MarketLiquidityData {
             product_id: 1,
-            ticker_id: "BTC-PERP_USDT0".to_string(),
-            bids: vec![[50000.0, 1.5], [49999.0, 2.0]],
-            asks: vec![[50001.0, 1.0], [50002.0, 1.5]],
-            timestamp: 1694379600000,
+            bids: vec![
+                ["50000000000000000000000".into(), "1500000000000000000".into()],
+                ["49999000000000000000000".into(), "2000000000000000000".into()],
+            ],
+            asks: vec![
+                ["50001000000000000000000".into(), "1000000000000000000".into()],
+                ["50002000000000000000000".into(), "1500000000000000000".into()],
+            ],
+            timestamp: "1694379600000000000".to_string(),
         };
 
-        let orderbook = orderbook_response_to_orderbook(&response).unwrap();
+        let (orderbook, sequence) =
+            market_liquidity_to_orderbook("BTC-PERP_USDT0", &data).unwrap();
         assert_eq!(orderbook.symbol, "BTC-PERP_USDT0");
         assert_eq!(orderbook.bids.len(), 2);
         assert_eq!(orderbook.asks.len(), 2);
+        assert_eq!(sequence, 1694379600000000000);
 
         // Check sorting
         assert!(orderbook.bids[0].price > orderbook.bids[1].price); // Descending

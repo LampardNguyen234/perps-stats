@@ -1,8 +1,8 @@
 use crate::cache::SymbolsCache;
 use crate::nado::types::*;
 use crate::nado::ws_client::NadoWsClient;
-use crate::nado::GATEWAY_URL;
-use anyhow::{anyhow, Context, Result};
+use crate::nado::{GATEWAY_QUERY_URL, GATEWAY_URL};
+use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use perps_core::{
@@ -11,7 +11,9 @@ use perps_core::{
     Ticker, Trade, WsOrderbookConfig, WsOrderbookManager,
 };
 use reqwest::Client;
+use std::collections::HashMap;
 use std::sync::Arc;
+use tokio::sync::OnceCell;
 use tracing;
 
 const ARCHIVE_URL: &str = "https://archive.prod.nado.xyz/v2";
@@ -24,6 +26,9 @@ pub struct NadoClient {
     symbols_cache: SymbolsCache,
     rate_limiter: Arc<RateLimiter>,
     stream_manager: Option<Arc<WsOrderbookManager>>,
+    /// ticker_id -> product_id, lazily built from `/pairs` (market_liquidity needs product_id,
+    /// unlike the old /orderbook endpoint which took ticker_id directly).
+    product_ids: Arc<OnceCell<HashMap<String, u32>>>,
 }
 
 impl NadoClient {
@@ -55,7 +60,29 @@ impl NadoClient {
             symbols_cache: SymbolsCache::new(),
             rate_limiter: Arc::new(RateLimiter::nado()),
             stream_manager,
+            product_ids: Arc::new(OnceCell::new()),
         }
+    }
+
+    /// Resolve a ticker_id to its product_id via `/pairs`, cached for the process lifetime
+    /// (product_id assignments don't change without a new listing).
+    async fn product_id_for(&self, ticker_id: &str) -> Result<u32> {
+        let map = self
+            .product_ids
+            .get_or_try_init(|| async {
+                let url = format!("{}/pairs?market=perp", self.gateway_url);
+                let pairs: Vec<Pair> = self.get(&url).await?;
+                Ok::<_, anyhow::Error>(
+                    pairs
+                        .into_iter()
+                        .map(|pair| (pair.ticker_id, pair.product_id))
+                        .collect::<HashMap<_, _>>(),
+                )
+            })
+            .await?;
+        map.get(ticker_id)
+            .copied()
+            .ok_or_else(|| anyhow!("Nado: no product_id for ticker_id {ticker_id}"))
     }
 
     /// Ensure the symbols cache is initialized
@@ -127,24 +154,19 @@ impl NadoClient {
     }
 
     async fn fetch_orderbook_rest(&self, ticker_id: &str, depth: u32) -> Result<(Orderbook, u64)> {
+        let product_id = self.product_id_for(ticker_id).await?;
+        // Nado's docs (`Maintaining a Local Orderbook`) name market_liquidity, not /orderbook,
+        // as the snapshot source for bootstrapping a book_depth WS stream: its `timestamp` is
+        // nanosecond-precision in the same clock as book_depth's min/max/last_max_timestamp
+        // chain, so it's directly comparable for apply_snapshot's staleness/continuity checks.
+        // /orderbook's timestamp is a millisecond wall-clock capture time - a different clock -
+        // which is what caused the Rule 3/4 reconnect storm this replaced.
         let url = format!(
-            "{}/orderbook?ticker_id={}&depth={}",
-            self.gateway_url, ticker_id, depth
+            "{GATEWAY_QUERY_URL}/query?type=market_liquidity&product_id={product_id}&depth={depth}"
         );
-        tracing::debug!(%ticker_id, "fetching Nado orderbook");
-        let response: OrderbookResponse = self.get(&url).await?;
-        // REST timestamp is milliseconds (see conversions::orderbook_response_to_orderbook's
-        // timestamp_millis_opt), but the WS book_depth stream's min/max/last_max_timestamp
-        // (-> DepthUpdate::first_update_id/final_update_id/previous_id) are nanoseconds.
-        // orderbook_manager's Rule 3/4 continuity checks compare this sequence directly against
-        // those WS ids, so it must be scaled to nanoseconds or every WS update looks stale/gapped
-        // and the stream reconnect-loops forever.
-        let sequence = u64::try_from(response.timestamp)
-            .context("Nado orderbook timestamp cannot be negative")?
-            .checked_mul(1_000_000)
-            .context("Nado orderbook timestamp overflowed converting ms to ns")?;
-        let orderbook = super::conversions::orderbook_response_to_orderbook(&response)?;
-        Ok((orderbook, sequence))
+        tracing::debug!(%ticker_id, product_id, "fetching Nado market liquidity snapshot");
+        let response: MarketLiquidityQueryResponse = self.get(&url).await?;
+        super::conversions::market_liquidity_to_orderbook(ticker_id, &response.data)
     }
 }
 
