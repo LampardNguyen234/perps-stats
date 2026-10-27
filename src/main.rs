@@ -97,6 +97,26 @@ async fn main() -> Result<()> {
             })
             .await?;
         }
+        Commands::TopMarkets {
+            exchange,
+            limit,
+            by,
+            vol_method,
+            interval,
+            range,
+            format,
+        } => {
+            commands::top_markets::execute(commands::top_markets::TopMarketsArgs {
+                exchange,
+                limit,
+                by,
+                vol_method,
+                interval,
+                range,
+                format,
+            })
+            .await?;
+        }
         Commands::Market {
             exchange,
             symbols,
@@ -160,6 +180,9 @@ async fn main() -> Result<()> {
                 database_url,
             })
             .await?;
+        }
+        Commands::FundingHistory(args) => {
+            commands::funding::execute(args).await?;
         }
         Commands::Export(args) => {
             commands::export::execute(args).await?;

@@ -735,11 +735,13 @@ impl IPerps for BinanceClient {
     }
 
     async fn get_all_tickers(&self) -> anyhow::Result<Vec<Ticker>> {
-        // Fetch 24hr ticker data, premium index data, book ticker data, and open interest data
+        // Fetch 24hr ticker data, premium index data, and book ticker data.
+        // Binance futures has no bulk open-interest endpoint (/fapi/v1/openInterest
+        // requires a single `symbol`), so open interest is left at zero here;
+        // callers needing OI per-symbol should use get_open_interest().
         let ticker_data: serde_json::Value = self.get("/fapi/v1/ticker/24hr").await?;
         let premium_data: serde_json::Value = self.get("/fapi/v1/premiumIndex").await?;
         let book_ticker_data: serde_json::Value = self.get("/fapi/v1/ticker/bookTicker").await?;
-        let open_interest_data: serde_json::Value = self.get("/fapi/v1/openInterest").await?;
 
         let tickers_array = ticker_data
             .as_array()
@@ -748,9 +750,6 @@ impl IPerps for BinanceClient {
             .as_array()
             .ok_or(BinanceError::InvalidResponse)?;
         let book_ticker_array = book_ticker_data
-            .as_array()
-            .ok_or(BinanceError::InvalidResponse)?;
-        let open_interest_array = open_interest_data
             .as_array()
             .ok_or(BinanceError::InvalidResponse)?;
 
@@ -769,31 +768,17 @@ impl IPerps for BinanceClient {
             }
         }
 
-        let mut open_interest_map = std::collections::HashMap::new();
-        for oi_item in open_interest_array {
-            if let Some(symbol) = oi_item["symbol"].as_str() {
-                if let Ok(oi) = str_to_decimal(oi_item["openInterest"].as_str().unwrap_or("0")) {
-                    open_interest_map.insert(symbol.to_string(), oi);
-                }
-            }
-        }
-
         let mut tickers = Vec::new();
         for ticker_item in tickers_array {
             if let Some(symbol) = ticker_item["symbol"].as_str() {
                 if let (Some(premium_item), Some(book_item)) =
                     (premium_map.get(symbol), book_ticker_map.get(symbol))
                 {
-                    // Get open interest or use zero if not available
-                    let oi = open_interest_map
-                        .get(symbol)
-                        .copied()
-                        .unwrap_or(Decimal::ZERO);
                     match self.convert_ticker(
                         ticker_item.clone(),
                         premium_item.clone(),
                         book_item.clone(),
-                        oi,
+                        Decimal::ZERO,
                     ) {
                         Ok(ticker) => tickers.push(ticker),
                         Err(e) => warn!("Failed to convert ticker for {}: {}", symbol, e),
@@ -991,19 +976,22 @@ impl IPerps for BinanceClient {
     }
 
     async fn get_all_market_stats(&self) -> anyhow::Result<Vec<MarketStats>> {
-        // This is less efficient but works with public API
+        // This is less efficient but works with public API.
+        // Binance has no bulk open-interest endpoint (/fapi/v1/openInterest is
+        // per-symbol only), and with 400+ futures symbols fetching it for all
+        // of them here would be too slow/unpredictable to run on every call.
+        // Open interest is left at zero; callers that need it should fetch it
+        // per symbol via get_open_interest() for just the symbols they care about.
         let tickers = self.get_all_tickers().await?;
 
-        let mut stats = Vec::new();
-        for ticker in tickers {
-            // For efficiency, we'll skip getting OI and funding for each symbol
-            // in the all_market_stats call. Users can call get_market_stats for detailed info
-            stats.push(MarketStats {
+        let stats = tickers
+            .into_iter()
+            .map(|ticker| MarketStats {
                 symbol: ticker.symbol.clone(),
                 volume_24h: ticker.volume_24h,
                 turnover_24h: ticker.turnover_24h,
-                open_interest: Decimal::ZERO, // Would need separate call per symbol
-                funding_rate: Decimal::ZERO,  // Would need separate call per symbol
+                open_interest: Decimal::ZERO,
+                funding_rate: Decimal::ZERO,
                 last_price: ticker.last_price,
                 mark_price: ticker.mark_price,
                 index_price: ticker.index_price,
@@ -1012,8 +1000,8 @@ impl IPerps for BinanceClient {
                 high_price_24h: ticker.high_price_24h,
                 low_price_24h: ticker.low_price_24h,
                 timestamp: ticker.timestamp,
-            });
-        }
+            })
+            .collect();
 
         Ok(stats)
     }

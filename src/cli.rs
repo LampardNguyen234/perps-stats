@@ -180,6 +180,9 @@ pub enum Commands {
         database_url: Option<String>,
     },
 
+    /// Fetch funding rate history for a single symbol on a single exchange (live API)
+    FundingHistory(crate::commands::funding::FundingHistoryArgs),
+
     /// Export all database tables to CSV or Excel files
     Export(crate::commands::export::ExportArgs),
 
@@ -196,6 +199,37 @@ pub enum Commands {
     Stats {
         #[command(subcommand)]
         command: StatsCommands,
+    },
+
+    /// List top markets on a single exchange ranked by volume or open interest
+    TopMarkets {
+        /// Exchange name (e.g., binance). Single exchange only.
+        #[arg(short, long)]
+        exchange: String,
+
+        /// Number of markets to return
+        #[arg(short, long, default_value = "20")]
+        limit: usize,
+
+        /// Rank by "volume" (24h notional turnover) or "oi" (open interest)
+        #[arg(long, default_value = "volume")]
+        by: String,
+
+        /// Volatility estimator(s) to display: realized, parkinson, gl, or all
+        #[arg(long, default_value = "all")]
+        vol_method: String,
+
+        /// Kline interval used for the volatility calculation
+        #[arg(short, long, default_value = "1h")]
+        interval: String,
+
+        /// Lookback range for the volatility calculation (e.g., 24h, 7d, 90d)
+        #[arg(long, default_value = "90d")]
+        range: String,
+
+        /// Output format (table, json, csv)
+        #[arg(short, long, default_value = "table")]
+        format: String,
     },
 
     /// Show liquidity distribution of symbols across venues at given bps levels

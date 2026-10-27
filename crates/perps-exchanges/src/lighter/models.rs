@@ -126,20 +126,33 @@ pub struct FundingRate {
     pub rate: f64,
 }
 
+// Lighter renamed /candlesticks -> /candles and shortened the response field
+// names (see https://apidocs.lighter.xyz/reference/candles); the old
+// "resolution"/"candlesticks"/"timestamp"/... names 403 at the CDN now.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct CandlesticksResponse {
+    #[serde(rename = "r")]
     pub resolution: String,
+    #[serde(rename = "c")]
     pub candlesticks: Vec<Candlestick>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Candlestick {
+    #[serde(rename = "t")]
     pub timestamp: i64, // milliseconds
+    #[serde(rename = "o")]
     pub open: f64,
+    #[serde(rename = "h")]
     pub high: f64,
+    #[serde(rename = "l")]
     pub low: f64,
+    #[serde(rename = "c")]
     pub close: f64,
+    #[serde(rename = "v")]
     pub volume0: f64, // base volume
+    #[serde(rename = "V")]
     pub volume1: f64, // quote volume
+    #[serde(rename = "i")]
     pub last_trade_id: u64,
 }

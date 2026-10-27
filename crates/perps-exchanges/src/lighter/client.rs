@@ -408,9 +408,11 @@ impl IPerps for LighterClient {
         let end = end_time.unwrap_or(now);
         let count_back = limit.unwrap_or(1000); // Default to 1000 if not specified
 
-        // Build the URL with all required parameters
+        // Build the URL with all required parameters.
+        // Lighter renamed this endpoint from /candlesticks to /candles; the old
+        // path now 403s at the CDN edge (see https://apidocs.lighter.xyz/reference/candles).
         let url = format!(
-            "{}/candlesticks?market_id={}&resolution={}&start_timestamp={}&end_timestamp={}&count_back={}",
+            "{}/candles?market_id={}&resolution={}&start_timestamp={}&end_timestamp={}&count_back={}",
             self.base_url,
             market_id,
             interval,

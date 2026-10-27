@@ -57,7 +57,7 @@ pub(crate) enum VolatilityMethod {
 }
 
 impl VolatilityMethod {
-    fn display_name(self) -> &'static str {
+    pub(crate) fn display_name(self) -> &'static str {
         match self {
             Self::Realized => "REALIZED",
             Self::Parkinson => "PARKINSON",
@@ -266,7 +266,7 @@ fn validate_selection(symbols: &[String], exchanges: &[String]) -> Result<()> {
     Ok(())
 }
 
-fn parse_methods(value: &str) -> Result<Vec<VolatilityMethod>> {
+pub(crate) fn parse_methods(value: &str) -> Result<Vec<VolatilityMethod>> {
     match value.trim().to_ascii_lowercase().as_str() {
         "realized" => Ok(vec![VolatilityMethod::Realized]),
         "parkinson" => Ok(vec![VolatilityMethod::Parkinson]),
@@ -313,7 +313,7 @@ fn parse_list(value: &str, uppercase: bool) -> Vec<String> {
 }
 
 /// Resolve CLI date inputs into an inclusive start and exclusive end.
-fn resolve_date_range(
+pub(crate) fn resolve_date_range(
     start_date: Option<&str>,
     end_date: Option<&str>,
     range: Option<&str>,
@@ -352,7 +352,7 @@ fn resolve_date_range(
     Ok((start, exclusive_end))
 }
 
-fn parse_range(value: &str) -> Result<Duration> {
+pub(crate) fn parse_range(value: &str) -> Result<Duration> {
     if value.len() < 2 {
         anyhow::bail!(
             "Invalid --range '{}'. Expected a positive duration such as 24h, 7d, or 4w",
