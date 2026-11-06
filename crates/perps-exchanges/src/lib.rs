@@ -1,6 +1,7 @@
 pub mod arcus;
 pub mod aster;
 pub mod binance;
+pub mod bitget;
 pub mod bybit;
 pub mod cache;
 pub mod edgex;
@@ -25,6 +26,7 @@ pub mod tradexyz;
 pub use arcus::ArcusClient;
 pub use aster::AsterClient;
 pub use binance::BinanceClient;
+pub use bitget::BitgetClient;
 pub use bybit::BybitClient;
 pub use cache::SymbolsCache;
 pub use edgex::EdgexClient;

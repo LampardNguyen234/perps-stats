@@ -23,6 +23,17 @@ pub fn parse_decimal_required(s: &str, field: &str) -> Result<Decimal> {
         .with_context(|| format!("failed to parse decimal field '{}': {:?}", field, s))
 }
 
+/// Number of decimal places of a tick/step size (e.g. "0.1" → 1, "0.001" → 3).
+/// Falls back to `default` when the value is missing, unparseable, or non-positive.
+fn decimal_scale(s: &Option<String>, default: i32) -> i32 {
+    s.as_deref()
+        .filter(|v| !v.is_empty())
+        .and_then(|v| Decimal::from_str(v).ok())
+        .filter(|d| *d > Decimal::ZERO)
+        .map(|d| d.normalize().scale() as i32)
+        .unwrap_or(default)
+}
+
 /// Unix nanoseconds string → DateTime<Utc>. Falls back to now() on parse failure.
 pub fn nanos_str_to_datetime(s: &str) -> DateTime<Utc> {
     s.trim()
@@ -75,10 +86,12 @@ pub fn to_market(m: &ApiMarketInfo) -> Market {
         symbol: global_symbol_from_risex_symbol(&m.base_asset_symbol),
         contract: m.base_asset_symbol.to_uppercase(),
         contract_size: Decimal::ONE,
-        price_scale: 8,
-        quantity_scale: 6,
+        price_scale: decimal_scale(&m.config.step_price, 8),
+        quantity_scale: decimal_scale(&m.config.step_size, 6),
         min_order_qty: parse_decimal(&m.config.min_order_size, "min_order_size"),
-        max_order_qty: Decimal::MAX,
+        // RISEx's API has no per-order max-quantity field; `open_interest_limit` is a
+        // market-wide cap, not a per-order one, so there's nothing real to parse here.
+        max_order_qty: Decimal::ZERO,
         min_order_value: Decimal::ZERO,
         max_leverage: parse_decimal(&m.config.max_leverage, "max_leverage"),
     }

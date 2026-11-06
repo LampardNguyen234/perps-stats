@@ -11,7 +11,7 @@ use tokio::sync::Mutex;
 
 #[derive(Args)]
 pub struct StreamArgs {
-    /// Exchange to stream from (supported: arcus, aster, binance, edgex, hyperliquid, bybit, kucoin, lighter, paradex, qfex, 01)
+    /// Exchange to stream from (supported: arcus, aster, binance, bitget, edgex, hyperliquid, bybit, kucoin, lighter, paradex, qfex, 01)
     #[arg(short, long, default_value = "binance")]
     pub exchange: String,
 
@@ -54,6 +54,7 @@ pub async fn execute(args: StreamArgs) -> Result<()> {
         "arcus"
             | "aster"
             | "binance"
+            | "bitget"
             | "edgex"
             | "hyperliquid"
             | "bybit"
@@ -63,7 +64,7 @@ pub async fn execute(args: StreamArgs) -> Result<()> {
             | "qfex"
             | "01"
     ) {
-        anyhow::bail!("Only 'arcus', 'aster', 'binance', 'edgex', 'hyperliquid', 'bybit', 'kucoin', 'lighter', 'paradex', 'qfex', and '01' exchanges are currently supported for streaming");
+        anyhow::bail!("Only 'arcus', 'aster', 'binance', 'bitget', 'edgex', 'hyperliquid', 'bybit', 'kucoin', 'lighter', 'paradex', 'qfex', and '01' exchanges are currently supported for streaming");
     }
 
     // Parse data types
@@ -104,7 +105,10 @@ pub async fn execute(args: StreamArgs) -> Result<()> {
         anyhow::bail!("KuCoin orderbook streaming is not yet implemented (requires incremental update handling). Please use ticker or trade data types");
     }
 
-    if (args.exchange == "kucoin" || args.exchange == "bybit" || args.exchange == "lighter")
+    if (args.exchange == "kucoin"
+        || args.exchange == "bybit"
+        || args.exchange == "lighter"
+        || args.exchange == "bitget")
         && data_types.contains(&StreamDataType::FundingRate)
     {
         anyhow::bail!(
@@ -187,6 +191,14 @@ pub async fn execute(args: StreamArgs) -> Result<()> {
                 .map(|s| bybit_client.parse_symbol(s))
                 .collect()
         }
+        "bitget" => {
+            // For Bitget, use BTCUSDT format
+            let bitget_client = perps_exchanges::bitget::BitgetClient::new();
+            args.symbols
+                .iter()
+                .map(|s| bitget_client.parse_symbol(s))
+                .collect()
+        }
         "kucoin" => {
             // For KuCoin, use XBTUSDTM format
             let kucoin_client = perps_exchanges::kucoin::KucoinClient::new_rest_only();
@@ -250,6 +262,10 @@ pub async fn execute(args: StreamArgs) -> Result<()> {
             }
             "bybit" => {
                 let ws_client = perps_exchanges::bybit::BybitWsClient::new();
+                Box::new(ws_client.stream_multi(config).await?)
+            }
+            "bitget" => {
+                let ws_client = perps_exchanges::bitget::BitgetWsClient::new();
                 Box::new(ws_client.stream_multi(config).await?)
             }
             "kucoin" => {

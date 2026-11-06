@@ -1,6 +1,7 @@
 use crate::arcus::ArcusClient;
 use crate::aster::AsterClient;
 use crate::binance::BinanceClient;
+use crate::bitget::BitgetClient;
 use crate::bybit::BybitClient;
 use crate::edgex::EdgexClient;
 use crate::extended::ExtendedClient;
@@ -28,6 +29,7 @@ pub fn exchange_names() -> &'static [&'static str] {
         "arcus",
         "aster",
         "binance",
+        "bitget",
         "bybit",
         "edgex",
         "extended",
@@ -55,6 +57,10 @@ pub async fn all_exchanges() -> Vec<(String, Box<dyn IPerps + Send + Sync>)> {
         (
             "arcus".to_string(),
             Box::new(ArcusClient::new()) as Box<dyn IPerps + Send + Sync>,
+        ),
+        (
+            "bitget".to_string(),
+            Box::new(BitgetClient::new()) as Box<dyn IPerps + Send + Sync>,
         ),
         (
             "bybit".to_string(),
@@ -170,6 +176,7 @@ pub async fn get_exchange(name: &str) -> anyhow::Result<Box<dyn IPerps + Send + 
             let client = BinanceClient::new().await?;
             Ok(Box::new(client))
         }
+        "bitget" => Ok(Box::new(BitgetClient::new())),
         "bybit" => Ok(Box::new(BybitClient::new())),
         "edgex" => Ok(Box::new(EdgexClient::new())),
         "extended" => {
@@ -193,7 +200,7 @@ pub async fn get_exchange(name: &str) -> anyhow::Result<Box<dyn IPerps + Send + 
         "risex" => Ok(Box::new(RiseXClient::new())),
         "standx" => Ok(Box::new(StandxClient::new())),
         "tradexyz" => Ok(Box::new(TradexyzClient::new())),
-        _ => anyhow::bail!("Unsupported exchange: {}. Currently supported: 01, arcus, aster, binance, bybit, edgex, extended, gravity, hibachi, hotstuff, hyperliquid, kucoin, lighter, nado, pacifica, paradex, qfex, risex, standx, tradexyz", name),
+        _ => anyhow::bail!("Unsupported exchange: {}. Currently supported: 01, arcus, aster, binance, bitget, bybit, edgex, extended, gravity, hibachi, hotstuff, hyperliquid, kucoin, lighter, nado, pacifica, paradex, qfex, risex, standx, tradexyz", name),
     }
 }
 
@@ -378,6 +385,35 @@ mod tests {
         assert!(
             names.contains(&"gravity"),
             "gravity should be in all_exchanges()"
+        );
+        assert!(
+            names.contains(&"bitget"),
+            "bitget should be in all_exchanges()"
+        );
+    }
+
+    /// Test that Bitget exchange can be created via factory
+    #[tokio::test]
+    async fn test_get_exchange_bitget() {
+        let result = get_exchange("bitget").await;
+        assert!(result.is_ok(), "get_exchange(\"bitget\") should succeed");
+        assert_eq!(result.unwrap().get_name(), "bitget");
+    }
+
+    /// Test that Bitget exchange respects case-insensitive exchange names
+    #[tokio::test]
+    async fn test_get_exchange_bitget_case_insensitive() {
+        assert!(get_exchange("BITGET").await.is_ok());
+        assert!(get_exchange("Bitget").await.is_ok());
+    }
+
+    /// Test that Bitget is included in all_exchanges()
+    #[tokio::test]
+    async fn test_all_exchanges_includes_bitget() {
+        let exchanges = all_exchanges().await;
+        assert!(
+            exchanges.iter().any(|(name, _)| name == "bitget"),
+            "bitget missing from all_exchanges()"
         );
     }
 

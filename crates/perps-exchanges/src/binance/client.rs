@@ -1,12 +1,13 @@
 use super::conversions::*;
 use super::error::BinanceError;
 use super::ticker_calculator::{calculate_ticker_from_klines, parse_timeframe};
-use crate::cache::SymbolsCache;
+use crate::cache::{ContractCache, SymbolsCache};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use perps_core::*;
 use perps_core::{execute_with_retry, RetryConfig};
 use rust_decimal::Decimal;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{trace, warn};
 
@@ -24,6 +25,10 @@ pub struct BinanceClient {
     client: reqwest::Client,
     /// Cached set of supported symbols (normalized format)
     symbols_cache: SymbolsCache,
+    /// Cached per-symbol max leverage (tier-1 bracket), keyed by Binance symbol (e.g. "BTCUSDT").
+    /// Populated from the public (unauthenticated) leverage-brackets endpoint; falls back to
+    /// Binance's global ceiling of 125x for symbols missing from the cache.
+    leverage_cache: ContractCache<Decimal>,
     /// Rate limiter for API calls
     rate_limiter: Arc<RateLimiter>,
     /// Optional stream manager for WebSocket-based orderbook streaming
@@ -38,6 +43,7 @@ impl Clone for BinanceClient {
             base_url: self.base_url.clone(),
             client: self.client.clone(),
             symbols_cache: self.symbols_cache.clone(),
+            leverage_cache: self.leverage_cache.clone(),
             rate_limiter: Arc::clone(&self.rate_limiter),
             stream_manager: self.stream_manager.clone(),
         }
@@ -86,6 +92,7 @@ impl BinanceClient {
             base_url: "https://fapi.binance.com".to_string(),
             client: reqwest::Client::new(),
             symbols_cache: SymbolsCache::new(),
+            leverage_cache: ContractCache::new(),
             rate_limiter: Arc::new(RateLimiter::binance()),
             stream_manager: None,
         }
@@ -121,6 +128,7 @@ impl BinanceClient {
             base_url: "https://fapi.binance.com".to_string(),
             client: reqwest::Client::new(),
             symbols_cache: SymbolsCache::new(),
+            leverage_cache: ContractCache::new(),
             rate_limiter: Arc::new(RateLimiter::binance()),
             stream_manager: Some(stream_manager),
         })
@@ -140,6 +148,7 @@ impl BinanceClient {
             base_url: "https://fapi.binance.com".to_string(),
             client: reqwest::Client::new(),
             symbols_cache: SymbolsCache::new(),
+            leverage_cache: ContractCache::new(),
             rate_limiter: Arc::new(RateLimiter::binance()),
             stream_manager: None,
         }
@@ -153,6 +162,7 @@ impl BinanceClient {
             base_url: "https://fapi.binance.com".to_string(),
             client: reqwest::Client::new(),
             symbols_cache: SymbolsCache::new(),
+            leverage_cache: ContractCache::new(),
             rate_limiter,
             stream_manager: None,
         }
@@ -166,6 +176,7 @@ impl BinanceClient {
             base_url,
             client: reqwest::Client::new(),
             symbols_cache: SymbolsCache::new(),
+            leverage_cache: ContractCache::new(),
             rate_limiter: Arc::new(RateLimiter::binance()),
             stream_manager: None,
         }
@@ -180,6 +191,53 @@ impl BinanceClient {
                     .into_iter()
                     .map(|m| self.parse_symbol(&m.symbol))
                     .collect())
+            })
+            .await
+    }
+
+    /// Ensure the per-symbol leverage cache is initialized.
+    ///
+    /// Binance's `/fapi/v1/exchangeInfo` doesn't expose leverage limits (they vary per
+    /// notional bracket and require a signed request to `/fapi/v1/leverageBracket`, which
+    /// needs API credentials we don't require). Instead, fetch the same data Binance's own
+    /// website uses, via the public (unauthenticated) brackets endpoint, and take each
+    /// symbol's tier-1 (lowest notional) bracket as its max leverage.
+    async fn ensure_leverage_cache_initialized(&self) -> anyhow::Result<()> {
+        let client = self.client.clone();
+        self.leverage_cache
+            .get_or_init(|| async move {
+                let url = "https://www.binance.com/bapi/futures/v1/friendly/future/common/brackets";
+                let response = client.get(url).send().await?;
+                if !response.status().is_success() {
+                    let status = response.status();
+                    let text = response.text().await?;
+                    return Err(
+                        BinanceError::ApiError(format!("HTTP {}: {}", status, text)).into(),
+                    );
+                }
+                let data: serde_json::Value = response.json().await?;
+                let brackets = data["data"]["brackets"]
+                    .as_array()
+                    .ok_or(BinanceError::InvalidResponse)?;
+
+                let mut leverage_by_symbol = HashMap::new();
+                for bracket in brackets {
+                    let Some(symbol) = bracket["symbol"].as_str() else {
+                        continue;
+                    };
+                    // riskBrackets is ordered by bracketSeq ascending; tier 1 (lowest notional)
+                    // carries the symbol's advertised max leverage.
+                    let Some(tier1_leverage) = bracket["riskBrackets"]
+                        .as_array()
+                        .and_then(|tiers| tiers.first())
+                        .and_then(|tier| tier["maxOpenPosLeverage"].as_i64())
+                    else {
+                        continue;
+                    };
+                    leverage_by_symbol
+                        .insert(symbol.to_string(), Decimal::new(tier1_leverage, 0));
+                }
+                Ok(leverage_by_symbol)
             })
             .await
     }
@@ -226,7 +284,10 @@ impl BinanceClient {
     }
 
     /// Convert Binance exchange info to our Market type
-    fn convert_exchange_info_to_market(&self, info: serde_json::Value) -> anyhow::Result<Market> {
+    async fn convert_exchange_info_to_market(
+        &self,
+        info: serde_json::Value,
+    ) -> anyhow::Result<Market> {
         let symbol = info["symbol"]
             .as_str()
             .ok_or_else(|| BinanceError::ConversionError("Missing symbol".to_string()))?;
@@ -241,9 +302,13 @@ impl BinanceClient {
         let mut min_qty = Decimal::ZERO;
         let mut max_qty = Decimal::MAX;
         let mut min_notional = Decimal::ZERO;
-        // Binance max leverage varies per position bracket; without auth we can't fetch brackets.
-        // 125 is Binance's global ceiling (accurate for BTC/ETH small positions).
-        let max_leverage = Decimal::new(125, 0);
+        // 125 is Binance's global ceiling; used only when the symbol is missing from the
+        // leverage-brackets cache (e.g. cache fetch failed or symbol not listed there).
+        let max_leverage = self
+            .leverage_cache
+            .get(symbol)
+            .await
+            .unwrap_or(Decimal::new(125, 0));
 
         if let Some(filters) = info["filters"].as_array() {
             for filter in filters {
@@ -669,6 +734,13 @@ impl IPerps for BinanceClient {
     async fn get_markets(&self) -> anyhow::Result<Vec<Market>> {
         let data: serde_json::Value = self.get("/fapi/v1/exchangeInfo").await?;
 
+        if let Err(e) = self.ensure_leverage_cache_initialized().await {
+            warn!(
+                "Failed to fetch Binance leverage brackets, falling back to 125x: {}",
+                e
+            );
+        }
+
         let symbols = data["symbols"]
             .as_array()
             .ok_or(BinanceError::InvalidResponse)?;
@@ -681,7 +753,10 @@ impl IPerps for BinanceClient {
                 Some("PERPETUAL") | Some("TRADIFI_PERPETUAL")
             ) && symbol_info["status"].as_str() == Some("TRADING")
             {
-                match self.convert_exchange_info_to_market(symbol_info.clone()) {
+                match self
+                    .convert_exchange_info_to_market(symbol_info.clone())
+                    .await
+                {
                     Ok(market) => markets.push(market),
                     Err(e) => warn!("Failed to convert market: {}", e),
                 }
@@ -695,13 +770,22 @@ impl IPerps for BinanceClient {
         let binance_symbol = denormalize_symbol(&self.parse_symbol(symbol));
         let data: serde_json::Value = self.get("/fapi/v1/exchangeInfo").await?;
 
+        if let Err(e) = self.ensure_leverage_cache_initialized().await {
+            warn!(
+                "Failed to fetch Binance leverage brackets, falling back to 125x: {}",
+                e
+            );
+        }
+
         let symbols = data["symbols"]
             .as_array()
             .ok_or(BinanceError::InvalidResponse)?;
 
         for symbol_info in symbols {
             if symbol_info["symbol"].as_str() == Some(&binance_symbol) {
-                return self.convert_exchange_info_to_market(symbol_info.clone());
+                return self
+                    .convert_exchange_info_to_market(symbol_info.clone())
+                    .await;
             }
         }
 

@@ -207,7 +207,10 @@ impl O1Client {
     /// `pub(crate)` so `O1WsClient` can fetch an uncached, fresh orderbook snapshot to seed
     /// its local book (the 5s TTL `orderbook_cache` would risk seeding from a snapshot
     /// already older than the first WS delta).
-    pub(crate) async fn get_request<T: serde::de::DeserializeOwned>(&self, path: &str) -> Result<T> {
+    pub(crate) async fn get_request<T: serde::de::DeserializeOwned>(
+        &self,
+        path: &str,
+    ) -> Result<T> {
         let config = RetryConfig::default();
         let url = format!("{}{}", self.base_url, path);
         let client = self.http.clone();

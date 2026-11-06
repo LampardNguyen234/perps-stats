@@ -243,6 +243,13 @@ impl RateLimiter {
         Self::new(vec![RateLimit::per_second(20)])
     }
 
+    /// Create preset rate limiter for Bitget
+    /// - No official public rate-limit number found for `/api/v3/market/*`; conservative
+    ///   10 req/s until live testing shows headroom to raise it.
+    pub fn bitget() -> Self {
+        Self::new(vec![RateLimit::per_second(10)])
+    }
+
     /// Create a disabled rate limiter (no limits)
     /// Useful for testing or when rate limiting is not needed
     pub fn disabled() -> Self {
